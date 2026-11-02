@@ -110,9 +110,11 @@ void docscan_scan_rels(const uint8_t* xml, size_t size, docscan_result_t* r)
     const char* tag = (const char*) open;
     size_t taglen = (size_t) ((const char*) close - tag) + 1;
 
-    char mode[32];
-    char type[256];
-    char target[512];
+    // Empty by default: get_attr leaves the buffer untouched when the
+    // attribute is missing (an uninitialised `type` overflowed in strrchr).
+    char mode[32] = "";
+    char type[256] = "";
+    char target[512] = "";
 
     get_attr(tag, taglen, "TargetMode=\"", mode, sizeof(mode));
 

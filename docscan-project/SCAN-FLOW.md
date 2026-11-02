@@ -143,7 +143,7 @@ libyara/modules/docscan/            МОДУЛЬ (C, вшитий у libyara)
   magic.{c,h}                       тип файлу по magic-байтах
   search.{c,h}                      портативний memmem / contains / contains_ci
   dynbuf.h                          growable буфер (header-only)
-  zip.{c,h}  miniz.{c,h}            ZIP-читання (обгортка над miniz; miniz — public domain)
+  zip.{c,h}  miniz.{c,h}            ZIP-читання (обгортка над miniz; miniz — public domain, 1 латка `docscan patch`)
   rels.{c,h}                        розбір OOXML .rels (external relationships)
   inspect_ooxml.c                   OOXML: rels / vbaProject.bin / DDE / embeddings
   cfb.{c,h}                         Compound File (OLE) reader
@@ -168,6 +168,7 @@ docscan-project/
     general/                        165 правил signature-base "strict" (копія з reference)
     maldoc/                         36 документних правил (signature-base + community) + vba_plaintext.yar
   watcher/docscan-watcher.ps1       авто-скан нових файлів → results\docscan-results.json
+  fuzz/                             libFuzzer: 2 фазери, словник, корпус, build.sh, regressions/
   test-range/
     run_tests.ps1                   регресійний тест (копія → детект+лікування → повторний скан)
     gen_range.ps1                   генератор полігону (Windows + Word COM)
@@ -274,7 +275,7 @@ OOXML (docx/xlsx/pptx) — ZIP із DEFLATE, тому сирий пошук не
 | `docscan_zip_open(data, size)` | `mz_zip_reader_init_mem` по буферу в пам'яті; NULL, якщо не ZIP. |
 | `docscan_zip_count(z)` | Кількість записів. |
 | `docscan_zip_entry_name(z, i, buf, sz)` | Ім'я i-го запису (обрізається до `sz-1`). |
-| `docscan_zip_extract(z, i, &out_size)` | Розпаковує запис у heap. |
+| `docscan_zip_extract(z, i, &out_size)` | Розпаковує запис у heap. Записи, що за заголовком > 64 МБ (`DOCSCAN_ZIP_MAX_ENTRY`), не розпаковує — захист від zip-бомб. |
 | `docscan_zip_free(p)` / `docscan_zip_close(z)` | Звільнення. |
 
 **`rels.c`** — розбір `.rels` без XML-парсера:
@@ -282,7 +283,7 @@ OOXML (docx/xlsx/pptx) — ZIP із DEFLATE, тому сирий пошук не
 | Функція | Що робить |
 |---|---|
 | `docscan_scan_rels(xml, size, r)` | Проходить кожен `<Relationship …>`; цікавлять лише `TargetMode="External"`. Якщо `Target` — protocol handler → `protocol_handler` + `template_url`. Інакше за останнім сегментом `Type`: `attachedTemplate` з віддаленим target → `remote_template` + `template_url`; `oleObject` → `external_ole`; `frame` → `external_frame`. |
-| `get_attr(tag, len, "Attr=\"", out, sz)` | Значення атрибута в межах тега до наступної `"`. |
+| `get_attr(tag, len, "Attr=\"", out, sz)` | Значення атрибута в межах тега до наступної `"`. Якщо атрибута немає — буфер не чіпає (тому буфери ініціалізовані `""`). |
 | `starts_with_ci(s, prefix)` | Префікс без урахування регістру. |
 | `is_remote_target(t)` | `http(s)://`, `ftp(s)://`, `sftp://`, UNC `\\host\share`, `file://` (крім `file://localhost`). |
 | `is_protocol_handler(t)` | `ms-msdt:`, `search-ms:`, `search:`, `ms-officecmd:`, `mhtml:`, `ms-word:`, `ms-excel:`, `ms-powerpoint:`, `!x-usc:`. |
@@ -304,7 +305,9 @@ OOXML (docx/xlsx/pptx) — ZIP із DEFLATE, тому сирий пошук не
 MS-OVBA. Ланцюжок: **CFB → потоки → пошук контейнера MS-OVBA → декомпресія → текст VBA → ключові слова**.
 
 **`cfb.c`** — мінімальний CFB-reader (v3, сектори від офсету 512), усі читання з перевіркою меж;
-ліміти: 1 млн ітерацій ланцюга, потік ≤ 4 МБ, збірка ≤ 64 МБ.
+усі ланцюги (FAT, DIFAT, mini FAT) і розміри масивів обмежені кількістю секторів у файлі — довший
+ланцюг означає цикл; потік ≤ 4 МБ, сумарно віддається колбеку ≤ 64 МБ. Показники розміру сектора
+перевіряються (7–16) до зсуву.
 
 | Функція | Що робить |
 |---|---|
@@ -323,7 +326,7 @@ MS-OVBA. Ланцюжок: **CFB → потоки → пошук контейн�
 | Функція | Що робить |
 |---|---|
 | `docscan_scan_vba_container(cfb, size, r)` | `docscan_cfb_foreach_stream(..., vba_stream_cb, r)`. |
-| `vba_stream_cb(data, size, r)` | У кожному потоці шукає байт `0x01` + заголовок чанка з сигнатурою 3 → декомпресує (≤ 4 МБ). Справжній модуль починається з `Attribute VB_…` (перевірка `Attribut` у перших 48 байтах) → `macro_present=1`; кожне з ключових слів `SUS[]` (без регістру) → `macro_suspicious=1` + `add_evidence`. Дописує текст модуля в `vba_code` (до 2 МБ, модулі через `\n`). Один модуль на потік. |
+| `vba_stream_cb(data, size, r)` | У кожному потоці шукає байт `0x01` + заголовок чанка з сигнатурою 3 → спершу дешевий попередній перегляд (перші 64 байти), повна декомпресія (≤ 4 МБ) лише якщо він схожий на VBA. Справжній модуль починається з `Attribute VB_…` (перевірка `Attribut` у перших 48 байтах) → `macro_present=1`; кожне з ключових слів `SUS[]` (без регістру) → `macro_suspicious=1` + `add_evidence`. Дописує текст модуля в `vba_code` (до 2 МБ, модулі через `\n`). Один модуль на потік. |
 | `add_evidence(r, kw)` | Дописує `kw` у `vba_evidence` у форматі `a \| b \| c`, не виходячи за 512 байт. |
 
 `SUS[]` (підозрілі конструкції, з `$sus` у `doc-scan.ps1`): `powershell`, `cmd.exe`, `mshta`,
@@ -357,7 +360,7 @@ MS-OVBA. Ланцюжок: **CFB → потоки → пошук контейн�
 | Функція | Що робить |
 |---|---|
 | `docscan_disarm(path, info, out_action, sz)` | Диспетчер. LNK + `lnk_bad` → бекап + видалення (`deleted:lnk`). RTF + `rtf_objupdate` → бекап + `cure_rtf`. OOXML з будь-яким вектором → бекап + `cure_ooxml`. PDF/OLE → `detect-only`. |
-| `cure_ooxml(path, info, action, sz)` | Перепаковує ZIP через miniz у `<file>.docscan-tmp`: **не копіює** `vbaProject.bin`/`vbaData.xml` (макрос) і `embeddings/oleObject*.bin`; у `*.rels` видаляє `<Relationship>` з маркерами `vbaProject` / `oleObject` / `attachedTemplate` / `ms-msdt` / `search-ms`; у `[Content_Types].xml` — `<Override>` з `vbaProject`; у `word/document.xml`/header/footer `DDEAUTO` → `REMOVED`. Потім підміняє оригінал. Дії: `removed:vbaProject.bin`, `removed:embeddings`, `removed:remote-template`, `removed:protocol-rel`, `stripped:dde`. |
+| `cure_ooxml(path, info, action, sz)` | Перепаковує ZIP через miniz у `<file>.docscan-tmp`: **не копіює** `vbaProject.bin`/`vbaData.xml` (макрос) і `embeddings/oleObject*.bin`; у `*.rels` видаляє `<Relationship>` з маркерами `vbaProject` / `oleObject` / `attachedTemplate` / `ms-msdt` / `search-ms`; у `[Content_Types].xml` — `<Override>` з `vbaProject`; у `word/document.xml`/header/footer `DDEAUTO` → `REMOVED`. Потім підміняє оригінал. Якщо будь-яку частину не вдалося прочитати (чи вона > 64 МБ) — лікування скасовується, оригінал не змінюється, дія `failed:unreadable-part`. Дії: `removed:vbaProject.bin`, `removed:embeddings`, `removed:remote-template`, `removed:protocol-rel`, `stripped:dde`. |
 | `cure_rtf(path, action, sz)` | `\objupdate` → `\objupdatX` (керуюче слово зламане, довжина та сама) → `stripped:objupdate`. |
 | `remove_elements(in, len, markers, n, &out_len)` | Копіює XML, викидаючи елементи `<Relationship …>` / `<Override …>`, що містять будь-який маркер. |
 | `strip_dde(buf, len)` | `DDEAUTO` → `REMOVED` на місці (7 символів, без «DDE», щоб не лишався `dde_link`). |
@@ -441,6 +444,7 @@ MSVC (Unicode), і MinGW (ANSI), як в оригінальній YARA.
    | RTF | зламати `\objupdate` | `stripped:objupdate` | лишається |
    | LNK | видалити (файл = вектор) | `deleted:lnk` | видалено (бекап є) |
    | PDF / OLE | нічого (карантин — оркестратор) | `detect-only` | — |
+   | OOXML з частиною, що не читається / > 64 МБ | лікування скасовано | `failed:unreadable-part` | без змін (бекап є) |
    | лише MEDIUM (напр. `external_ole`) | не лікується | — | без змін |
 
 7. **Контроль.** Повторний скан вилікуваної копії → очікуємо `INFO` (LNK відсутній, PDF лишається HIGH).
@@ -668,6 +672,44 @@ make -j8 yara.exe      # PE32+ x64, залежить лише від UCRT (є у
 DELETED 2 (LNK) / HIGH 3 (PDF) / MEDIUM 1 (`external_ole`); оригінали не змінені; з
 `docscan-index.yar` — `vendor_shellexec.docm` → `yara_matches:["gen_macro_ShellExecute_action"]`.
 
+### Фазинг (libFuzzer)
+
+`docscan-project/fuzz/` — фазинг модуля з AddressSanitizer + UndefinedBehaviorSanitizer:
+
+| Файл | Що |
+|---|---|
+| `docscan_fuzzer.cc` | увесь модуль через `yr_rules_scan_mem` з правилом `import "docscan"` (як `tests/oss-fuzz/pe_fuzzer.cc`) |
+| `docscan_parsers_fuzzer.cc` | парсери напряму; перший байт входу — ціль: 0 CFB/VBA, 1 LNK, 2 RTF, 3 PDF, 4 OOXML, 5 MS-OVBA, 6 `.rels`, 7 лікування (тимчасовий файл). До CFB/MS-OVBA через модуль майже не дістатися — вони всередині стиснутого ZIP |
+| `docscan.dict` | словник токенів (`DDEAUTO`, `<Relationship`, `/JavaScript`, magic-байти…) |
+| `make_corpus.py` | початковий корпус із `test-samples/` (+ витягнуті `vbaProject.bin`, `.rels`, embedded OLE, MS-OVBA-контейнери) |
+| `build.sh` | збирає libyara з санітайзерами в окремій теці, компонує фазери, **проганяє `regressions/`** (падає, якщо хоч один вхід знову ламає код) |
+| `regressions/` | входи, що колись ламали код (див. таблицю нижче) |
+
+```sh
+brew install llvm                      # macOS: Apple clang не має libFuzzer
+docscan-project/fuzz/build.sh          # → /tmp/docscan-fuzz
+cd /tmp/docscan-fuzz
+./docscan_parsers_fuzzer -dict=<repo>/docscan-project/fuzz/docscan.dict -max_len=262144 -max_total_time=900 corpus/parsers
+./docscan_fuzzer         -dict=<repo>/docscan-project/fuzz/docscan.dict -max_len=262144 -max_total_time=900 corpus/module
+```
+Знахідки зберігаються як `crash-*` / `oom-*` / `timeout-*`; відтворення — `./docscan_parsers_fuzzer <файл>`.
+Після виправлення вхід кладеться в `regressions/` з описовою назвою.
+`-fno-sanitize=function` — бо upstream `hash.c:218` викликає деструктор через узагальнений тип покажчика
+(це не наш код, але без прапора кожен прогін падає ще до docscan).
+
+**Знайдено й виправлено (2026-11-02, ~1 год фазингу):**
+
+| Вхід у `regressions/` | Де | Дефект | Виправлення |
+|---|---|---|---|
+| `parsers-ub-cfb-sector-shift` | `cfb.c` | `1 << shift` з показником із заголовка (UB при ≥ 32) | показник перевіряється (7–16) до зсуву |
+| — (вхід не збережено) | `miniz.c` | адреса за межами буфера при читанні 0 байтів | латка `docscan patch` у `mz_zip_mem_read_func` |
+| `parsers-oom-cfb-difat-loop`, `parsers-slow-…`, `module-dos-cfb-difat-loop` | `cfb.c` | зациклений DIFAT → FAT на мільярди записів: 4 ГБ malloc / > 13 с на 8 КБ файлі | усі ланцюги й масиви обмежені кількістю секторів у файлі + загальний бюджет 64 МБ |
+| `parsers-asan-rels-missing-type` | `rels.c` | `<Relationship>` без `Type` → `strrchr` по неініціалізованому стековому буферу | буфери ініціалізуються `""` |
+| `module-dos-zip-bomb` | `zip.c` | ZIP 1.3 КБ заявляє запис 3 ГБ → miniz виділяє 3 ГБ | записи > 64 МБ (`DOCSCAN_ZIP_MAX_ENTRY`) не розпаковуються |
+| `parsers-asan-disarm-remove-elements` | `disarm.c` | `strncmp` за кінцем не-NUL-термінованої частини | порівняння з перевіркою довжини |
+
+Підсумкові прогони після виправлень: модуль — 2,28 млн входів, парсери — 0,96 млн входів (по 15 хв) без знахідок.
+
 ### Генератори полігону
 - `gen_range.ps1` (Windows + Word): справжні Office-документи через Word COM + zip-інжект
   структурних векторів + rtf/pdf/lnk. Потребує `AccessVBOM=1` (вмикає сам) і теки
@@ -736,7 +778,7 @@ watcher → results\docscan-results.json (JSON Lines) → агент Wazuh (loca
 - LNK: UTF-16 рядки беруться молодшим байтом (кирилиця в target/args спотворюється);
   target — тільки з `LocalBasePath`.
 - Модуль аналізує лише перший блок пам'яті (для файлів — увесь файл; для скану процесів не призначений).
-- `vba_code` ≤ 2 МБ, `yara_matches` ≤ 2 КБ, докази ≤ 511 символів.
+- `vba_code` ≤ 2 МБ, `yara_matches` ≤ 2 КБ, докази ≤ 511 символів; частини OOXML > 64 МБ не аналізуються.
 
 **CLI**
 - `--docscan-json` придушує звичайний вивід збігів по файлу — тому watcher робить окремий прохід B.

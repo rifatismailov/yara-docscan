@@ -19,8 +19,13 @@ int docscan_zip_count(docscan_zip* z);
 // Copy entry i's name into buf (NUL-terminated, truncated). Returns 0 on success.
 int docscan_zip_entry_name(docscan_zip* z, int i, char* buf, size_t buf_size);
 
+// Largest entry we decompress. The size comes from the (untrusted) ZIP header;
+// a 1 KB zip bomb can claim gigabytes. Real OOXML parts are far smaller.
+#define DOCSCAN_ZIP_MAX_ENTRY (64u * 1024 * 1024)
+
 // Decompress entry i into a newly allocated buffer (sets *out_size).
-// Returns NULL on failure. Caller must release it with docscan_zip_free().
+// Returns NULL on failure or if the entry is larger than DOCSCAN_ZIP_MAX_ENTRY.
+// Caller must release it with docscan_zip_free().
 uint8_t* docscan_zip_extract(docscan_zip* z, int i, size_t* out_size);
 void docscan_zip_free(void* p);
 

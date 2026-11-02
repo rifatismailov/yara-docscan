@@ -52,6 +52,17 @@ static int vba_stream_cb(const uint8_t* data, size_t size, void* ud)
     if (((hdr & 0x7000) >> 12) != 3)
       continue;
 
+    // Cheap preview first: p-code holds many false 0x01 candidates, and a
+    // crafted stream can hold thousands; full decompression only when the
+    // preview starts like VBA source.
+    size_t plen = 0;
+    uint8_t* preview = docscan_msovba_decompress(data, size, i, 64, &plen);
+    int looks_vba = preview != NULL && plen >= 8 &&
+                    docscan_contains_ci(preview, plen < 48 ? plen : 48, "Attribut");
+    free(preview);
+    if (!looks_vba)
+      continue;
+
     size_t dlen = 0;
     uint8_t* dec =
         docscan_msovba_decompress(data, size, i, 4u * 1024 * 1024, &dlen);

@@ -144,7 +144,7 @@ libyara/modules/docscan/            MODULE (C, built into libyara)
   magic.{c,h}                       file type by magic bytes
   search.{c,h}                      portable memmem / contains / contains_ci
   dynbuf.h                          growable buffer (header-only)
-  zip.{c,h}  miniz.{c,h}            ZIP reading (wrapper over miniz; miniz is public domain)
+  zip.{c,h}  miniz.{c,h}            ZIP reading (wrapper over miniz; miniz is public domain, 1 `docscan patch`)
   rels.{c,h}                        OOXML .rels parsing (external relationships)
   inspect_ooxml.c                   OOXML: rels / vbaProject.bin / DDE / embeddings
   cfb.{c,h}                         Compound File (OLE) reader
@@ -169,6 +169,7 @@ docscan-project/
     general/                        165 signature-base "strict" rule files (copied from reference)
     maldoc/                         36 document rule files (signature-base + community) + vba_plaintext.yar
   watcher/docscan-watcher.ps1       auto-scan of new files → results\docscan-results.json
+  fuzz/                             libFuzzer: 2 fuzzers, dictionary, corpus, build.sh, regressions/
   test-range/
     run_tests.ps1                   regression test (copy → detect+disarm → re-scan)
     gen_range.ps1                   test-range generator (Windows + Word COM)
@@ -276,7 +277,7 @@ the parts must be decompressed.
 | `docscan_zip_open(data, size)` | `mz_zip_reader_init_mem` over an in-memory buffer; NULL if not a ZIP. |
 | `docscan_zip_count(z)` | Number of entries. |
 | `docscan_zip_entry_name(z, i, buf, sz)` | Name of entry i (truncated to `sz-1`). |
-| `docscan_zip_extract(z, i, &out_size)` | Decompresses an entry to the heap. |
+| `docscan_zip_extract(z, i, &out_size)` | Decompresses an entry to the heap. Entries whose header claims > 64 MB (`DOCSCAN_ZIP_MAX_ENTRY`) are skipped — zip-bomb protection. |
 | `docscan_zip_free(p)` / `docscan_zip_close(z)` | Release. |
 
 **`rels.c`** — `.rels` parsing without an XML parser:
@@ -284,7 +285,7 @@ the parts must be decompressed.
 | Function | What it does |
 |---|---|
 | `docscan_scan_rels(xml, size, r)` | Walks every `<Relationship …>`; only `TargetMode="External"` is of interest. If `Target` is a protocol handler → `protocol_handler` + `template_url`. Otherwise by the last segment of `Type`: `attachedTemplate` with a remote target → `remote_template` + `template_url`; `oleObject` → `external_ole`; `frame` → `external_frame`. |
-| `get_attr(tag, len, "Attr=\"", out, sz)` | Attribute value inside the tag up to the next `"`. |
+| `get_attr(tag, len, "Attr=\"", out, sz)` | Attribute value inside the tag up to the next `"`. Leaves the buffer untouched if the attribute is missing (hence the buffers start as `""`). |
 | `starts_with_ci(s, prefix)` | Case-insensitive prefix test. |
 | `is_remote_target(t)` | `http(s)://`, `ftp(s)://`, `sftp://`, UNC `\\host\share`, `file://` (except `file://localhost`). |
 | `is_protocol_handler(t)` | `ms-msdt:`, `search-ms:`, `search:`, `ms-officecmd:`, `mhtml:`, `ms-word:`, `ms-excel:`, `ms-powerpoint:`, `!x-usc:`. |
@@ -306,7 +307,9 @@ Macros live in a Compound File (`vbaProject.bin` in OOXML, or the whole legacy `
 MS-OVBA-compressed. The chain: **CFB → streams → find an MS-OVBA container → decompress → VBA source → keywords**.
 
 **`cfb.c`** — a minimal CFB reader (v3, sectors from offset 512), every read bounds-checked;
-limits: 1 M chain iterations, stream ≤ 4 MB, assembled data ≤ 64 MB.
+every chain (FAT, DIFAT, mini FAT) and array size is bounded by the number of sectors in the file —
+a longer chain means a cycle; stream ≤ 4 MB, at most 64 MB in total handed to the callback. The sector
+size exponents are validated (7–16) before shifting.
 
 | Function | What it does |
 |---|---|
@@ -325,7 +328,7 @@ limits: 1 M chain iterations, stream ≤ 4 MB, assembled data ≤ 64 MB.
 | Function | What it does |
 |---|---|
 | `docscan_scan_vba_container(cfb, size, r)` | `docscan_cfb_foreach_stream(..., vba_stream_cb, r)`. |
-| `vba_stream_cb(data, size, r)` | In each stream looks for byte `0x01` + a chunk header with signature 3 → decompresses (≤ 4 MB). A real module starts with `Attribute VB_…` (checks `Attribut` in the first 48 bytes) → `macro_present=1`; every keyword from `SUS[]` (case-insensitive) → `macro_suspicious=1` + `add_evidence`. Appends the module source to `vba_code` (up to 2 MB, modules separated by `\n`). One module per stream. |
+| `vba_stream_cb(data, size, r)` | In each stream looks for byte `0x01` + a chunk header with signature 3 → first a cheap preview (first 64 bytes), full decompression (≤ 4 MB) only if it looks like VBA. A real module starts with `Attribute VB_…` (checks `Attribut` in the first 48 bytes) → `macro_present=1`; every keyword from `SUS[]` (case-insensitive) → `macro_suspicious=1` + `add_evidence`. Appends the module source to `vba_code` (up to 2 MB, modules separated by `\n`). One module per stream. |
 | `add_evidence(r, kw)` | Appends `kw` to `vba_evidence` as `a \| b \| c` without exceeding 512 bytes. |
 
 `SUS[]` (suspicious constructs, from `$sus` in `doc-scan.ps1`): `powershell`, `cmd.exe`, `mshta`,
@@ -359,7 +362,7 @@ Compiled into libyara but **called only from the CLI** (`do_disarm` after the sc
 | Function | What it does |
 |---|---|
 | `docscan_disarm(path, info, out_action, sz)` | Dispatcher. LNK + `lnk_bad` → backup + delete (`deleted:lnk`). RTF + `rtf_objupdate` → backup + `cure_rtf`. OOXML with any vector → backup + `cure_ooxml`. PDF/OLE → `detect-only`. |
-| `cure_ooxml(path, info, action, sz)` | Repacks the ZIP with miniz into `<file>.docscan-tmp`: **does not copy** `vbaProject.bin`/`vbaData.xml` (macro) or `embeddings/oleObject*.bin`; in `*.rels` removes `<Relationship>` elements with the markers `vbaProject` / `oleObject` / `attachedTemplate` / `ms-msdt` / `search-ms`; in `[Content_Types].xml` the `<Override>` with `vbaProject`; in `word/document.xml`/header/footer `DDEAUTO` → `REMOVED`. Then replaces the original. Actions: `removed:vbaProject.bin`, `removed:embeddings`, `removed:remote-template`, `removed:protocol-rel`, `stripped:dde`. |
+| `cure_ooxml(path, info, action, sz)` | Repacks the ZIP with miniz into `<file>.docscan-tmp`: **does not copy** `vbaProject.bin`/`vbaData.xml` (macro) or `embeddings/oleObject*.bin`; in `*.rels` removes `<Relationship>` elements with the markers `vbaProject` / `oleObject` / `attachedTemplate` / `ms-msdt` / `search-ms`; in `[Content_Types].xml` the `<Override>` with `vbaProject`; in `word/document.xml`/header/footer `DDEAUTO` → `REMOVED`. Then replaces the original. If any part cannot be read (or is > 64 MB) the cure is aborted, the original is left unchanged and the action is `failed:unreadable-part`. Actions: `removed:vbaProject.bin`, `removed:embeddings`, `removed:remote-template`, `removed:protocol-rel`, `stripped:dde`. |
 | `cure_rtf(path, action, sz)` | `\objupdate` → `\objupdatX` (control word broken, same length) → `stripped:objupdate`. |
 | `remove_elements(in, len, markers, n, &out_len)` | Copies the XML, dropping `<Relationship …>` / `<Override …>` elements that contain any marker. |
 | `strip_dde(buf, len)` | `DDEAUTO` → `REMOVED` in place (7 chars, no "DDE" left, so `dde_link` does not linger). |
@@ -444,6 +447,7 @@ non-empty fields; `yara_matches` — Layer 2 (empty if the index has no vendor r
    | RTF | break `\objupdate` | `stripped:objupdate` | kept |
    | LNK | delete (the file is the vector) | `deleted:lnk` | deleted (backup kept) |
    | PDF / OLE | nothing (quarantine is up to the orchestrator) | `detect-only` | — |
+   | OOXML with an unreadable / > 64 MB part | cure aborted | `failed:unreadable-part` | unchanged (backup kept) |
    | MEDIUM only (e.g. `external_ole`) | not disarmed | — | unchanged |
 
 7. **Check.** Re-scan the disarmed copy → expect `INFO` (LNK gone, PDF stays HIGH).
@@ -671,6 +675,44 @@ The file must be **UTF-8 with BOM** (otherwise PowerShell 5.1 garbles Cyrillic).
 (LNK) / HIGH 3 (PDF) / MEDIUM 1 (`external_ole`); originals unchanged; with `docscan-index.yar`
 `vendor_shellexec.docm` → `yara_matches:["gen_macro_ShellExecute_action"]`.
 
+### Fuzzing (libFuzzer)
+
+`docscan-project/fuzz/` — fuzzing the module with AddressSanitizer + UndefinedBehaviorSanitizer:
+
+| File | What |
+|---|---|
+| `docscan_fuzzer.cc` | the whole module via `yr_rules_scan_mem` with an `import "docscan"` rule (like `tests/oss-fuzz/pe_fuzzer.cc`) |
+| `docscan_parsers_fuzzer.cc` | parsers called directly; the first input byte picks the target: 0 CFB/VBA, 1 LNK, 2 RTF, 3 PDF, 4 OOXML, 5 MS-OVBA, 6 `.rels`, 7 disarm (temp file). CFB/MS-OVBA are barely reachable through the module because they sit inside a deflated ZIP |
+| `docscan.dict` | token dictionary (`DDEAUTO`, `<Relationship`, `/JavaScript`, magic bytes…) |
+| `make_corpus.py` | seed corpus from `test-samples/` (+ extracted `vbaProject.bin`, `.rels`, embedded OLE, MS-OVBA containers) |
+| `build.sh` | builds libyara with sanitizers in a separate tree, links the fuzzers, **replays `regressions/`** (fails if any input breaks the code again) |
+| `regressions/` | inputs that once broke the code (see the table below) |
+
+```sh
+brew install llvm                      # macOS: Apple clang has no libFuzzer
+docscan-project/fuzz/build.sh          # → /tmp/docscan-fuzz
+cd /tmp/docscan-fuzz
+./docscan_parsers_fuzzer -dict=<repo>/docscan-project/fuzz/docscan.dict -max_len=262144 -max_total_time=900 corpus/parsers
+./docscan_fuzzer         -dict=<repo>/docscan-project/fuzz/docscan.dict -max_len=262144 -max_total_time=900 corpus/module
+```
+Findings are saved as `crash-*` / `oom-*` / `timeout-*`; reproduce with `./docscan_parsers_fuzzer <file>`.
+Once fixed, the input goes into `regressions/` with a descriptive name.
+`-fno-sanitize=function` is needed because upstream `hash.c:218` calls a destructor through a generic
+pointer type (not our code, but without the flag every run aborts before docscan is reached).
+
+**Found and fixed (2026-11-02, ~1 h of fuzzing):**
+
+| Input in `regressions/` | Where | Defect | Fix |
+|---|---|---|---|
+| `parsers-ub-cfb-sector-shift` | `cfb.c` | `1 << shift` with an exponent from the header (UB when ≥ 32) | exponent validated (7–16) before the shift |
+| — (input not kept) | `miniz.c` | out-of-bounds pointer formed when reading 0 bytes | `docscan patch` in `mz_zip_mem_read_func` |
+| `parsers-oom-cfb-difat-loop`, `parsers-slow-…`, `module-dos-cfb-difat-loop` | `cfb.c` | looping DIFAT → FAT with billions of entries: 4 GB malloc / > 13 s on an 8 KB file | every chain and array bounded by the sectors in the file + a 64 MB total budget |
+| `parsers-asan-rels-missing-type` | `rels.c` | `<Relationship>` without `Type` → `strrchr` over an uninitialised stack buffer | buffers initialised to `""` |
+| `module-dos-zip-bomb` | `zip.c` | a 1.3 KB ZIP claims a 3 GB entry → miniz allocates 3 GB | entries > 64 MB (`DOCSCAN_ZIP_MAX_ENTRY`) are not decompressed |
+| `parsers-asan-disarm-remove-elements` | `disarm.c` | `strncmp` past the end of a non-NUL-terminated part | length-checked compare |
+
+Final runs after the fixes: module — 2.28 M inputs, parsers — 0.96 M inputs (15 min each), no findings.
+
 ### Test-range generators
 - `gen_range.ps1` (Windows + Word): real Office documents via Word COM + zip injection of structural
   vectors + rtf/pdf/lnk. Needs `AccessVBOM=1` (set by the script) and the
@@ -739,7 +781,7 @@ described in `reference/doc-scan.ps1`.)
 - LNK: UTF-16 strings are taken by the low byte (Cyrillic in target/args is garbled);
   the target comes only from `LocalBasePath`.
 - The module analyses only the first memory block (for files that is the whole file; not meant for process scans).
-- `vba_code` ≤ 2 MB, `yara_matches` ≤ 2 KB, evidence ≤ 511 chars.
+- `vba_code` ≤ 2 MB, `yara_matches` ≤ 2 KB, evidence ≤ 511 chars; OOXML parts > 64 MB are not analysed.
 
 **CLI**
 - `--docscan-json` suppresses the normal per-file match output — which is why the watcher runs a separate pass B.

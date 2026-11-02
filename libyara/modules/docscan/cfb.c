@@ -65,9 +65,12 @@ static void read_chain(
     int32_t start,
     docscan_buf* out)
 {
+  // A chain can't be longer than the number of sectors in the file; anything
+  // longer is a cycle (crafted FAT), so stop there.
+  size_t nSec = (size - 512) / sectorSize + 1;
   int32_t sid = start;
-  int g = 0;
-  while (sid >= 0 && (size_t) sid < fat->len && g < CFB_MAX_ITER)
+  size_t g = 0;
+  while (sid >= 0 && (size_t) sid < fat->len && g < nSec && g < CFB_MAX_ITER)
   {
     size_t o = 512 + (size_t) sid * sectorSize;
     if (o >= size)
@@ -94,17 +97,28 @@ int docscan_cfb_foreach_stream(
       data[3] != 0xE0)
     return -1;
 
-  uint32_t sectorSize = 1u << u16(data, size, 30);
-  uint32_t miniSize = 1u << u16(data, size, 32);
+  // Validate the shift exponents before shifting: they come from the file,
+  // and shifting by >= 32 is undefined behaviour.
+  uint16_t sectorShift = u16(data, size, 30);
+  uint16_t miniShift = u16(data, size, 32);
 
-  if (sectorSize < 128 || sectorSize > 65536 || miniSize < 4 ||
-      miniSize > sectorSize)
+  if (sectorShift < 7 || sectorShift > 16 || miniShift < 2 ||
+      miniShift > sectorShift)
     return -1;
+
+  uint32_t sectorSize = 1u << sectorShift;
+  uint32_t miniSize = 1u << miniShift;
 
   int32_t firstDir = i32(data, size, 48);
   uint32_t miniCutoff = u32(data, size, 56);
   int32_t firstMiniFat = i32(data, size, 60);
   int32_t firstDifat = i32(data, size, 68);
+
+  // Every count below is bounded by the sectors that physically exist in the
+  // file: a crafted DIFAT/FAT/miniFAT can loop, and without these bounds a
+  // 1 KB file made the FAT grow to billions of entries (found by libFuzzer).
+  size_t nSec = (size - 512) / sectorSize + 1;
+  size_t budget = CFB_MAX_BUILD;  // total stream bytes handed to cb
 
   int rc = 0;
   i32buf fatSecs = {0}, fat = {0}, mfat = {0};
@@ -119,8 +133,8 @@ int docscan_cfb_foreach_stream(
   }
   {
     int32_t d = firstDifat;
-    int g = 0;
-    while (d >= 0 && g < 100000)
+    size_t g = 0;
+    while (d >= 0 && g < nSec && fatSecs.len < nSec)
     {
       size_t o = 512 + (size_t) d * sectorSize;
       if (o + sectorSize > size)
@@ -137,7 +151,8 @@ int docscan_cfb_foreach_stream(
   }
 
   // 2) Build the FAT array from those sectors.
-  for (size_t k = 0; k < fatSecs.len; k++)
+  // FAT entries past the last real sector address nothing, so stop at nSec.
+  for (size_t k = 0; k < fatSecs.len && fat.len < nSec; k++)
   {
     size_t o = 512 + (size_t) fatSecs.p[k] * sectorSize;
     if (o + sectorSize > size)
@@ -161,8 +176,8 @@ int docscan_cfb_foreach_stream(
   // 5) Mini FAT.
   {
     int32_t mf = firstMiniFat;
-    int g = 0;
-    while (mf >= 0 && (size_t) mf < fat.len && g < 100000)
+    size_t g = 0;
+    while (mf >= 0 && (size_t) mf < fat.len && g < nSec)
     {
       size_t o = 512 + (size_t) mf * sectorSize;
       if (o + sectorSize > size)
@@ -192,8 +207,8 @@ int docscan_cfb_foreach_stream(
     {
       // small stream: via mini FAT over the mini stream
       int32_t sid = start;
-      int g = 0;
-      while (sid >= 0 && (size_t) sid < mfat.len && g < CFB_MAX_ITER)
+      size_t g = 0, nMini = mini.len / miniSize + 1;
+      while (sid >= 0 && (size_t) sid < mfat.len && g < nMini)
       {
         size_t o = (size_t) sid * miniSize;
         if (o >= mini.len)
@@ -216,10 +231,15 @@ int docscan_cfb_foreach_stream(
 
     size_t used = (sb.len < (size_t) ssize) ? sb.len : (size_t) ssize;
     int stop = 0;
+    if (used > budget)
+      used = budget;
     if (sb.p != NULL && used > 0)
+    {
       stop = cb(sb.p, used, ud);
+      budget -= used;
+    }
     docscan_buf_free(&sb);
-    if (stop)
+    if (stop || budget == 0)
       break;
   }
 

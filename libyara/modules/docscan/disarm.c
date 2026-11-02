@@ -8,6 +8,7 @@
 #include <string.h>
 
 #include "miniz.h"
+#include "zip.h"  // DOCSCAN_ZIP_MAX_ENTRY
 
 // ---- small helpers ----
 static int read_file(const char* path, unsigned char** out, size_t* out_len)
@@ -110,9 +111,11 @@ static unsigned char* remove_elements(
   size_t o = 0, i = 0;
   while (i < in_len)
   {
+    // Length-checked compare: the extracted part is not NUL-terminated, and a
+    // '<' in its last bytes made strncmp read past the end (found by libFuzzer).
     if (in[i] == '<' &&
-        (strncmp((const char*) in + i, "<Relationship", 13) == 0 ||
-         strncmp((const char*) in + i, "<Override", 9) == 0))
+        ((in_len - i >= 13 && memcmp(in + i, "<Relationship", 13) == 0) ||
+         (in_len - i >= 9 && memcmp(in + i, "<Override", 9) == 0)))
     {
       // find element end ">"
       size_t j = i;
@@ -186,12 +189,16 @@ static int cure_ooxml(const char* path, const docscan_disarm_info* info,
   if (info->remote_template) markers[nm++] = "attachedTemplate";
   if (info->protocol_handler) { markers[nm++] = "ms-msdt"; markers[nm++] = "search-ms"; }
 
+  int failed = 0;
   int n = (int) mz_zip_reader_get_num_files(&zin);
-  for (int i = 0; i < n; i++)
+  for (int i = 0; i < n && !failed; i++)
   {
     mz_zip_archive_file_stat st;
     if (!mz_zip_reader_file_stat(&zin, (mz_uint) i, &st))
-      continue;
+    {
+      failed = 1;
+      break;
+    }
     const char* name = st.m_filename;
 
     // skip (drop) malicious binary parts
@@ -202,10 +209,17 @@ static int cure_ooxml(const char* path, const docscan_disarm_info* info,
         name_is(name, ".bin"))
       continue;
 
+    // A part we can't (or won't: zip-bomb size) read must not be silently
+    // dropped from the cured document — give up and leave the file as is.
+    void* data = NULL;
     size_t dsize = 0;
-    void* data = mz_zip_reader_extract_to_heap(&zin, (mz_uint) i, &dsize, 0);
+    if (st.m_uncomp_size <= DOCSCAN_ZIP_MAX_ENTRY)
+      data = mz_zip_reader_extract_to_heap(&zin, (mz_uint) i, &dsize, 0);
     if (!data)
-      continue;
+    {
+      failed = 1;
+      break;
+    }
 
     void* edited = NULL;
     size_t esize = dsize;
@@ -234,10 +248,18 @@ static int cure_ooxml(const char* path, const docscan_disarm_info* info,
     mz_free(data);
   }
 
-  mz_zip_writer_finalize_archive(&zout);
+  if (!failed)
+    failed = !mz_zip_writer_finalize_archive(&zout);
   mz_zip_writer_end(&zout);
   mz_zip_reader_end(&zin);
   free(buf);
+
+  if (failed)
+  {
+    remove(tmp);
+    append(action, asz, "failed:unreadable-part");
+    return -1;
+  }
 
   // replace original with cured temp
   remove(path);

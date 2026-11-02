@@ -65,6 +65,12 @@ int docscan_zip_entry_name(docscan_zip* z, int i, char* buf, size_t buf_size)
 
 uint8_t* docscan_zip_extract(docscan_zip* z, int i, size_t* out_size)
 {
+  mz_zip_archive_file_stat st;
+
+  if (!mz_zip_reader_file_stat(&z->ar, (mz_uint) i, &st) ||
+      st.m_uncomp_size > DOCSCAN_ZIP_MAX_ENTRY)
+    return NULL;
+
   return (uint8_t*) mz_zip_reader_extract_to_heap(
       &z->ar, (mz_uint) i, out_size, 0);
 }
