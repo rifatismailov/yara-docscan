@@ -1,11 +1,12 @@
 ﻿# DocScan watcher — стежить за новими файлами (FileSystemWatcher) і сканує їх yara64.exe.
 #
-# Два типи файлів:
-#   document — Office / RTF / PDF / LNK:
-#       прохід A: yara64 --docscan-json docscan-index.yar   (наш модуль: вектори, докази, Шар 2 по VBA)
-#       прохід B: yara64 file-index.yar                     (vendor-правила по сирих байтах файлу)
-#   general  — exe/dll/скрипти/hta/архіви/образи:
-#       тільки прохід B
+# Один запуск на файл:  yara64 -w --docscan-json [--docscan-disarm] docscan-index.yar <file>
+#   docscan-index.yar = docscan-policy.yar (що вважати HIGH/MEDIUM, що лікувати)
+#                     + file-index.yar     (vendor-правила: по файлу і по розпакованому VBA)
+#
+# Категорії файлів:
+#   document — Office / RTF / PDF / LNK: модуль + політика + vendor; -Disarm лікує за політикою
+#   general  — exe/dll/скрипти/hta/архіви/образи: тільки vendor-правила (модуль нічого не знайде)
 #
 # Результат: один JSON на рядок у $OutDir\docscan-results.json (у майбутньому забиратиме Wazuh:
 # <localfile><log_format>json</log_format>). Діагностика роботи — $OutDir\watcher.log.
@@ -19,10 +20,9 @@ param(
   [string[]]$WatchPath = @("C:\Users"),
   [string]$Base        = "C:\docscan-build",
   [string]$Yara        = "",
-  [string]$DocRules    = "",
-  [string]$FileRules   = "",
+  [string]$Rules       = "",       # за замовчуванням <Base>\yara\docscan-project\rules\docscan-index.yar
   [string]$OutDir      = "",
-  [switch]$Disarm,                 # лікувати документи з verdict HIGH (оригінал -> <file>.docscan-bak)
+  [switch]$Disarm,                 # лікувати документи за meta.disarm правил політики (оригінал -> <file>.docscan-bak)
   [int]$MaxSizeMB      = 100,      # більші файли пропускаємо (запис у лог)
   [int]$SettleSeconds  = 2,        # скільки чекати тиші після останньої події по файлу
   [int]$ReadyTimeout   = 60,       # скільки чекати, поки файл перестане записуватись
@@ -45,8 +45,7 @@ param(
 )
 
 if (-not $Yara)      { $Yara      = "$Base\yara\windows\vs2019\Release\yara64.exe" }
-if (-not $DocRules)  { $DocRules  = "$Base\yara\docscan-project\rules\docscan-index.yar" }
-if (-not $FileRules) { $FileRules = "$Base\yara\docscan-project\rules\file-index.yar" }
+if (-not $Rules)     { $Rules     = "$Base\yara\docscan-project\rules\docscan-index.yar" }
 if (-not $OutDir)    { $OutDir    = "$Base\results" }
 
 [Console]::OutputEncoding = [Text.Encoding]::UTF8   # вивід yara64 (шляхи, докази) — UTF-8
@@ -92,24 +91,11 @@ function Wait-FileReady([string]$path) {
   return "timeout"
 }
 
-# Прохід B: звичайний yara-скан, повертає імена правил, що спрацювали.
-function Invoke-FileScan([string]$path) {
-  $out = & $Yara -w $FileRules $path 2>&1
-  $rules = @(); $errs = @()
-  foreach ($l in $out) {
-    if ($l -is [Management.Automation.ErrorRecord]) { $errs += "$l"; continue }
-    $s = "$l"
-    if ($s -match '^error') { $errs += $s; continue }
-    if ($s.Trim()) { $rules += ($s -split ' ', 2)[0] }
-  }
-  return @{ rules = @($rules | Select-Object -Unique); errors = $errs }
-}
-
-# Прохід A: наш модуль. Повертає розібраний JSON docscan (+ дію лікування).
-function Invoke-DocScan([string]$path) {
-  $yargs = @("--docscan-json")
-  if ($Disarm) { $yargs += "--docscan-disarm" }
-  $out = & $Yara @yargs $DocRules $path 2>&1 | ForEach-Object { "$_" }
+# Один запуск yara64: JSON (політика + vendor) і, для документів, дія лікування.
+function Invoke-Scan([string]$path, [bool]$cure) {
+  $yargs = @("-w", "--docscan-json")
+  if ($cure) { $yargs += "--docscan-disarm" }
+  $out = & $Yara @yargs $Rules $path 2>&1 | ForEach-Object { "$_" }
   $json = $out | Where-Object { $_ -like '{*' } | Select-Object -First 1
   $act  = $out | Where-Object { $_ -like 'docscan-disarm:*' } | Select-Object -First 1
   $errs = @($out | Where-Object { $_ -match '^error' })
@@ -151,21 +137,19 @@ function Scan-File([string]$path, [string]$evt) {
     } else {
       $rec.file.sha256 = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLower()
 
-      # прохід B до лікування: бачимо оригінальні байти
-      $fs = Invoke-FileScan $path
-      $rec.yara_file_matches = $fs.rules
-      $rec.errors += $fs.errors
-
-      if ($cat -eq "document") {
-        $ds = Invoke-DocScan $path
+      # vendor-правила бачать байти ДО лікування: yara збирає збіги до --docscan-disarm
+      $ds = Invoke-Scan $path ($Disarm -and $cat -eq "document")
+      $rec.errors += $ds.errors
+      if ($ds.docscan) {
         $rec.docscan = $ds.docscan
         $rec.disarm  = $ds.disarm
-        $rec.errors += $ds.errors
-        if ($ds.docscan) { $rec.verdict = $ds.docscan.verdict }
-        # vendor-правило на самому документі підіймає щонайменше до MEDIUM
-        if ($fs.rules.Count) { $rec.verdict = Max-Verdict $rec.verdict "MEDIUM" }
-      } elseif ($fs.rules.Count) {
-        $rec.verdict = "HIGH"   # file-index = strict-набір + maldoc
+        $rec.yara_file_matches = @($ds.docscan.yara_file_matches)
+        $rec.verdict = $ds.docscan.verdict
+      }
+      # vendor-правило на самому файлі: документ — щонайменше MEDIUM, general — HIGH
+      if ($rec.yara_file_matches.Count) {
+        if ($cat -eq "document") { $rec.verdict = Max-Verdict $rec.verdict "MEDIUM" }
+        else { $rec.verdict = "HIGH" }
       }
     }
   } catch {
@@ -188,16 +172,14 @@ function Scan-File([string]$path, [string]$evt) {
 
 # ---------- старт ----------
 New-Item -ItemType Directory -Force $OutDir | Out-Null
-foreach ($p in $Yara, $DocRules, $FileRules) {
+foreach ($p in $Yara, $Rules) {
   if (-not (Test-Path $p)) { Write-Host "НЕ ЗНАЙДЕНО: $p" -ForegroundColor Red; exit 1 }
 }
-# перевірка, що обидва набори правил компілюються (інакше кожен скан мовчки падатиме)
+# перевірка, що правила компілюються (інакше кожен скан мовчки падатиме)
 $probe = Join-Path $OutDir "probe.txt"; "probe" | Set-Content $probe
-foreach ($r in $DocRules, $FileRules) {
-  $e = & $Yara -w $r $probe 2>&1 | Where-Object { "$_" -match 'error' }
-  if ($e) { Write-Host "Правила не компілюються: $r`n$e" -ForegroundColor Red; exit 1 }
-}
+$e = & $Yara -w $Rules $probe 2>&1 | Where-Object { "$_" -match 'error' }
 Remove-Item $probe
+if ($e) { Write-Host "Правила не компілюються: $Rules`n$e" -ForegroundColor Red; exit 1 }
 
 $watchers = @()
 foreach ($wp in $WatchPath) {

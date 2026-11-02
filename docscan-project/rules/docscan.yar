@@ -1,10 +1,6 @@
-// Minimal rules file for `yara64.exe --docscan-json <this> <file>`.
-// Importing the module makes it run (type detection + structural analysis);
-// --docscan-json then prints the findings as JSON. The dummy rule never matches.
-import "docscan"
-
-private rule _docscan_probe
-{
-  condition:
-    false
-}
+// Our detection only: the docscan module + the default policy (no vendor rules).
+//
+//   yara64.exe --docscan-json docscan.yar <file>
+//
+// Severity, finding names and disarm actions live in docscan-policy.yar.
+include "docscan-policy.yar"

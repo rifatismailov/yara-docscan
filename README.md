@@ -26,19 +26,43 @@ over the extracted macro, and remediation all live in the same `yara64.exe` bina
 
 File types are recognised by magic bytes: OOXML (docx/xlsx/pptx…), OLE (doc/xls/ppt), RTF, PDF, LNK.
 
+### Detection policy lives in YARA rules
+
+The module only parses documents and exposes **facts** (`docscan.vba_code`, `docscan.external_rels[]`,
+`docscan.dde[]`, `docscan.embedded[]`, `docscan.entries[]`, `docscan.lnk_target`/`lnk_args`, …).
+What counts as HIGH or MEDIUM, how a finding is named and what gets disarmed is decided by ordinary
+rules in [`docscan-project/rules/docscan-policy.yar`](docscan-project/rules/docscan-policy.yar):
+
+```yara
+rule DS_REMOTE_TEMPLATE
+{
+  meta:
+    severity = "HIGH"                 // HIGH / MEDIUM / INFO
+    finding  = "REMOTE_TEMPLATE"      // name in the JSON
+    disarm   = "remote_template"      // what --docscan-disarm removes (optional)
+  condition:
+    for any rel in docscan.external_rels : (
+      rel.type iendswith "/attachedTemplate" and
+      rel.target matches /^((https?|s?ftps?):\/\/|\\\\|file:\/\/([^\/]|\/\/))/i )
+}
+```
+
+Edit the policy to fit your organisation — no rebuild needed. The table above is the default policy.
+
 ### New command-line flags
 
 | Flag | What it does |
 |---|---|
-| `--docscan-json` | Prints one JSON line: `ftype`, `findings`, `verdict`, `evidence` (URLs defanged), and `yara_matches` — the loaded rules re-run over the **decompressed VBA** |
-| `--docscan-disarm` | After the scan, cures the file in place if a HIGH vector was found (backup → `<file>.docscan-bak`): strips the macro / external relationship / DDE / embeddings, breaks `\objupdate`, deletes malicious LNK |
+| `--docscan-json` | Prints one JSON line: `ftype`, `findings` and `verdict` (from the policy rules), `evidence` (URLs defanged), `yara_file_matches` (other rules on the raw file), `yara_matches` (the same rules re-run over the **decompressed VBA**) and `details` |
+| `--docscan-disarm` | After the scan, cures the file in place as the matching policy rules say (`meta.disarm`; backup → `<file>.docscan-bak`): strips the macro / external relationship / DDE / embeddings, breaks `\objupdate`, deletes malicious LNK |
 | `--docscan-extract=FILE` | Writes the decompressed VBA to `FILE` |
 
 ```console
-$ yara64 --docscan-json --docscan-disarm docscan-project/rules/docscan-index.yar invoice.docm
-{"ftype":"ooxml","findings":["MACRO_SUSPICIOUS","MACRO_PRESENT"],"verdict":"HIGH",
+$ yara64 -w --docscan-json --docscan-disarm docscan-project/rules/docscan-index.yar invoice.docm
+{"ftype":"ooxml","findings":["MACRO_PRESENT","MACRO_SUSPICIOUS","MACRO_AUTOEXEC"],"verdict":"HIGH",
  "evidence":{"vba_evidence":"powershell | Shell | DownloadFile | AutoOpen"},
- "yara_matches":["gen_macro_ShellExecute_action"]}
+ "yara_matches":["VBA_AutoExec_DownloadCradle"],
+ "yara_file_matches":["Contains_VBA_macro_code","office_document_vba"],"details":[…]}
 docscan-disarm: invoice.docm -> removed:vbaProject.bin
 ```
 
@@ -58,8 +82,8 @@ rule weaponised_document
 ### File watcher
 
 `docscan-project/watcher/docscan-watcher.ps1` (Windows, PowerShell) watches folders with
-`FileSystemWatcher`, scans every new document with `docscan` plus vendor rules on the raw bytes
-(and executables/scripts/archives with vendor rules only), and appends one JSON line per file to
+`FileSystemWatcher`, scans every new file with a single `yara64 --docscan-json` run (docscan policy +
+vendor rules on the raw bytes and on the decompressed VBA), and appends one JSON line per file to
 `results\docscan-results.json`, ready to be shipped by a SIEM agent (e.g. Wazuh `localfile` /
 `log_format json`).
 
@@ -69,7 +93,8 @@ rule weaponised_document
 |---|---|
 | `libyara/modules/docscan/` | the module: type detection, OOXML/ZIP (miniz), CFB, MS-OVBA, VBA, RTF, PDF, LNK inspectors, `disarm.c` |
 | `cli/yara.c` | the three `--docscan-*` flags, JSON output, VBA re-scan, disarm hook |
-| `docscan-project/rules/` | `docscan.yar`, `docscan-index.yar`, `file-index.yar`, vendor rule subsets (signature-base, community) |
+| `docscan-project/rules/` | `docscan-policy.yar` (the policy), `docscan.yar`, `docscan-index.yar`, `file-index.yar`, vendor rule subsets (signature-base, community) |
+| `docscan-project/fuzz/` | libFuzzer harness (ASan + UBSan), corpus tools, regression inputs |
 | `docscan-project/watcher/` | the file watcher |
 | `docscan-project/test-range/`, `test-samples/generated/` | regression test script and safe, inert test documents (one per vector) |
 | **[`docscan-project/SCAN-FLOW.en.md`](docscan-project/SCAN-FLOW.en.md)** · [українською](docscan-project/SCAN-FLOW.md) | **full documentation**: architecture diagram, every function, behaviour, build, tests, limitations |

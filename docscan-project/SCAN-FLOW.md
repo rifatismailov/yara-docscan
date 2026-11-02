@@ -15,7 +15,7 @@
 3. [Карта файлів](#3-карта-файлів)
 4. [Доопрацювання YARA — код, функція за функцією](#4-доопрацювання-yara--код-функція-за-функцією)
 5. [Поведінка: як проходить скан](#5-поведінка-як-проходить-скан)
-6. [Правила YARA](#6-правила-yara)
+6. [Правила YARA і політика детекту](#6-правила-yara-і-політика-детекту)
 7. [Watcher — авто-скан нових файлів](#7-watcher--авто-скан-нових-файлів)
 8. [Запуск — шпаргалка](#8-запуск--шпаргалка)
 9. [Збірка](#9-збірка)
@@ -38,6 +38,10 @@
 
 Принципи:
 - **Один бінарник.** Детект, Шар 2, лікування, JSON — прапори `yara64.exe`, окремих exe немає.
+- **Модуль дає факти, політика вирішує.** Модуль (C) лише розбирає документ і викладає факти
+  (текст макросу, зовнішні зв'язки, DDE-поля, вкладення, ціль/аргументи LNK). Що з цього HIGH чи
+  MEDIUM, як назвати знахідку і що лікувати — вирішують **правила** у `docscan-policy.yar`
+  (`meta.severity` / `meta.finding` / `meta.disarm`). Інженер змінює політику без перезбірки.
 - **Модуль тільки читає.** Модуль працює на read-only буфері посеред скану й нічого не пише.
   Лікування — у CLI-шарі (`cli/yara.c` → `disarm.c`) **після** скану, коли файл закрито.
 - **Тип — за magic-байтами**, не за розширенням (`invoice.pdf`, що насправді docx, — це OOXML).
@@ -58,81 +62,57 @@ flowchart TD
     CAT -->|Office / RTF / PDF / LNK| DOC[document]
     CAT -->|exe dll ps1 js hta zip iso ...| GEN[general]
     CAT -->|інше| IGN([ігнор])
+    DOC --> Y[yara64 -w --docscan-json --docscan-disarm<br/>docscan-index.yar]
+    GEN --> Y2[yara64 -w --docscan-json<br/>docscan-index.yar]
 
-    DOC --> PB[Прохід B · yara64 file-index.yar<br/>vendor-правила по сирих байтах]
-    GEN --> PB
-    DOC --> PA[Прохід A · yara64 --docscan-json<br/>--docscan-disarm docscan-index.yar]
-
-    PA --> D[Компіляція index.yar<br/>import docscan + include vendor<br/>g_rules = правила]
+    Y --> D[Компіляція docscan-index.yar<br/>docscan-policy.yar + file-index.yar<br/>g_rules = правила]
+    Y2 --> D
     D --> E[Скан файлу -> module_load docscan]
 
-    subgraph M[Модуль docscan · libyara/modules/docscan]
+    subgraph M[Модуль docscan · ФАКТИ]
         E --> F{magic.c<br/>тип по байтах}
         F -->|PK zip| G1[inspect_ooxml.c<br/>zip.c + rels.c]
         F -->|D0CF11E0| G2[inspect_ole.c<br/>cfb.c]
         F -->|curly-rtf| G3[inspect_rtf.c]
         F -->|%PDF| G4[inspect_pdf.c]
         F -->|4C000000| G5[lnk.c]
-        F -->|інше| G0[unknown<br/>нічого не шукаємо]
         G1 -->|vbaProject.bin| V[vba.c + msovba.c<br/>розпакування VBA]
         G2 --> V
-        G1 & G2 & G3 & G4 & G5 & V --> R[Поля модуля<br/>прапори векторів + evidence + vba_code]
+        G1 & G2 & G3 & G4 & G5 & V --> R[vba_code · external_rels · dde<br/>embedded · entries · lnk_target/args<br/>is_* · докази]
     end
 
-    R --> J[ЕТАП 1 · print_docscan_json<br/>findings -> verdict HIGH / MEDIUM / INFO<br/>evidence, URL defang http->hxxp]
-    J --> L2{vba_code не порожній<br/>і є правила?}
-    L2 -->|так| S2[ШАР 2: другий сканер<br/>g_rules по розпакованому VBA]
-    L2 -->|ні| OUT1
-    S2 --> OUT1[/Рядок 1: JSON ... yara_matches/]
-
-    R --> DS[Збір прапорів для лікування<br/>docscan_disarm_info]
-    OUT1 --> H{--docscan-disarm<br/>і є HIGH-вектор?}
-    DS --> H
-    H -->|ні| END1([файл без змін])
+    R --> CAP[MODULE_IMPORTED: копія фактів<br/>модуль вивантажується до правил]
+    R --> P[Правила виконуються на файлі]
+    P -->|meta.severity| POL[ПОЛІТИКА<br/>findings · verdict · details<br/>meta.disarm -> що лікувати]
+    P -->|без meta.severity| VEN[vendor-правила<br/>yara_file_matches]
+    CAP --> L2[ШАР 2: другий сканер<br/>g_rules по розпакованому VBA<br/>-> yara_matches]
+    POL & VEN & L2 --> J[/SCAN_FINISHED: рядок 1 — JSON/]
+    POL --> H{--docscan-disarm і<br/>є meta.disarm або HIGH?}
     H -->|так| X[ЕТАП 2 · disarm.c<br/>бекап -> file.docscan-bak]
-
-    X --> T{тип файлу}
-    T -->|OOXML| X1[вирізати vbaProject.bin / external-rel /<br/>protocol-rel / DDEAUTO / embeddings]
-    T -->|RTF| X2[зламати objupdate]
-    T -->|LNK| X3[видалити файл]
-    T -->|PDF / OLE| X4[detect-only]
-    X1 & X2 & X3 & X4 --> OUT2[/Рядок 2: docscan-disarm: шлях -> дія/]
-
-    PB --> REC
-    OUT1 --> REC
-    OUT2 --> REC
-    REC[watcher збирає один запис<br/>verdict = max docscan, vendor] --> RES[(results/docscan-results.json<br/>JSON Lines -> Wazuh)]
+    X --> OUT2[/рядок 2: docscan-disarm: шлях -> дія<br/>або detect-only/]
+    J & OUT2 --> REC[watcher: один JSON-рядок<br/>results/docscan-results.json -> Wazuh]
 ```
 
 ### Те саме текстом
 
 ```
- новий файл ──► watcher (FileSystemWatcher) ──► категорія за розширенням
-                                                │
-            ┌──────────── document ─────────────┼──────────── general ───────────┐
-            │                                   │                                │
-   Прохід B: yara64 file-index.yar     Прохід A: yara64 --docscan-json     Прохід B: yara64 file-index.yar
-   (vendor по сирих байтах)            [--docscan-disarm] docscan-index.yar
-                                                │
-     ┌──────────────────────────────────────────▼─────────────────────────┐
-     │ МОДУЛЬ docscan (read-only)                                          │
-     │  magic ─► ooxml │ ole │ rtf │ pdf │ lnk                             │
-     │            │     │                                                  │
-     │            └──┬──┘ vbaProject.bin ─► CFB ─► MS-OVBA ─► VBA текст    │
-     │  ► прапори векторів + evidence + vba_code                           │
-     └───────┬────────────────────────────────────────┬────────────────────┘
-             │                                        │
-   ЕТАП 1 ДЕТЕКЦІЯ (cli/yara.c)              ЕТАП 2 ЛІКУВАННЯ (тільки якщо HIGH)
-   findings ► verdict, evidence (hxxp)       бекап ► .docscan-bak
-   ШАР 2: vba_code ► vendor-правила          OOXML ► перепакувати zip без вектора
-             │                               RTF   ► зламати \objupdate
-             ▼                               LNK   ► видалити;  PDF/OLE ► detect-only
-   рядок 1: {JSON ... yara_matches}                   ▼
-                                             рядок 2: docscan-disarm: ... -> дія
-             └────────────────► watcher: один JSON-рядок у results\docscan-results.json
+ новий файл ──► watcher ──► yara64 -w --docscan-json [--docscan-disarm] docscan-index.yar <файл>
+                               │
+     ┌─────────────────────────▼───────────────────────────────┐
+     │ МОДУЛЬ docscan — тільки ФАКТИ (read-only)                │
+     │  magic ─► ooxml │ ole │ rtf │ pdf │ lnk                  │
+     │  vbaProject.bin ─► CFB ─► MS-OVBA ─► vba_code            │
+     │  external_rels[] · dde[] · embedded[] · entries[] · lnk  │
+     └──────────┬──────────────────────────────────────────────┘
+                │ правила docscan-index.yar на файлі
+     ┌──────────┴───────────────┬─────────────────────────────┐
+     ▼                          ▼                             ▼
+ ПОЛІТИКА (meta.severity)   vendor-правила по файлу      ШАР 2: vendor-правила
+ findings, verdict, details  yara_file_matches            по vba_code → yara_matches
+ meta.disarm → що лікувати
+     └──────────────► рядок 1: {JSON}   рядок 2: docscan-disarm: ... -> дія | detect-only
+                                         └──► watcher: results\docscan-results.json
 ```
-
----
 
 ## 3. Карта файлів
 
@@ -162,9 +142,10 @@ cli/yara.c                          + прапори --docscan-json/-extract/-di
 docscan-project/
   SCAN-FLOW.md / SCAN-FLOW.en.md    цей документ (українська / англійська)
   rules/
-    docscan.yar                     мінімальний: import "docscan" (тільки наш детект)
-    docscan-index.yar               import "docscan" + include vendor → детект + Шар 2 (VBA)
-    file-index.yar                  vendor-правила по сирих байтах (прохід B watcher)
+    docscan-policy.yar              ПОЛІТИКА: що HIGH/MEDIUM, назви знахідок, що лікувати
+    docscan.yar                     include docscan-policy.yar (тільки наш детект)
+    docscan-index.yar               docscan-policy.yar + file-index.yar (детект + vendor + Шар 2)
+    file-index.yar                  vendor-правила (по файлу й по розпакованому VBA)
     general/                        165 правил signature-base "strict" (копія з reference)
     maldoc/                         36 документних правил (signature-base + community) + vba_plaintext.yar
   watcher/docscan-watcher.ps1       авто-скан нових файлів → results\docscan-results.json
@@ -212,7 +193,9 @@ docscan-project/
 
 ### 4.2 `docscan.c` — поля модуля і `module_load`
 
-**Поля** (`begin_declarations`), усі integer 0/1, крім рядків доказів:
+**Поля-прапорці** (`begin_declarations`), integer 0/1. Колонка «Рівень» — що з ними робить
+**політика за замовчуванням** (`docscan-policy.yar`); сам модуль рівнів не знає. Прапорці лишились
+для сумісності й зручності; політика переважно працює з фактами нижче.
 
 | Група | Поле | Рівень | Значення |
 |---|---|---|---|
@@ -240,12 +223,27 @@ docscan-project/
 | докази | `template_url` `dde_command` `vba_evidence` `lnk_target` `lnk_args` | — | рядки ≤ 511 символів |
 | Шар 2 | `vba_code` | — | весь розпакований VBA (≤ 2 МБ) для перескану vendor-правилами |
 
-\* `lnk_lolbin` у JSON рахується як MEDIUM, а для рішення «лікувати» — як HIGH (див. §13).
+**Факти для правил політики** (масиви обмежені; `*_truncated = 1`, якщо елементів було більше —
+напихання документа сміттям не повинно тихо ховати цікаве):
+
+| Поле | Тип | Що містить |
+|---|---|---|
+| `external_rels[i].part` / `.type` / `.target` | масив структур (≤ 256) | кожен `TargetMode="External"` зв'язок: з якого `.rels`, Type URI, Target як записано |
+| `number_of_external_rels`, `external_rels_truncated` | integer | |
+| `entries[i].name` / `.size` | масив (≤ 512) | кожна частина ZIP і її розмір із заголовка |
+| `number_of_entries`, `entries_truncated` | integer | |
+| `embedded[i].name` / `.size` / `.is_pe` / `.is_lnk` | масив (≤ 64) | кожен `embeddings/oleObject*.bin` |
+| `number_of_embedded` | integer | |
+| `dde[i]` | масив рядків (≤ 32) | кожна інструкція поля `DDE…`/`DDEAUTO…` (до `<` або `"`) |
+| `number_of_dde` | integer | |
+| `vba_code`, `lnk_target`, `lnk_args` | string | текст макросу; ціль і аргументи LNK |
+
+Приклад у правилі: `for any rel in docscan.external_rels : (rel.target matches /^https?:/i)`.
 
 | Функція | Що робить |
 |---|---|
 | `module_initialize` / `module_finalize` / `module_unload` | Порожні, `return ERROR_SUCCESS`. |
-| `module_load(context, module_object, …)` | 1) обнуляє `is_*`; 2) бере **перший** блок пам'яті (`foreach_memory_block` + `yr_fetch_block_data`; при скані файлу це весь файл); 3) `docscan_detect_magic` → ставить `is_<тип>=1` і викликає інспектор типу; 4) переносить усі поля `docscan_result_t` у поля модуля (`yr_set_integer` / `yr_set_string`); 5) `vba_code` — `yr_set_sized_string`, після чого звільняє буфер (або порожній рядок). |
+| `module_load(context, module_object, …)` | 0) виділяє `docscan_result_t` у купі (~250 КБ — не на малому стеку потоку сканера); 1) обнуляє `is_*`; 2) бере **перший** блок пам'яті (`foreach_memory_block` + `yr_fetch_block_data`; при скані файлу це весь файл); 3) `docscan_detect_magic` → ставить `is_<тип>=1` і викликає інспектор типу; 4) переносить усі поля `docscan_result_t` у поля модуля (`yr_set_integer` / `yr_set_string`); 5) `vba_code` — `yr_set_sized_string`, після чого звільняє буфер (або порожній рядок); 6) виставляє масиви фактів (`external_rels[%i]…`, `entries`, `embedded`, `dde`) і лічильники; звільняє результат. |
 
 ### 4.3 `inspect.h` — спільний результат
 
@@ -282,21 +280,22 @@ OOXML (docx/xlsx/pptx) — ZIP із DEFLATE, тому сирий пошук не
 
 | Функція | Що робить |
 |---|---|
-| `docscan_scan_rels(xml, size, r)` | Проходить кожен `<Relationship …>`; цікавлять лише `TargetMode="External"`. Якщо `Target` — protocol handler → `protocol_handler` + `template_url`. Інакше за останнім сегментом `Type`: `attachedTemplate` з віддаленим target → `remote_template` + `template_url`; `oleObject` → `external_ole`; `frame` → `external_frame`. |
+| `docscan_scan_rels(xml, size, part, r)` | Проходить кожен `<Relationship …>`; цікавлять лише `TargetMode="External"`. Кожен такий зв'язок записується у факти `external_rels[]` (з іменем `part`). Якщо `Target` — protocol handler → `protocol_handler` + `template_url`. Інакше за останнім сегментом `Type`: `attachedTemplate` з віддаленим target → `remote_template` + `template_url`; `oleObject` → `external_ole`; `frame` → `external_frame`. |
 | `get_attr(tag, len, "Attr=\"", out, sz)` | Значення атрибута в межах тега до наступної `"`. Якщо атрибута немає — буфер не чіпає (тому буфери ініціалізовані `""`). |
 | `starts_with_ci(s, prefix)` | Префікс без урахування регістру. |
-| `is_remote_target(t)` | `http(s)://`, `ftp(s)://`, `sftp://`, UNC `\\host\share`, `file://` (крім `file://localhost`). |
+| `is_remote_target(t)` | `http(s)://`, `ftp(s)://`, `sftp://`, UNC `\\host\share`, `file://host/…`, `file:////host/…`. `file:///C:/…` (без хоста) і `file://localhost` — локальні. |
 | `is_protocol_handler(t)` | `ms-msdt:`, `search-ms:`, `search:`, `ms-officecmd:`, `mhtml:`, `ms-word:`, `ms-excel:`, `ms-powerpoint:`, `!x-usc:`. |
 
 **`inspect_ooxml.c`**:
 
 | Функція | Що робить |
 |---|---|
-| `docscan_inspect_ooxml(data, size, r)` | Відкриває ZIP і за іменем кожного запису: `*.rels` → `docscan_scan_rels`; `*vbaProject.bin` → `macro_present=1` + `docscan_scan_vba_container`; тіло документа → `scan_dde`; `embeddings/oleObject*.bin` → `scan_embedded_ole`. |
+| `docscan_inspect_ooxml(data, size, r)` | Відкриває ZIP; кожну частину записує у факти `entries[]`; за іменем кожного запису: `*.rels` → `docscan_scan_rels`; `*vbaProject.bin` → `macro_present=1` + `docscan_scan_vba_container`; тіло документа → `scan_dde`; `embeddings/oleObject*.bin` → `scan_embedded_ole`. |
 | `is_body_xml(name)` | `word/document.xml`, `word/header*.xml`, `word/footer*.xml`, `xl/worksheets/sheet*.xml`, `xl/workbook.xml`. |
 | `is_embedded_ole(name)` | `embeddings/oleObject*.bin`. |
-| `scan_dde(xml, n, r)` | `DDEAUTO` (без регістру) → `dde_auto` + `dde_command` (фрагмент від `DDEAUTO` до `<`). Інакше `DDE ` + cmd/powershell/mshta/rundll32 → `dde_link`. |
-| `scan_embedded_ole(d, n, r)` | 20-байтова сигнатура LNK (header + CLSID) → `embedded_lnk` і розбір цього LNK (`docscan_inspect_lnk` → target/args); `MZ` з `e_lfanew` < 0x1000, що вказує на `PE\0\0` → `embedded_pe`. |
+| `record_dde(xml, n, r)` | Факт: кожна інструкція `DDEAUTO…` або `DDE …` (без регістру) до `<`/`"` → `dde[]` (≤ 32). |
+| `scan_dde(xml, n, r)` | Викликає `record_dde`; далі прапорці: `DDEAUTO` (без регістру) → `dde_auto` + `dde_command` (фрагмент від `DDEAUTO` до `<`). Інакше `DDE ` + cmd/powershell/mshta/rundll32 → `dde_link`. |
+| `scan_embedded_ole(d, n, e, r)` | Кожен об'єкт записується у `embedded[]` (ім'я, розмір, `is_pe`, `is_lnk`). 20-байтова сигнатура LNK (header + CLSID) → `embedded_lnk` і розбір цього LNK (`docscan_inspect_lnk` → target/args); `MZ` з `e_lfanew` < 0x1000, що вказує на `PE\0\0` → `embedded_pe`. |
 | `ends_with(s, suffix)` | Допоміжна. |
 
 ### 4.6 OLE і VBA: `cfb.c`, `msovba.c`, `vba.c`, `inspect_ole.c`
@@ -359,143 +358,185 @@ MS-OVBA. Ланцюжок: **CFB → потоки → пошук контейн�
 
 | Функція | Що робить |
 |---|---|
-| `docscan_disarm(path, info, out_action, sz)` | Диспетчер. LNK + `lnk_bad` → бекап + видалення (`deleted:lnk`). RTF + `rtf_objupdate` → бекап + `cure_rtf`. OOXML з будь-яким вектором → бекап + `cure_ooxml`. PDF/OLE → `detect-only`. |
-| `cure_ooxml(path, info, action, sz)` | Перепаковує ZIP через miniz у `<file>.docscan-tmp`: **не копіює** `vbaProject.bin`/`vbaData.xml` (макрос) і `embeddings/oleObject*.bin`; у `*.rels` видаляє `<Relationship>` з маркерами `vbaProject` / `oleObject` / `attachedTemplate` / `ms-msdt` / `search-ms`; у `[Content_Types].xml` — `<Override>` з `vbaProject`; у `word/document.xml`/header/footer `DDEAUTO` → `REMOVED`. Потім підміняє оригінал. Якщо будь-яку частину не вдалося прочитати (чи вона > 64 МБ) — лікування скасовується, оригінал не змінюється, дія `failed:unreadable-part`. Дії: `removed:vbaProject.bin`, `removed:embeddings`, `removed:remote-template`, `removed:protocol-rel`, `stripped:dde`. |
+| `docscan_disarm(path, info, out_action, sz)` | Диспетчер. Якщо політика не вказала жодної дії (вердикт HIGH без `meta.disarm`) → `detect-only`. LNK + `lnk_bad` → бекап + видалення (`deleted:lnk`). RTF + `rtf_objupdate` → бекап + `cure_rtf`. OOXML з будь-яким вектором → бекап + `cure_ooxml`. PDF/OLE → `detect-only`. |
+| `cure_ooxml(path, info, action, sz)` | Перепаковує ZIP через miniz у `<file>.docscan-tmp`: **не копіює** `vbaProject.bin`/`vbaData.xml` (макрос) і `embeddings/oleObject*.bin`; у `*.rels` видаляє `<Relationship>` з маркерами `vbaProject` / `oleObject` / `attachedTemplate` / усі обробники протоколів (`ms-msdt:`, `search-ms:`, `search:`, `ms-officecmd:`, `mhtml:`, `ms-word:`, `ms-excel:`, `ms-powerpoint:`, `!x-usc:`); у `[Content_Types].xml` — `<Override>` з `vbaProject`; у `word/document.xml`/header/footer `DDEAUTO` → `REMOVED`. Потім підміняє оригінал. Якщо будь-яку частину не вдалося прочитати (чи вона > 64 МБ) — лікування скасовується, оригінал не змінюється, дія `failed:unreadable-part`. Дії: `removed:vbaProject.bin`, `removed:embeddings`, `removed:remote-template`, `removed:protocol-rel`, `stripped:dde`. |
 | `cure_rtf(path, action, sz)` | `\objupdate` → `\objupdatX` (керуюче слово зламане, довжина та сама) → `stripped:objupdate`. |
 | `remove_elements(in, len, markers, n, &out_len)` | Копіює XML, викидаючи елементи `<Relationship …>` / `<Override …>`, що містять будь-який маркер. |
 | `strip_dde(buf, len)` | `DDEAUTO` → `REMOVED` на місці (7 символів, без «DDE», щоб не лишався `dde_link`). |
 | `backup(path)` | Копія в `<path>.docscan-bak`. |
 | `read_file` / `write_file` / `append` / `name_is` | Файл у пам'ять / запис; дописати дію через кому; перевірка суфікса імені. |
 
-### 4.9 Зміни в `cli/yara.c` (+314 рядків)
+### 4.9 Зміни в `cli/yara.c`
 
 **Прапори:**
 
 | Прапор | Змінна | Дія |
 |---|---|---|
-| `--docscan-json` | `docscan_json` | друкує один рядок JSON з результатом модуля; **придушує звичайний вивід збігів** правил по файлу |
+| `--docscan-json` | `docscan_json` | один рядок JSON на файл: знахідки й вердикт **з правил політики**, vendor-збіги по файлу й по VBA; **придушує звичайний вивід збігів** |
 | `--docscan-extract=FILE` | `docscan_extract` | пише `vba_code` у FILE (ручний Шар 2) |
-| `--docscan-disarm` | `docscan_disarm_flag` | лікує файл на місці після скану, якщо є HIGH-вектор |
+| `--docscan-disarm` | `docscan_disarm_flag` | після скану лікує файл за `meta.disarm` правил, що спрацювали; HIGH без дій → `detect-only` |
 
-Глобально: `g_rules` — покажчик на завантажені правила (присвоюється після компіляції/завантаження),
-потрібен для Шару 2. У `CALLBACK_ARGS` додано `docscan_disarm_info ds`.
+**Стан на файл** — `DOCSCAN_STATE` у `CALLBACK_ARGS` (`dsc`): `ftype`, копії доказів, копія `vba_code`,
+`max_severity`, `findings`, `details`, `file_matches`, `docscan_disarm_info ds`. Глобально: `g_rules` —
+завантажені правила (для Шару 2).
 
-**Точки входу в існуючий потік YARA:**
-- `callback()` → `CALLBACK_MSG_RULE_MATCHING/NOT_MATCHING`: у режимі `--docscan-json` одразу
-  `CALLBACK_CONTINUE` (виводиться лише JSON).
-- `callback()` → `CALLBACK_MSG_MODULE_IMPORTED` для об'єкта `docscan`:
-  з `--docscan-disarm` заповнює `ds` з полів модуля; з `--docscan-extract` пише `vba_code` у файл;
-  з `--docscan-json` викликає `print_docscan_json` (на Windows з перемиканням stdout у текстовий режим).
-- Після `yr_scanner_scan_file` (і в однопотоковому, і в багатопотоковому шляху): якщо
-  `--docscan-disarm && ds.present && ds.high` → `do_disarm`.
+**Чому так.** Модулі YARA вивантажуються в кінці `yr_execute_code`, **до** колбеків про збіги правил.
+Тому факти копіюються в момент `MODULE_IMPORTED`, збіги збираються на `RULE_MATCHING`, а JSON
+друкується на `SCAN_FINISHED`, коли відомо все.
 
-**Нові функції:**
+**Точки входу в потік YARA:**
+- `CALLBACK_MSG_MODULE_IMPORTED` (об'єкт `docscan`) → `docscan_capture`; з `--docscan-extract` — запис `vba_code`.
+- `CALLBACK_MSG_RULE_MATCHING` → `docscan_on_match`; у режимі `--docscan-json` звичайний вивід не друкується.
+- `CALLBACK_MSG_SCAN_FINISHED` → `print_docscan_json`.
+- Після `yr_scanner_scan_file` (одно- і багатопотоковий шлях): `--docscan-disarm` і (є дія з
+  політики **або** вердикт HIGH) → `do_disarm`.
+
+**Функції:**
 
 | Функція | Що робить |
 |---|---|
-| `print_docscan_json(module)` | Визначає `ftype`; за таблицею `F[]` збирає `findings` і рахує verdict (є HIGH → `HIGH`, інакше є MEDIUM → `MEDIUM`, інакше `INFO`); друкує `evidence`; **Шар 2**: якщо `vba_code` непорожній і `g_rules` є — створює другий `YR_SCANNER` з тими ж правилами, сканує `vba_code` у пам'яті (`yr_scanner_scan_mem`), збіги через `vendor_match_cb` → `yara_matches`. |
-| `vendor_match_cb(...)` | Колбек другого сканера: дописує ідентифікатори правил, що спрацювали (крім `_docscan_probe`), у JSON-масив (буфер 2 КБ). |
-| `docscan_json_evidence(m, field, defang, &first)` | Друкує одне поле доказів, якщо непорожнє (до 2 КБ), з defang для URL-полів (`template_url`, `dde_command`, `lnk_args`). |
-| `docscan_defang(s)` | `http` → `hxxp`, `ftp` → `fxp` (щоб URL у логах не були клікабельні). |
-| `docscan_json_puts(s)` | JSON-екранування: `"` `\` `\n` `\r` `\t`, керуючі < 0x20 → `\u00XX`. |
-| `do_disarm(file_path, ds)` | Викликає `docscan_disarm`, друкує `docscan-disarm: <шлях> -> <дія>`. На Windows Unicode-збірці конвертує wide-шлях у UTF-8 і тимчасово перемикає stdout у текстовий режим. |
-
-Умови `#if defined(_WIN32) && defined(_UNICODE)` навколо wide/UTF-8 коду — щоб файл збирався і
-MSVC (Unicode), і MinGW (ANSI), як в оригінальній YARA.
+| `docscan_capture(m, st)` | Скидає стан, визначає `ftype`/`ds.type`, копіює докази й `vba_code` з об'єкта модуля. |
+| `docscan_on_match(rule, st)` | Якщо в правила є `meta.severity` — **правило політики**: рахує `max_severity`, додає `meta.finding` (або ім'я правила) у `findings`, об'єкт у `details` (`rule`, `finding`, `severity`, `disarm`, `mitre`), `meta.disarm` → прапор у `ds`. Інакше — **vendor-правило** → `file_matches`. |
+| `docscan_meta(rule, name)` | Значення рядкового meta-поля правила (через `yr_rule_metas_foreach`). |
+| `print_docscan_json(st)` | Друкує JSON; **Шар 2**: другий `YR_SCANNER` з `g_rules` по копії `vba_code`, збіги через `vendor_match_cb` → `yara_matches`. |
+| `vendor_match_cb(...)` | Колбек другого сканера: додає правила **без** `meta.severity` (політика описує документи, не текст VBA). |
+| `docscan_json_evidence` / `docscan_defang` / `docscan_json_puts` | Друк доказів з defang (`http`→`hxxp`) і JSON-екрануванням. |
+| `docscan_list_add` / `docscan_list_has` / `docscan_state_reset` / `docscan_copy_string` | Допоміжні: JSON-списки, скидання стану (звільняє копію VBA), копіювання рядків модуля. |
+| `do_disarm(file_path, ds)` | `docscan_disarm` + рядок `docscan-disarm: <шлях> -> <дія>`; на Windows Unicode — wide→UTF-8. |
 
 **Формат JSON (рядок 1):**
 ```json
-{"ftype":"ooxml","findings":["MACRO_SUSPICIOUS","MACRO_PRESENT"],"verdict":"HIGH",
- "evidence":{"vba_evidence":"powershell | Shell | DownloadFile | AutoOpen"},
- "yara_matches":["gen_macro_ShellExecute_action"]}
+{"ftype":"ooxml","findings":["MACRO_PRESENT","MACRO_SUSPICIOUS","MACRO_AUTOEXEC"],"verdict":"HIGH",
+ "evidence":{"vba_evidence":"powershell | DownloadFile | AutoOpen"},
+ "yara_matches":["powershell","VBA_AutoExec_DownloadCradle"],
+ "yara_file_matches":["Contains_VBA_macro_code","office_document_vba"],
+ "details":[{"rule":"DS_MACRO_SUSPICIOUS","finding":"MACRO_SUSPICIOUS","severity":"HIGH","disarm":"macro","mitre":"T1204.002"}, …]}
 ```
-`ftype` ∈ ooxml/ole/rtf/pdf/lnk/unknown; `findings` — назви прапорів великими літерами;
-`evidence` — тільки непорожні поля; `yara_matches` — Шар 2 (порожній, якщо в index немає vendor-правил).
-**Рядок 2** (лише з `--docscan-disarm` і HIGH): `docscan-disarm: <шлях> -> <дія>[,<дія>…]`.
-
----
+`verdict` — найвищий `meta.severity` серед правил політики, що спрацювали (`INFO`, якщо жодне).
+`evidence` — непорожні рядки модуля (`vba_evidence` — інформативний список ключових слів із `vba.c`,
+на вердикт не впливає). **Рядок 2** (лише з `--docscan-disarm`): `docscan-disarm: <шлях> -> <дія>[,…]`
+або `detect-only`.
 
 ## 5. Поведінка: як проходить скан
 
 1. **Підготовка.** Оригінал не чіпаємо: для ручних тестів — копія `work.<ext>`
    (`run_tests.ps1` робить це сам і звіряє SHA256 оригіналів). Watcher сканує файл на місці.
-2. **Компіляція правил.** `index.yar` = `import "docscan"` + `include` vendor-правил → `g_rules`.
-3. **Модуль.** `module_load`: magic → інспектор → поля (див. §4).
-4. **ЕТАП 1 — детекція.** `print_docscan_json`: findings → verdict → evidence (defang) → JSON.
-
-   | HIGH | MEDIUM |
-   |---|---|
-   | REMOTE_TEMPLATE, PROTOCOL_HANDLER, DDE_AUTO, RTF_OBJUPDATE, PDF_JS_AUTO, PDF_LAUNCH, EMBEDDED_PE, EMBEDDED_LNK, MACRO_SUSPICIOUS, LNK_URL_ARGS, LNK_OBFUSCATED | MACRO_PRESENT, LNK_LOLBIN, EXTERNAL_OLE, EXTERNAL_FRAME, DDE_LINK, PDF_JS, PDF_OPENACTION, PDF_EMBEDDED |
-
-   `verdict`: **HIGH** → реагувати/лікувати; **MEDIUM** → переглянути; **INFO** → чисто.
-5. **ШАР 2.** Розпакований VBA (`vba_code`) пересканується тими ж правилами → `yara_matches`.
-   Звичайні `$string`-правила бачать тільки вхідний буфер, а VBA в документі стиснутий —
-   тому без Шару 2 vendor-правила макросу не бачать.
-6. **ЕТАП 2 — лікування** (тільки `--docscan-disarm` і є HIGH-вектор). Спершу бекап
+2. **Компіляція правил.** `docscan-index.yar` = `docscan-policy.yar` + `file-index.yar` → `g_rules`.
+3. **Модуль.** `module_load`: magic → інспектор → факти й прапорці (див. §4). Факти копіюються в CLI.
+4. **Правила на файлі.** Правила політики (`meta.severity`) → знахідки, вердикт, дії лікування;
+   решта правил → `yara_file_matches`.
+5. **ШАР 2.** Розпакований VBA пересканується тими ж правилами → `yara_matches`. Звичайні
+   `$string`-правила бачать тільки вхідний буфер, а VBA в документі стиснутий — без Шару 2
+   vendor-правила макросу не бачать.
+6. **ЕТАП 1 — JSON** на `SCAN_FINISHED`. `verdict`: **HIGH** → реагувати/лікувати; **MEDIUM** → переглянути; **INFO** → чисто.
+7. **ЕТАП 2 — лікування** (`--docscan-disarm`): дії з `meta.disarm` правил, що спрацювали. Спершу бекап
    `<file>.docscan-bak`, потім:
 
-   | Тип | Дія | Вивід | Документ |
+   | `meta.disarm` | Тип | Дія | Вивід |
    |---|---|---|---|
-   | OOXML макрос | вирізати `vbaProject.bin` + rels/content-type | `removed:vbaProject.bin` | лишається валідним |
-   | OOXML remote template | прибрати external-rel | `removed:remote-template` | лишається |
-   | OOXML Follina | прибрати protocol-rel | `removed:protocol-rel` | лишається |
-   | OOXML DDE | `DDEAUTO` → `REMOVED` | `stripped:dde` | лишається |
-   | OOXML embedded PE/LNK | вирізати embeddings | `removed:embeddings` | лишається |
-   | RTF | зламати `\objupdate` | `stripped:objupdate` | лишається |
-   | LNK | видалити (файл = вектор) | `deleted:lnk` | видалено (бекап є) |
-   | PDF / OLE | нічого (карантин — оркестратор) | `detect-only` | — |
-   | OOXML з частиною, що не читається / > 64 МБ | лікування скасовано | `failed:unreadable-part` | без змін (бекап є) |
-   | лише MEDIUM (напр. `external_ole`) | не лікується | — | без змін |
+   | `macro` | OOXML | вирізати `vbaProject.bin`/`vbaData.xml` + rels/content-type | `removed:vbaProject.bin` |
+   | `remote_template` | OOXML | прибрати external `attachedTemplate` rel | `removed:remote-template` |
+   | `protocol_handler` | OOXML | прибрати rel з обробником протоколу | `removed:protocol-rel` |
+   | `dde` | OOXML | `DDEAUTO` → `REMOVED` | `stripped:dde` |
+   | `embedded` | OOXML | вирізати `embeddings/oleObject*.bin` | `removed:embeddings` |
+   | `rtf_objupdate` | RTF | `\objupdate` → `\objupdatX` | `stripped:objupdate` |
+   | `lnk_delete` | LNK | видалити файл (бекап є) | `deleted:lnk` |
+   | — (HIGH без дій, напр. PDF) | будь-який | нічого | `detect-only` |
+   | будь-яка | OOXML з частиною, що не читається / > 64 МБ | лікування скасовано | `failed:unreadable-part` |
 
-7. **Контроль.** Повторний скан вилікуваної копії → очікуємо `INFO` (LNK відсутній, PDF лишається HIGH).
+   Дія, що не підходить до типу файлу (напр. `macro` для PDF), ігнорується. Legacy OLE (`.doc/.xls`) поки не лікується.
+8. **Контроль.** Повторний скан вилікуваної копії → очікуємо `INFO` (LNK відсутній, PDF лишається HIGH).
 
----
+## 6. Правила YARA і політика детекту
 
-## 6. Правила YARA
+### 6.1 Політика — `rules/docscan-policy.yar`
+
+Головний файл, який інженер налаштовує під себе. Кожне правило з `meta.severity` — правило політики:
+
+| meta | Обов'язкове | Значення |
+|---|---|---|
+| `severity` | так | `HIGH` / `MEDIUM` / `INFO` — позначає правило як політику |
+| `finding` | ні | назва в `findings` (за замовчуванням — ім'я правила) |
+| `disarm` | ні | що лікувати: `macro`, `remote_template`, `protocol_handler`, `dde`, `embedded`, `rtf_objupdate`, `lnk_delete` |
+| `mitre` | ні | ID техніки, потрапляє в `details` |
+
+Правило політики не може бути `private` (YARA не повідомляє про private-правила).
+
+**Політика за замовчуванням:**
+
+| Правило | Умова (коротко) | severity | disarm |
+|---|---|---|---|
+| `DS_REMOTE_TEMPLATE` | external `attachedTemplate` на http(s)/ftp/UNC/`file://host` (не `file:///C:`) | HIGH | `remote_template` |
+| `DS_PROTOCOL_HANDLER` | external target `ms-msdt:`, `search-ms:`, `search:`, `ms-officecmd:`, `mhtml:`, `ms-word:`… | HIGH | `protocol_handler` |
+| `DS_DDE_AUTO` | `dde[]` починається з `DDEAUTO` | HIGH | `dde` |
+| `DS_DDE_LINK` | `DDE ` + cmd/powershell/mshta/rundll32 | MEDIUM | — |
+| `DS_EMBEDDED_PE` / `DS_EMBEDDED_LNK` | `embedded[].is_pe` / `.is_lnk` | HIGH | `embedded` |
+| `DS_EXTERNAL_OLE` / `DS_EXTERNAL_FRAME` | external `oleObject` (не Follina) / `frame` | MEDIUM | — |
+| `DS_MACRO_PRESENT` | є VBA | MEDIUM | — |
+| `DS_MACRO_SUSPICIOUS` | у `vba_code`: Shell, WScript.Shell, powershell, cmd.exe, mshta, rundll32, regsvr32, certutil, bitsadmin, URLDownloadToFile, DownloadFile/String, FromBase64String, StrReverse; `.Run`/`.Exec` на об'єкті оболонки | HIGH | `macro` |
+| `DS_MACRO_AUTOEXEC` | AutoOpen, Document_Open, Workbook_Open… | MEDIUM | — |
+| `DS_MACRO_NETWORK` | XMLHTTP, WinHttp, InternetOpen, Net.WebClient | MEDIUM | — |
+| `DS_RTF_OBJUPDATE` | RTF і `\objupdate` | HIGH | `rtf_objupdate` |
+| `DS_PDF_LAUNCH` | `/Launch` | HIGH | — (detect-only) |
+| `DS_PDF_JS_AUTO` / `DS_PDF_JS` | `/JavaScript`/`/JS` з небезпечним API / без | HIGH / MEDIUM | — |
+| `DS_PDF_OPENACTION` / `DS_PDF_EMBEDDED` | `/OpenAction`/`/AA` без JS / `/EmbeddedFile` | MEDIUM | — |
+| `DS_LNK_URL_ARGS` | URL/UNC в аргументах | HIGH | `lnk_delete` |
+| `DS_LNK_OBFUSCATED` | `-enc`, `iex`, `-w hidden`, `downloadstring`… | HIGH | `lnk_delete` |
+| `DS_LNK_LOLBIN` | ціль — LOLBin | MEDIUM | — (ярлик не видаляється) |
+
+**Як змінювати:**
+```yara
+// зробити будь-який макрос з автозапуском HIGH:
+rule DS_MACRO_AUTOEXEC { meta: severity = "HIGH" finding = "MACRO_AUTOEXEC" disarm = "macro"
+  condition: docscan.vba_code matches /\b(AutoOpen|Document_Open|Workbook_Open)\b/i }
+
+// свій вектор: документ з частиною > 20 МБ
+rule ORG_HUGE_PART { meta: severity = "MEDIUM" finding = "HUGE_PART"
+  condition: for any e in docscan.entries : (e.size > 20MB) }
+```
+Після зміни — перевірити компіляцію (`yara64 -w docscan-policy.yar будь-який-файл`) і прогнати `run_tests.ps1`.
+
+**Що виявив тест на хибні спрацювання** (~4 000 відкритих документів, 2026-11-02) і що виправлено в
+політиці за замовчуванням: локальні шаблони `file:///C:\…` (раніше HIGH), `Selection.Find.Execute`
+(`.Exec`), `Application.Run "Macro"` (`.Run`), лише `Workbook_Open` чи `CreateObject` (раніше HIGH →
+тепер MEDIUM), ярлики меню «Пуск» на PowerShell/cmd (раніше видалялися б лікуванням). Офісних HIGH на
+чистих файлах POI — з 11 до 0; RTF 0; LNK 0 (19 MEDIUM).
+
+### 6.2 Файли правил
 
 | Файл | Для чого | Вміст |
 |---|---|---|
-| `rules/docscan.yar` | тільки наш детект | `import "docscan"` + `private rule _docscan_probe { condition: false }` → `yara_matches` завжди `[]` |
-| `rules/docscan-index.yar` | детект + Шар 2 (прохід A) | `import "docscan"` + `include "maldoc/signature-base/gen_macro_ShellExecute_action.yar"` (інші — закоментовані) |
-| `rules/file-index.yar` | сирі байти файлу (прохід B watcher) | 165 × `general/` + 33 × `maldoc/` (198 include) |
-| `rules/general/` | загальний YARA-скан | підмножина signature-base з `reference/vendor-rules-full-later/dist/index_strict.yar` (score ≥ 75), 1022 правила, 1.4 МБ |
+| `rules/docscan-policy.yar` | політика | `import "docscan"` + правила `DS_*` |
+| `rules/docscan.yar` | тільки наш детект | `include "docscan-policy.yar"` |
+| `rules/docscan-index.yar` | **повний скан** (watcher, run_tests) | `include "docscan-policy.yar"` + `include "file-index.yar"` |
+| `rules/file-index.yar` | vendor-правила | 165 × `general/` + 33 × `maldoc/` (198 include) |
+| `rules/general/` | загальний YARA-скан | підмножина signature-base з `index_strict.yar` (score ≥ 75), 1022 правила |
 | `rules/maldoc/` | документні правила | `signature-base/` 15 + `community/` 20 + `vba_plaintext.yar` |
-| `reference/vendor-rules-full-later/` | повний корпус (85 МБ) | signature-base + community + Elastic protections-artifacts; `gen_index.py` → `dist/index_strict.yar` (компілюється) і `index_advisory.yar` (потребує зовнішніх змінних `filename`/`filepath` — не використовуємо) |
+| `reference/vendor-rules-full-later/` | повний корпус (85 МБ, не в git) | `gen_index.py` → `dist/index_strict.yar` (компілюється), `index_advisory.yar` (потребує зовнішніх змінних — не використовуємо) |
 
-Правила для `index.yar`:
-- `import "docscan"` — першим.
+Правила для index-файлів:
 - Шляхи в `include` — **через `/`**, відносні до index-файлу або абсолютні (`\` YARA сприймає як escape).
-- Лише правила, що компілюються самостійно (без відсутніх модулів/зовнішніх змінних). Одне зламане
-  правило ламає весь index. Перевірка: `yara64 -w index.yar будь-який-файл` без помилок.
-- Ідентифікатори правил мають бути унікальні. У `file-index.yar` через дублікати виключено:
-  `maldoc/signature-base/exploit_rtf_ole2link.yar` (= community/Maldoc_malrtf_ole2link),
-  `maldoc/signature-base/susp_office_template_injection.yar` (= general/…),
-  `maldoc/signature-base/general_officemacros.yar` (конфлікт `Office_AutoOpen_Macro`; втрачено
-  `Office_as_MHTML`, `Docm_in_PDF`).
-
-Чому потрібні обидва проходи для документів: OOXML — це ZIP, тому правила по сирих байтах ловлять
-лише макроси (`Contains_VBA_macro_code`, `office_document_vba`), LNK (`powershell`) і PDF; remote
-template, Follina, DDE, embedded бачить **тільки** модуль docscan.
-
----
+- Лише правила, що компілюються самостійно. Одне зламане правило ламає весь index.
+- Ідентифікатори правил унікальні. У `file-index.yar` через дублікати виключено:
+  `maldoc/signature-base/exploit_rtf_ole2link.yar`, `…/susp_office_template_injection.yar`,
+  `…/general_officemacros.yar` (втрачено `Office_as_MHTML`, `Docm_in_PDF`).
+- У vendor-правил **немає** `meta.severity` — інакше CLI вважатиме їх політикою.
 
 ## 7. Watcher — авто-скан нових файлів
 
-`docscan-project/watcher/docscan-watcher.ps1` (PowerShell 5.1, UTF-8 з BOM).
+`docscan-project/watcher/docscan-watcher.ps1` (PowerShell 5.1, UTF-8 з BOM). **Один запуск `yara64` на файл.**
 
 ### Що сканується
 
 | Категорія | Розширення | Скан |
 |---|---|---|
-| `document` | doc dot docx docm dotx dotm, xls xlt xlsx xlsm xltx xltm xlsb, ppt pps pot pptx pptm potx potm ppsx ppsm, rtf, pdf, lnk | **B** + **A** |
-| `general` | exe dll sys scr cpl ocx com msi, ps1 psm1 vbs vbe js jse wsf wsh hta bat cmd jar, zip rar 7z iso img vhd vhdx | тільки **B** |
+| `document` | doc dot docx docm dotx dotm, xls xlt xlsx xlsm xltx xltm xlsb, ppt pps pot pptx pptm potx potm ppsx ppsm, rtf, pdf, lnk | `yara64 -w --docscan-json [--docscan-disarm] docscan-index.yar` |
+| `general` | exe dll sys scr cpl ocx com msi, ps1 psm1 vbs vbe js jse wsf wsh hta bat cmd jar, zip rar 7z iso img vhd vhdx | те саме без `--docscan-disarm` (працюють тільки vendor-правила) |
 | інше | — | ігнорується |
 
-- **A** — `yara64 --docscan-json [--docscan-disarm] docscan-index.yar <file>`.
-- **B** — `yara64 -w file-index.yar <file>` (до лікування, по оригінальних байтах).
-- **Verdict запису:** document = verdict docscan, але якщо спрацювало правило B — щонайменше
-  `MEDIUM`; general = `HIGH`, якщо спрацювало B, інакше `INFO`; також `SKIPPED` (> `-MaxSizeMB`),
-  `ERROR` (скан не вдався).
+- **Verdict запису:** verdict із JSON (політика); якщо є `yara_file_matches` — document щонайменше
+  `MEDIUM`, general → `HIGH`. Також `SKIPPED` (> `-MaxSizeMB`), `ERROR` (скан не вдався).
+- Vendor-правила бачать байти **до** лікування: yara збирає збіги до `--docscan-disarm`.
 - **Не скануються** (`-ExcludePattern`): `results\`, `*.docscan-bak`, lock-файли Office `~$*`,
   `$Recycle.Bin`, кеші браузерів/Packages/OneDrive/WebCache, `Recent` (там `.lnk` на кожне відкриття).
 
@@ -505,24 +546,23 @@ template, Follina, DDE, embedded бачить **тільки** модуль docs
 2. Подія → словник `pending` (кілька подій по файлу зливаються).
 3. Після `-SettleSeconds` тиші — `Wait-FileReady`: файл відкривається на читання і розмір стабільний
    (до `-ReadyTimeout` с).
-4. Якщо SHA256 збігається з минулим сканом цього шляху — пропуск (Word/провідник шлють кілька подій).
-5. `Scan-File`: SHA256, прохід B, для document — прохід A; запис JSON-рядка + рядок у лог.
+4. Якщо SHA256 збігається з минулим сканом цього шляху — пропуск.
+5. `Scan-File`: SHA256 → `Invoke-Scan` → запис JSON-рядка + рядок у лог.
 6. Ctrl+C / зупинка завдання → `finally`: відписка від подій, `Dispose` watcher-ів.
-На старті перевіряє, що `yara64.exe` і обидва index-и є та компілюються.
+На старті перевіряє, що `yara64.exe` і `-Rules` є та компілюються.
 
 | Функція | Що робить |
 |---|---|
 | `Get-Category` | `document` / `general` / `$null` за розширенням |
 | `Test-Excluded` | шлях у `OutDir` або відповідає `-ExcludePattern` |
 | `Wait-FileReady` | `ready` / `gone` / `timeout` |
-| `Invoke-FileScan` | прохід B → імена правил + помилки |
-| `Invoke-DocScan` | прохід A → розібраний JSON docscan + дія лікування |
+| `Invoke-Scan` | один запуск `yara64` → розібраний JSON + дія лікування |
 | `Scan-File` | збирає запис, рахує verdict, пише JSON і лог |
 | `Max-Verdict` / `Log` | максимум з двох вердиктів; лог у консоль і `watcher.log` |
 
 ### Параметри
 
-`-WatchPath` (`C:\Users`), `-Base` (`C:\docscan-build`), `-Yara`, `-DocRules`, `-FileRules`,
+`-WatchPath` (`C:\Users`), `-Base` (`C:\docscan-build`), `-Yara`, `-Rules` (`<Base>\yara\docscan-project\rules\docscan-index.yar`),
 `-OutDir` (`<Base>\results`), `-Disarm` (вимкнено), `-MaxSizeMB` (100), `-SettleSeconds` (2),
 `-ReadyTimeout` (60), `-DocExt`, `-GenExt`, `-ExcludePattern`.
 
@@ -532,7 +572,7 @@ template, Follina, DDE, embedded бачить **тільки** модуль docs
 # вручну (Ctrl+C — стоп)
 powershell -ExecutionPolicy Bypass -File C:\docscan-build\yara\docscan-project\watcher\docscan-watcher.ps1
 
-# кілька тек і лікування HIGH-документів (масив — тільки через -Command)
+# кілька тек і лікування за політикою (масив — тільки через -Command)
 powershell -ExecutionPolicy Bypass -Command "& 'C:\...\docscan-watcher.ps1' -WatchPath 'C:\docscan-build\inbox','C:\Users' -Disarm"
 
 # фоном як SYSTEM
@@ -550,15 +590,15 @@ Start-ScheduledTask docscan-watcher          # Stop-ScheduledTask docscan-watche
   {"timestamp":"2026-11-02T13:24:36.205+02:00","source":"docscan","host":"WIN-TEST","event":"Created",
    "category":"document","file":{"path":"C:\\...\\Rakhunok_2026_315368.docm","name":"Rakhunok_2026_315368.docm",
    "ext":".docm","size":1924,"sha256":"822f99e6…"},"verdict":"HIGH",
-   "docscan":{"ftype":"ooxml","findings":["MACRO_SUSPICIOUS","MACRO_PRESENT"],"verdict":"HIGH",
-              "evidence":{"vba_evidence":"powershell | WScript.Shell | …"},"yara_matches":[]},
+   "docscan":{"ftype":"ooxml","findings":["MACRO_PRESENT","MACRO_SUSPICIOUS","MACRO_AUTOEXEC","MACRO_NETWORK"],
+              "verdict":"HIGH","evidence":{"vba_evidence":"powershell | WScript.Shell | …"},
+              "yara_matches":["powershell","VBA_AutoExec_DownloadCradle"],
+              "yara_file_matches":["Contains_VBA_macro_code","office_document_vba"],"details":[…]},
    "yara_file_matches":["Contains_VBA_macro_code","office_document_vba"],"disarm":null,"errors":[]}
   ```
 - `results\watcher.log` — людський лог. Дивитись наживо:
   `Get-Content C:\docscan-build\results\watcher.log -Encoding UTF8 -Wait` (без `-Encoding UTF8`
   PowerShell 5.1 ламає кирилицю).
-
----
 
 ## 8. Запуск — шпаргалка
 
@@ -569,21 +609,21 @@ $r   = "C:\docscan-build\yara\docscan-project\rules"
 
 | Хочу | Команда |
 |---|---|
-| Тільки подивитись загрозу | `& $y --docscan-json $r\docscan-index.yar <file>` |
-| + лікувати (**на копії!**) | `Copy-Item <file> C:\docscan-build\work.docm -Force; & $y --docscan-json --docscan-disarm $r\docscan-index.yar C:\docscan-build\work.docm` |
-| Тільки лікувати | `& $y --docscan-disarm $r\docscan-index.yar <copy>` (друкує лише рядок дії) |
-| Витягти VBA у файл | `& $y --docscan-extract=vba.out $r\docscan.yar <file>` → `& $y vendor.yar vba.out` |
-| Подивитись усі поля модуля | `& $y -D $r\docscan.yar <file>` |
-| Звичайний YARA-скан файлу | `& $y -w $r\file-index.yar <file>` |
+| Повний скан (політика + vendor + Шар 2) | `& $y -w --docscan-json $r\docscan-index.yar <file>` |
+| Тільки наш детект | `& $y -w --docscan-json $r\docscan.yar <file>` |
+| + лікувати (**на копії!**) | `Copy-Item <file> C:\docscan-build\work.docm -Force; & $y -w --docscan-json --docscan-disarm $r\docscan-index.yar C:\docscan-build\work.docm` |
+| Тільки лікувати | `& $y -w --docscan-disarm $r\docscan-index.yar <copy>` (друкує звичайні збіги + рядок дії) |
+| Які правила політики спрацювали | `& $y -w $r\docscan-policy.yar <file>` |
+| Подивитись усі факти модуля | `& $y -D $r\docscan.yar <file>` |
+| Витягти VBA у файл | `& $y --docscan-extract=vba.out $r\docscan.yar <file>` |
+| Змінити, що вважати HIGH / що лікувати | редагувати `docscan-policy.yar` (§6.1) |
 | Регресійний тест | `powershell -ExecutionPolicy Bypass -File ...\test-range\run_tests.ps1 -Yara $y -Samples ...\test-samples -Rules $r\docscan-index.yar` |
 | Авто-скан нових файлів | §7 |
 
-Свої правила в YARA-умовах: `import "docscan"` + `condition: docscan.remote_template` тощо — усі поля з §4.2.
+`-w` прибирає попередження компілятора vendor-правил (`file-index.yar`).
 
 **Золоті правила:** лікування — завжди на копії (оригінали в `test-samples` недоторкані);
-у `index.yar` — `import "docscan"` + `include` з `/` і лише чисті правила.
-
----
+у `include` — шляхи з `/`; у vendor-правил немає `meta.severity`.
 
 ## 9. Збірка
 
@@ -721,6 +761,7 @@ cd /tmp/docscan-fuzz
 - macOS: усі вектори.
 - Windows 10 (MSVC): 12 полігон + 7 реальних, детект + лікування, Шар 2 — 2026-10-30.
 - Чиста VM Windows 11 (MSVC v143, свіжа збірка): `run_tests.ps1` з обома index — 2026-11-02.
+- Політика в правилах (2026-11-02, macOS): 19/19 вердиктів і дій лікування як в еталоні; тест на хибні спрацювання — див. §6.1.
 - Watcher на VM: 23 файли в `inbox`/`Downloads` + ручні документи на робочому столі (2 чисті
   робочі звіти → INFO, 3 семпли → HIGH) — 2026-11-02. Хибних спрацювань не було.
 
@@ -766,35 +807,35 @@ watcher → results\docscan-results.json (JSON Lines) → агент Wazuh (loca
 
 ## 13. Відомі обмеження і нюанси
 
-**Модуль / лікування**
-- `LNK_LOLBIN`: у JSON — MEDIUM, а для лікування — HIGH. LNK лише з lolbin отримає verdict MEDIUM,
-  але буде видалений. Треба узгодити.
-- MEDIUM-вектори (`external_ole`, `external_frame`, `dde_link`) не лікуються.
-- PDF і OLE — тільки детект (карантин — зовнішній).
+**Модуль / політика / лікування**
+- Правила бачать `vba_code` повністю, **включно з коментарями**: закоментований `Shell` теж спрацює.
+- Масиви фактів обмежені (rels 256, entries 512, embedded 64, dde 32); при переповненні `*_truncated = 1`.
+- DDE, розбитий на кілька `<w:instrText>` (`DDE` + `AUTO` в різних runs), не склеюється — відомий спосіб обходу.
+- Легасі OLE (`.doc/.xls`) і PDF не лікуються (дія з політики для них ігнорується; HIGH → `detect-only`).
+- `protocol_handler`-лікування прибирає rel за маркерами обробників; свої нові схеми в правилі треба
+  додати й у `disarm.c`, інакше rel лишиться.
 - **Лікування на Windows з не-ASCII шляхом:** `disarm.c` відкриває файл через `fopen` з UTF-8
   шляхом; MSVC `fopen` трактує його як ANSI → кирилична назва файлу, ймовірно, не вилікується
-  (детект працює). Потрібен `_wfopen`. Watcher з `-Disarm` на таких файлах — перевірити/виправити.
+  (детект працює). Потрібен `_wfopen`.
 - CFB — лише v3 (сектор 512, офсети від 512); CFB v4 (сектор 4096) розбереться неправильно.
 - LNK: UTF-16 рядки беруться молодшим байтом (кирилиця в target/args спотворюється);
   target — тільки з `LocalBasePath`.
 - Модуль аналізує лише перший блок пам'яті (для файлів — увесь файл; для скану процесів не призначений).
-- `vba_code` ≤ 2 МБ, `yara_matches` ≤ 2 КБ, докази ≤ 511 символів; частини OOXML > 64 МБ не аналізуються.
+- `vba_code` ≤ 2 МБ, `yara_matches` ≤ 4 КБ, докази ≤ 511 символів; частини OOXML > 64 МБ не аналізуються.
+- Якщо скан завершився помилкою (таймаут), JSON-рядка для файлу немає (друкується на `SCAN_FINISHED`).
 
 **CLI**
-- `--docscan-json` придушує звичайний вивід збігів по файлу — тому watcher робить окремий прохід B.
+- `--docscan-json` придушує звичайний вивід збігів — vendor-збіги є в `yara_file_matches`.
 
 **Watcher**
 - Defender у звичайних теках може забрати шкідливий файл раніше → у лозі `зник до скану`, у JSON запису немає.
-- `invalid_trailer_structure` / `invalid_xref_numbers` (maldoc/PDF) шумні: зіпсований чистий PDF → MEDIUM.
+- `invalid_trailer_structure` / `invalid_xref_numbers` (maldoc/PDF) шумні: зіпсований чистий PDF → `yara_file_matches` → MEDIUM.
 - Архіви скануються як є, без розпакування.
 - Переповнення буфера FileSystemWatcher (тисячі файлів разом) → частина подій втрачається (пишеться в лог).
 - `results\docscan-results.json` не ротується.
 
 **Репозиторій**
-- vcxproj зберігають закінчення рядків CRLF (як в upstream) — не перезберігати їх з LF, інакше
-  дифф роздувається на весь файл.
-
----
+- vcxproj зберігають закінчення рядків CRLF (як в upstream) — не перезберігати їх з LF.
 
 ## 14. Git і ліцензії
 

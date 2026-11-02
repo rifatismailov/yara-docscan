@@ -88,11 +88,33 @@ typedef struct _MODULE_DATA
 
 } MODULE_DATA;
 
+// Per-file docscan state. The module is unloaded before rule callbacks run,
+// so its facts are copied at CALLBACK_MSG_MODULE_IMPORTED; matching policy
+// rules (meta.severity) are collected at CALLBACK_MSG_RULE_MATCHING; the JSON
+// line is printed at CALLBACK_MSG_SCAN_FINISHED.
+typedef struct _DOCSCAN_STATE
+{
+  int active;                // docscan module ran for this file
+  const char* ftype;
+  char template_url[512];
+  char dde_command[512];
+  char vba_evidence[512];
+  char lnk_target[512];
+  char lnk_args[512];
+  char* vba;                 // copy of docscan.vba_code (Layer-2 re-scan)
+  size_t vba_len;
+  int max_severity;          // 0 INFO, 1 MEDIUM, 2 HIGH
+  char findings[2048];       // JSON tokens: "A","B"
+  char details[8192];        // JSON objects, one per matching policy rule
+  char file_matches[4096];   // JSON tokens: vendor rules matching the raw file
+  docscan_disarm_info ds;    // what --docscan-disarm should remove
+} DOCSCAN_STATE;
+
 typedef struct _CALLBACK_ARGS
 {
   const char_t* file_path;
   int current_count;
-  docscan_disarm_info ds;  // captured docscan findings (for --docscan-disarm)
+  DOCSCAN_STATE dsc;
 
 } CALLBACK_ARGS;
 
@@ -1251,21 +1273,16 @@ static void docscan_defang(char* s)
 }
 
 static void docscan_json_evidence(
-    YR_OBJECT* m,
     const char* field,
+    const char* value,
     int defang,
     int* first)
 {
-  SIZED_STRING* s = yr_object_get_string(m, field);
-  if (s == NULL || s->length == 0)
+  if (value == NULL || value[0] == '\0')
     return;
 
-  char buf[2048];
-  size_t n = (size_t) s->length;
-  if (n >= sizeof(buf))
-    n = sizeof(buf) - 1;
-  memcpy(buf, s->c_string, n);
-  buf[n] = '\0';
+  char buf[1024];
+  snprintf(buf, sizeof(buf), "%s", value);
 
   if (defang)
     docscan_defang(buf);
@@ -1274,6 +1291,158 @@ static void docscan_json_evidence(
   docscan_json_puts(buf);
   putchar('"');
   *first = 0;
+}
+
+// Appends a JSON-quoted, escaped token to a comma-separated list (bounded).
+static void docscan_list_add(char* list, size_t sz, const char* token)
+{
+  size_t l = strlen(list);
+  char esc[512];
+  size_t k = 0;
+  for (const char* p = token; *p && k + 2 < sizeof(esc); p++)
+  {
+    if (*p == '"' || *p == '\\')
+      esc[k++] = '\\';
+    esc[k++] = *p;
+  }
+  esc[k] = '\0';
+  if (l + strlen(esc) + 4 < sz)
+    snprintf(list + l, sz - l, "%s\"%s\"", l ? "," : "", esc);
+}
+
+static int docscan_list_has(const char* list, const char* token)
+{
+  char q[512];
+  snprintf(q, sizeof(q), "\"%s\"", token);
+  return strstr(list, q) != NULL;
+}
+
+static void docscan_state_reset(DOCSCAN_STATE* st)
+{
+  free(st->vba);
+  memset(st, 0, sizeof(*st));
+}
+
+static void docscan_copy_string(YR_OBJECT* m, const char* field, char* out, size_t sz)
+{
+  SIZED_STRING* s = yr_object_get_string(m, field);
+  size_t n = (s == NULL) ? 0 : (size_t) s->length;
+  if (n >= sz)
+    n = sz - 1;
+  if (n)
+    memcpy(out, s->c_string, n);
+  out[n] = '\0';
+}
+
+// CALLBACK_MSG_MODULE_IMPORTED: copy the facts the JSON line and disarm need.
+static void docscan_capture(YR_OBJECT* m, DOCSCAN_STATE* st)
+{
+  docscan_state_reset(st);
+  st->active = 1;
+  st->ds.present = 1;
+
+  st->ftype = "unknown";
+  if (yr_object_get_integer(m, "is_ooxml") == 1) { st->ftype = "ooxml"; st->ds.type = 1; }
+  else if (yr_object_get_integer(m, "is_ole") == 1) { st->ftype = "ole"; st->ds.type = 2; }
+  else if (yr_object_get_integer(m, "is_rtf") == 1) { st->ftype = "rtf"; st->ds.type = 3; }
+  else if (yr_object_get_integer(m, "is_pdf") == 1) { st->ftype = "pdf"; st->ds.type = 4; }
+  else if (yr_object_get_integer(m, "is_lnk") == 1) { st->ftype = "lnk"; st->ds.type = 5; }
+
+  docscan_copy_string(m, "template_url", st->template_url, sizeof(st->template_url));
+  docscan_copy_string(m, "dde_command", st->dde_command, sizeof(st->dde_command));
+  docscan_copy_string(m, "vba_evidence", st->vba_evidence, sizeof(st->vba_evidence));
+  docscan_copy_string(m, "lnk_target", st->lnk_target, sizeof(st->lnk_target));
+  docscan_copy_string(m, "lnk_args", st->lnk_args, sizeof(st->lnk_args));
+
+  SIZED_STRING* vba = yr_object_get_string(m, "vba_code");
+  if (vba != NULL && vba->length > 0)
+  {
+    st->vba = (char*) malloc((size_t) vba->length);
+    if (st->vba != NULL)
+    {
+      memcpy(st->vba, vba->c_string, (size_t) vba->length);
+      st->vba_len = (size_t) vba->length;
+    }
+  }
+}
+
+static const char* docscan_meta(YR_RULE* rule, const char* name)
+{
+  YR_META* meta;
+  yr_rule_metas_foreach(rule, meta)
+  {
+    if (meta->type == META_TYPE_STRING && strcmp(meta->identifier, name) == 0)
+      return meta->string;
+  }
+  return NULL;
+}
+
+// CALLBACK_MSG_RULE_MATCHING: a rule with meta.severity is a policy rule
+// (finding + severity + disarm action); any other rule is a vendor match.
+static void docscan_on_match(YR_RULE* rule, DOCSCAN_STATE* st)
+{
+  const char* sev = docscan_meta(rule, "severity");
+
+  if (sev == NULL)
+  {
+    docscan_list_add(st->file_matches, sizeof(st->file_matches), rule->identifier);
+    return;
+  }
+
+  int level = 0;
+  if (strcmp(sev, "HIGH") == 0 || strcmp(sev, "high") == 0)
+    level = 2;
+  else if (strcmp(sev, "MEDIUM") == 0 || strcmp(sev, "medium") == 0)
+    level = 1;
+  if (level > st->max_severity)
+    st->max_severity = level;
+
+  const char* finding = docscan_meta(rule, "finding");
+  if (finding == NULL)
+    finding = rule->identifier;
+  if (!docscan_list_has(st->findings, finding))
+    docscan_list_add(st->findings, sizeof(st->findings), finding);
+
+  const char* disarm = docscan_meta(rule, "disarm");
+  const char* mitre = docscan_meta(rule, "mitre");
+
+  // {"rule":"..","finding":"..","severity":"..","disarm":"..","mitre":".."}
+  char obj[1024], tok[512];
+  tok[0] = '\0'; docscan_list_add(tok, sizeof(tok), rule->identifier);
+  snprintf(obj, sizeof(obj), "{\"rule\":%s", tok);
+  tok[0] = '\0'; docscan_list_add(tok, sizeof(tok), finding);
+  snprintf(obj + strlen(obj), sizeof(obj) - strlen(obj), ",\"finding\":%s", tok);
+  tok[0] = '\0'; docscan_list_add(tok, sizeof(tok), level == 2 ? "HIGH" : level == 1 ? "MEDIUM" : "INFO");
+  snprintf(obj + strlen(obj), sizeof(obj) - strlen(obj), ",\"severity\":%s", tok);
+  if (disarm != NULL)
+  {
+    tok[0] = '\0'; docscan_list_add(tok, sizeof(tok), disarm);
+    snprintf(obj + strlen(obj), sizeof(obj) - strlen(obj), ",\"disarm\":%s", tok);
+  }
+  if (mitre != NULL)
+  {
+    tok[0] = '\0'; docscan_list_add(tok, sizeof(tok), mitre);
+    snprintf(obj + strlen(obj), sizeof(obj) - strlen(obj), ",\"mitre\":%s", tok);
+  }
+  snprintf(obj + strlen(obj), sizeof(obj) - strlen(obj), "}");
+  size_t l = strlen(st->details);
+  if (l + strlen(obj) + 2 < sizeof(st->details))
+    snprintf(st->details + l, sizeof(st->details) - l, "%s%s", l ? "," : "", obj);
+
+  // Disarm actions are chosen by the policy, not by the module.
+  if (disarm != NULL)
+  {
+    docscan_disarm_info* ds = &st->ds;
+    if (strcmp(disarm, "macro") == 0) ds->macro = 1;
+    else if (strcmp(disarm, "remote_template") == 0) ds->remote_template = 1;
+    else if (strcmp(disarm, "protocol_handler") == 0) ds->protocol_handler = 1;
+    else if (strcmp(disarm, "dde") == 0) ds->dde_auto = 1;
+    else if (strcmp(disarm, "embedded") == 0) ds->embedded = 1;
+    else if (strcmp(disarm, "rtf_objupdate") == 0) ds->rtf_objupdate = 1;
+    else if (strcmp(disarm, "lnk_delete") == 0) ds->lnk_bad = 1;
+    else return;
+    ds->high = 1;  // "something to cure"
+  }
 }
 
 // Collects matched rule names (as JSON-quoted tokens) during the VBA re-scan.
@@ -1292,104 +1461,51 @@ static int vendor_match_cb(
   if (message == CALLBACK_MSG_RULE_MATCHING)
   {
     YR_RULE* r = (YR_RULE*) message_data;
-    if (r->identifier && strcmp(r->identifier, "_docscan_probe") != 0)
+    // policy rules (meta.severity) describe documents, not VBA text
+    if (r->identifier && docscan_meta(r, "severity") == NULL)
     {
       vmatch_collect* v = (vmatch_collect*) user_data;
-      size_t l = strlen(v->buf);
-      if (l + strlen(r->identifier) + 4 < v->sz)
-        snprintf(
-            v->buf + l, v->sz - l, "%s\"%s\"", l ? "," : "", r->identifier);
+      docscan_list_add(v->buf, v->sz, r->identifier);
     }
   }
   return CALLBACK_CONTINUE;
 }
 
-static void print_docscan_json(YR_OBJECT* module)
+// CALLBACK_MSG_SCAN_FINISHED: one JSON line per file.
+static void print_docscan_json(DOCSCAN_STATE* st)
 {
-  static const struct
-  {
-    const char* field;
-    const char* name;
-    int high;
-  } F[] = {
-      {"remote_template", "REMOTE_TEMPLATE", 1},
-      {"protocol_handler", "PROTOCOL_HANDLER", 1},
-      {"dde_auto", "DDE_AUTO", 1},
-      {"rtf_objupdate", "RTF_OBJUPDATE", 1},
-      {"pdf_js_auto", "PDF_JS_AUTO", 1},
-      {"pdf_launch", "PDF_LAUNCH", 1},
-      {"embedded_pe", "EMBEDDED_PE", 1},
-      {"embedded_lnk", "EMBEDDED_LNK", 1},
-      {"macro_suspicious", "MACRO_SUSPICIOUS", 1},
-      {"lnk_url_args", "LNK_URL_ARGS", 1},
-      {"lnk_obfuscated", "LNK_OBFUSCATED", 1},
-      {"macro_present", "MACRO_PRESENT", 0},
-      {"lnk_lolbin", "LNK_LOLBIN", 0},
-      {"external_ole", "EXTERNAL_OLE", 0},
-      {"external_frame", "EXTERNAL_FRAME", 0},
-      {"dde_link", "DDE_LINK", 0},
-      {"pdf_js", "PDF_JS", 0},
-      {"pdf_openaction", "PDF_OPENACTION", 0},
-      {"pdf_embedded", "PDF_EMBEDDED", 0},
-      {NULL, NULL, 0}};
+  const char* verdict = st->max_severity == 2   ? "HIGH"
+                        : st->max_severity == 1 ? "MEDIUM"
+                                                : "INFO";
 
-  const char* ftype = "unknown";
-  if (yr_object_get_integer(module, "is_ooxml") == 1)
-    ftype = "ooxml";
-  else if (yr_object_get_integer(module, "is_ole") == 1)
-    ftype = "ole";
-  else if (yr_object_get_integer(module, "is_rtf") == 1)
-    ftype = "rtf";
-  else if (yr_object_get_integer(module, "is_pdf") == 1)
-    ftype = "pdf";
-  else if (yr_object_get_integer(module, "is_lnk") == 1)
-    ftype = "lnk";
-
-  int any_high = 0, any_medium = 0, first = 1;
-
-  printf("{\"ftype\":\"%s\",\"findings\":[", ftype);
-  for (int i = 0; F[i].field != NULL; i++)
-  {
-    if (yr_object_get_integer(module, F[i].field) == 1)
-    {
-      printf("%s\"%s\"", first ? "" : ",", F[i].name);
-      first = 0;
-      if (F[i].high)
-        any_high = 1;
-      else
-        any_medium = 1;
-    }
-  }
-
-  const char* verdict = any_high ? "HIGH" : (any_medium ? "MEDIUM" : "INFO");
-  printf("],\"verdict\":\"%s\",\"evidence\":{", verdict);
+  printf("{\"ftype\":\"%s\",\"findings\":[%s],\"verdict\":\"%s\",\"evidence\":{",
+         st->ftype, st->findings, verdict);
 
   int fe = 1;
-  docscan_json_evidence(module, "template_url", 1, &fe);
-  docscan_json_evidence(module, "dde_command", 1, &fe);
-  docscan_json_evidence(module, "vba_evidence", 0, &fe);
-  docscan_json_evidence(module, "lnk_target", 0, &fe);
-  docscan_json_evidence(module, "lnk_args", 1, &fe);
+  docscan_json_evidence("template_url", st->template_url, 1, &fe);
+  docscan_json_evidence("dde_command", st->dde_command, 1, &fe);
+  docscan_json_evidence("vba_evidence", st->vba_evidence, 0, &fe);
+  docscan_json_evidence("lnk_target", st->lnk_target, 0, &fe);
+  docscan_json_evidence("lnk_args", st->lnk_args, 1, &fe);
   printf("}");  // close "evidence"
 
-  // Layer-2: auto re-scan the decompressed VBA with the loaded rules
-  // (vendor rules pulled in via `include` inside docscan.yar).
-  char vmatches[2048] = "";
-  SIZED_STRING* vba = yr_object_get_string(module, "vba_code");
-  if (g_rules != NULL && vba != NULL && vba->length > 0)
+  // Layer-2: re-scan the decompressed VBA with the loaded rules.
+  char vmatches[4096] = "";
+  if (g_rules != NULL && st->vba != NULL && st->vba_len > 0)
   {
     YR_SCANNER* sc2 = NULL;
     if (yr_scanner_create(g_rules, &sc2) == ERROR_SUCCESS)
     {
       vmatch_collect vm = {vmatches, sizeof(vmatches)};
       yr_scanner_set_callback(sc2, vendor_match_cb, &vm);
-      yr_scanner_scan_mem(
-          sc2, (const uint8_t*) vba->c_string, (size_t) vba->length);
+      yr_scanner_scan_mem(sc2, (const uint8_t*) st->vba, st->vba_len);
       yr_scanner_destroy(sc2);
     }
   }
-  printf(",\"yara_matches\":[%s]", vmatches);
 
+  printf(",\"yara_matches\":[%s]", vmatches);
+  printf(",\"yara_file_matches\":[%s]", st->file_matches);
+  printf(",\"details\":[%s]", st->details);
   printf("}\n");  // close root object
   fflush(stdout);
 }
@@ -1432,9 +1548,30 @@ static int callback(
   {
   case CALLBACK_MSG_RULE_MATCHING:
   case CALLBACK_MSG_RULE_NOT_MATCHING:
+    if ((docscan_json || docscan_disarm_flag) &&
+        message == CALLBACK_MSG_RULE_MATCHING &&
+        ((CALLBACK_ARGS*) user_data)->dsc.active)
+      docscan_on_match((YR_RULE*) message_data, &((CALLBACK_ARGS*) user_data)->dsc);
     if (docscan_json)  // in docscan-json mode we only emit the JSON line
       return CALLBACK_CONTINUE;
     return handle_message(context, message, (YR_RULE*) message_data, user_data);
+
+  case CALLBACK_MSG_SCAN_FINISHED:
+    if (docscan_json && ((CALLBACK_ARGS*) user_data)->dsc.active)
+    {
+      cli_mutex_lock(&output_mutex);
+#if defined(_WIN32) && defined(_UNICODE)
+      fflush(stdout);
+      _setmode(_fileno(stdout), _O_TEXT);
+#endif
+      print_docscan_json(&((CALLBACK_ARGS*) user_data)->dsc);
+#if defined(_WIN32) && defined(_UNICODE)
+      fflush(stdout);
+      _setmode(_fileno(stdout), _O_U8TEXT);
+#endif
+      cli_mutex_unlock(&output_mutex);
+    }
+    return CALLBACK_CONTINUE;
 
   case CALLBACK_MSG_IMPORT_MODULE:
 
@@ -1464,35 +1601,8 @@ static int callback(
       if (object->identifier != NULL &&
           strcmp(object->identifier, "docscan") == 0)
       {
-        // Capture findings for --docscan-disarm (used after the scan closes).
-        if (docscan_disarm_flag)
-        {
-          docscan_disarm_info* ds = &((CALLBACK_ARGS*) user_data)->ds;
-          memset(ds, 0, sizeof(*ds));
-          ds->present = 1;
-          if (yr_object_get_integer(object, "is_ooxml") == 1) ds->type = 1;
-          else if (yr_object_get_integer(object, "is_ole") == 1) ds->type = 2;
-          else if (yr_object_get_integer(object, "is_rtf") == 1) ds->type = 3;
-          else if (yr_object_get_integer(object, "is_pdf") == 1) ds->type = 4;
-          else if (yr_object_get_integer(object, "is_lnk") == 1) ds->type = 5;
-          int macro_s = yr_object_get_integer(object, "macro_suspicious") == 1;
-          int macro_p = yr_object_get_integer(object, "macro_present") == 1;
-          ds->macro = macro_s || macro_p;
-          ds->remote_template = yr_object_get_integer(object, "remote_template") == 1;
-          ds->protocol_handler = yr_object_get_integer(object, "protocol_handler") == 1;
-          ds->dde_auto = yr_object_get_integer(object, "dde_auto") == 1;
-          ds->embedded = (yr_object_get_integer(object, "embedded_pe") == 1) ||
-                         (yr_object_get_integer(object, "embedded_lnk") == 1);
-          ds->rtf_objupdate = yr_object_get_integer(object, "rtf_objupdate") == 1;
-          ds->lnk_bad = (yr_object_get_integer(object, "lnk_url_args") == 1) ||
-                        (yr_object_get_integer(object, "lnk_obfuscated") == 1) ||
-                        (yr_object_get_integer(object, "lnk_lolbin") == 1);
-          ds->high = macro_s || ds->remote_template || ds->protocol_handler ||
-                     ds->dde_auto || ds->embedded || ds->rtf_objupdate ||
-                     ds->lnk_bad ||
-                     (yr_object_get_integer(object, "pdf_js_auto") == 1) ||
-                     (yr_object_get_integer(object, "pdf_launch") == 1);
-        }
+        // Copy facts now: the module is unloaded before rule callbacks run.
+        docscan_capture(object, &((CALLBACK_ARGS*) user_data)->dsc);
 
         // Extract the decompressed VBA to a file for a 2nd vendor-rules scan.
         if (docscan_extract != NULL)
@@ -1509,24 +1619,7 @@ static int callback(
           }
         }
 
-        if (docscan_json)
-        {
-          cli_mutex_lock(&output_mutex);
-
-#if defined(_WIN32) && defined(_UNICODE)
-          fflush(stdout);
-          _setmode(_fileno(stdout), _O_TEXT);
-#endif
-
-          print_docscan_json(object);
-
-#if defined(_WIN32) && defined(_UNICODE)
-          fflush(stdout);
-          _setmode(_fileno(stdout), _O_U8TEXT);
-#endif
-
-          cli_mutex_unlock(&output_mutex);
-        }
+        // The JSON line is printed at CALLBACK_MSG_SCAN_FINISHED.
       }
     }
 
@@ -1626,7 +1719,7 @@ static void* scanning_thread(void* param)
   {
     args->callback_args.current_count = 0;
     args->callback_args.file_path = file_path;
-    args->callback_args.ds.present = 0;
+    docscan_state_reset(&args->callback_args.dsc);
 
     time_t current_time = time(NULL);
 
@@ -1652,11 +1745,13 @@ static void* scanning_thread(void* param)
         cli_mutex_unlock(&output_mutex);
       }
 
-      if (docscan_disarm_flag && args->callback_args.ds.present &&
-          args->callback_args.ds.high)
+      // cure what the policy asked for; a HIGH without actions -> "detect-only"
+      if (docscan_disarm_flag && args->callback_args.dsc.ds.present &&
+          (args->callback_args.dsc.ds.high ||
+           args->callback_args.dsc.max_severity == 2))
       {
         cli_mutex_lock(&output_mutex);
-        do_disarm(file_path, &args->callback_args.ds);
+        do_disarm(file_path, &args->callback_args.dsc.ds);
         cli_mutex_unlock(&output_mutex);
       }
 
@@ -1964,6 +2059,7 @@ int _tmain(int argc, const char_t** argv)
     {
       thread_args[i].deadline = scan_opts.deadline;
       thread_args[i].current_count = 0;
+      memset(&thread_args[i].callback_args, 0, sizeof(CALLBACK_ARGS));
 
       result = yr_scanner_create(rules, &thread_args[i].scanner);
 
@@ -2045,8 +2141,10 @@ int _tmain(int argc, const char_t** argv)
       exit_with_code(EXIT_FAILURE);
     }
 
-    if (docscan_disarm_flag && user_data.ds.present && user_data.ds.high)
-      do_disarm(argv[argc - 1], &user_data.ds);
+    if (docscan_disarm_flag && user_data.dsc.ds.present &&
+        (user_data.dsc.ds.high || user_data.dsc.max_severity == 2))
+      do_disarm(argv[argc - 1], &user_data.dsc.ds);
+    docscan_state_reset(&user_data.dsc);
 
     if (print_count_only)
       _tprintf(_T("%d\n"), user_data.current_count);

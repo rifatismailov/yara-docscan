@@ -16,7 +16,7 @@ in **one binary**, `yara64.exe`. On top of it, a **watcher** automatically scans
 3. [File map](#3-file-map)
 4. [YARA changes — code, function by function](#4-yara-changes--code-function-by-function)
 5. [Behaviour: how a scan runs](#5-behaviour-how-a-scan-runs)
-6. [YARA rules](#6-yara-rules)
+6. [YARA rules and the detection policy](#6-yara-rules-and-the-detection-policy)
 7. [Watcher — auto-scan of new files](#7-watcher--auto-scan-of-new-files)
 8. [Running — cheat sheet](#8-running--cheat-sheet)
 9. [Building](#9-building)
@@ -39,6 +39,11 @@ For a document that appears on the system, DocScan must:
 
 Principles:
 - **One binary.** Detection, Layer 2, disarm and JSON are `yara64.exe` flags; there are no separate executables.
+- **The module provides facts, the policy decides.** The module (C) only parses the document and
+  exposes facts (macro source, external relationships, DDE fields, embedded objects, LNK target/args).
+  What is HIGH or MEDIUM, what a finding is called and what gets disarmed is decided by **rules** in
+  `docscan-policy.yar` (`meta.severity` / `meta.finding` / `meta.disarm`). An engineer changes the
+  policy without rebuilding.
 - **The module is read-only.** It runs on a read-only buffer in the middle of a scan and never writes.
   Disarm happens in the CLI layer (`cli/yara.c` → `disarm.c`) **after** the scan, once the file is closed.
 - **Type by magic bytes**, not by extension (an `invoice.pdf` that is really a docx is OOXML).
@@ -59,81 +64,57 @@ flowchart TD
     CAT -->|Office / RTF / PDF / LNK| DOC[document]
     CAT -->|exe dll ps1 js hta zip iso ...| GEN[general]
     CAT -->|other| IGN([ignored])
+    DOC --> Y[yara64 -w --docscan-json --docscan-disarm<br/>docscan-index.yar]
+    GEN --> Y2[yara64 -w --docscan-json<br/>docscan-index.yar]
 
-    DOC --> PB[Pass B · yara64 file-index.yar<br/>vendor rules on raw bytes]
-    GEN --> PB
-    DOC --> PA[Pass A · yara64 --docscan-json<br/>--docscan-disarm docscan-index.yar]
-
-    PA --> D[Compile index.yar<br/>import docscan + include vendor<br/>g_rules = rules]
+    Y --> D[Compile docscan-index.yar<br/>docscan-policy.yar + file-index.yar<br/>g_rules = rules]
+    Y2 --> D
     D --> E[Scan file -> module_load docscan]
 
-    subgraph M[docscan module · libyara/modules/docscan]
+    subgraph M[docscan module · FACTS]
         E --> F{magic.c<br/>type by bytes}
         F -->|PK zip| G1[inspect_ooxml.c<br/>zip.c + rels.c]
         F -->|D0CF11E0| G2[inspect_ole.c<br/>cfb.c]
         F -->|curly-rtf| G3[inspect_rtf.c]
         F -->|%PDF| G4[inspect_pdf.c]
         F -->|4C000000| G5[lnk.c]
-        F -->|other| G0[unknown<br/>nothing to inspect]
         G1 -->|vbaProject.bin| V[vba.c + msovba.c<br/>VBA decompression]
         G2 --> V
-        G1 & G2 & G3 & G4 & G5 & V --> R[Module fields<br/>vector flags + evidence + vba_code]
+        G1 & G2 & G3 & G4 & G5 & V --> R[vba_code · external_rels · dde<br/>embedded · entries · lnk_target/args<br/>is_* · evidence]
     end
 
-    R --> J[STAGE 1 · print_docscan_json<br/>findings -> verdict HIGH / MEDIUM / INFO<br/>evidence, URL defang http->hxxp]
-    J --> L2{vba_code not empty<br/>and rules loaded?}
-    L2 -->|yes| S2[LAYER 2: second scanner<br/>g_rules over decompressed VBA]
-    L2 -->|no| OUT1
-    S2 --> OUT1[/Line 1: JSON ... yara_matches/]
-
-    R --> DS[Collect disarm flags<br/>docscan_disarm_info]
-    OUT1 --> H{--docscan-disarm<br/>and a HIGH vector?}
-    DS --> H
-    H -->|no| END1([file unchanged])
+    R --> CAP[MODULE_IMPORTED: copy the facts<br/>module unloads before rules run]
+    R --> P[Rules run on the file]
+    P -->|meta.severity| POL[POLICY<br/>findings · verdict · details<br/>meta.disarm -> what to cure]
+    P -->|no meta.severity| VEN[vendor rules<br/>yara_file_matches]
+    CAP --> L2[LAYER 2: second scanner<br/>g_rules over decompressed VBA<br/>-> yara_matches]
+    POL & VEN & L2 --> J[/SCAN_FINISHED: line 1 — JSON/]
+    POL --> H{--docscan-disarm and<br/>a meta.disarm or HIGH?}
     H -->|yes| X[STAGE 2 · disarm.c<br/>backup -> file.docscan-bak]
-
-    X --> T{file type}
-    T -->|OOXML| X1[strip vbaProject.bin / external rel /<br/>protocol rel / DDEAUTO / embeddings]
-    T -->|RTF| X2[break objupdate]
-    T -->|LNK| X3[delete file]
-    T -->|PDF / OLE| X4[detect-only]
-    X1 & X2 & X3 & X4 --> OUT2[/Line 2: docscan-disarm: path -> action/]
-
-    PB --> REC
-    OUT1 --> REC
-    OUT2 --> REC
-    REC[watcher builds one record<br/>verdict = max docscan, vendor] --> RES[(results/docscan-results.json<br/>JSON Lines -> Wazuh)]
+    X --> OUT2[/line 2: docscan-disarm: path -> action<br/>or detect-only/]
+    J & OUT2 --> REC[watcher: one JSON line<br/>results/docscan-results.json -> Wazuh]
 ```
 
 ### The same as text
 
 ```
- new file ──► watcher (FileSystemWatcher) ──► category by extension
-                                               │
-            ┌──────────── document ────────────┼──────────── general ───────────┐
-            │                                  │                                │
-   Pass B: yara64 file-index.yar      Pass A: yara64 --docscan-json      Pass B: yara64 file-index.yar
-   (vendor rules on raw bytes)        [--docscan-disarm] docscan-index.yar
-                                               │
-     ┌─────────────────────────────────────────▼──────────────────────────┐
-     │ docscan MODULE (read-only)                                          │
-     │  magic ─► ooxml │ ole │ rtf │ pdf │ lnk                             │
-     │            │     │                                                  │
-     │            └──┬──┘ vbaProject.bin ─► CFB ─► MS-OVBA ─► VBA source   │
-     │  ► vector flags + evidence + vba_code                               │
-     └───────┬────────────────────────────────────────┬────────────────────┘
-             │                                        │
-   STAGE 1 DETECTION (cli/yara.c)            STAGE 2 DISARM (only if HIGH)
-   findings ► verdict, evidence (hxxp)       backup ► .docscan-bak
-   LAYER 2: vba_code ► vendor rules          OOXML ► repack the zip without the vector
-             │                               RTF   ► break \objupdate
-             ▼                               LNK   ► delete;  PDF/OLE ► detect-only
-   line 1: {JSON ... yara_matches}                    ▼
-                                             line 2: docscan-disarm: ... -> action
-             └────────────────► watcher: one JSON line in results\docscan-results.json
+ new file ──► watcher ──► yara64 -w --docscan-json [--docscan-disarm] docscan-index.yar <file>
+                             │
+     ┌───────────────────────▼─────────────────────────────────┐
+     │ docscan MODULE — FACTS only (read-only)                  │
+     │  magic ─► ooxml │ ole │ rtf │ pdf │ lnk                  │
+     │  vbaProject.bin ─► CFB ─► MS-OVBA ─► vba_code            │
+     │  external_rels[] · dde[] · embedded[] · entries[] · lnk  │
+     └──────────┬──────────────────────────────────────────────┘
+                │ docscan-index.yar rules on the file
+     ┌──────────┴───────────────┬─────────────────────────────┐
+     ▼                          ▼                             ▼
+ POLICY (meta.severity)     vendor rules on the file     LAYER 2: vendor rules
+ findings, verdict, details  yara_file_matches            on vba_code → yara_matches
+ meta.disarm → what to cure
+     └──────────────► line 1: {JSON}   line 2: docscan-disarm: ... -> action | detect-only
+                                        └──► watcher: results\docscan-results.json
 ```
-
----
 
 ## 3. File map
 
@@ -163,9 +144,10 @@ cli/yara.c                          + --docscan-json/-extract/-disarm flags, JSO
 docscan-project/
   SCAN-FLOW.md / SCAN-FLOW.en.md    this document (Ukrainian / English)
   rules/
-    docscan.yar                     minimal: import "docscan" (our detection only)
-    docscan-index.yar               import "docscan" + include vendor → detection + Layer 2 (VBA)
-    file-index.yar                  vendor rules on raw bytes (watcher pass B)
+    docscan-policy.yar              POLICY: what is HIGH/MEDIUM, finding names, what to disarm
+    docscan.yar                     include docscan-policy.yar (our detection only)
+    docscan-index.yar               docscan-policy.yar + file-index.yar (detection + vendor + Layer 2)
+    file-index.yar                  vendor rules (on the file and on the decompressed VBA)
     general/                        165 signature-base "strict" rule files (copied from reference)
     maldoc/                         36 document rule files (signature-base + community) + vba_plaintext.yar
   watcher/docscan-watcher.ps1       auto-scan of new files → results\docscan-results.json
@@ -213,7 +195,9 @@ Data flow: raw bytes → `docscan_detect_magic` → inspector → `docscan_resul
 
 ### 4.2 `docscan.c` — module fields and `module_load`
 
-**Fields** (`begin_declarations`), all integers 0/1 except the evidence strings:
+**Flag fields** (`begin_declarations`), integers 0/1. The "Level" column is what the **default
+policy** (`docscan-policy.yar`) does with them; the module itself knows no levels. The flags are kept
+for compatibility and convenience; the policy mostly works with the facts below.
 
 | Group | Field | Level | Meaning |
 |---|---|---|---|
@@ -241,12 +225,27 @@ Data flow: raw bytes → `docscan_detect_magic` → inspector → `docscan_resul
 | evidence | `template_url` `dde_command` `vba_evidence` `lnk_target` `lnk_args` | — | strings ≤ 511 chars |
 | Layer 2 | `vba_code` | — | the whole decompressed VBA (≤ 2 MB) for re-scanning with vendor rules |
 
-\* In JSON `lnk_lolbin` counts as MEDIUM, but the "should we disarm" decision treats it as HIGH (see §13).
+**Facts for policy rules** (arrays are capped; `*_truncated = 1` if there were more — padding a
+document with junk must not silently hide the interesting part):
+
+| Field | Type | Contents |
+|---|---|---|
+| `external_rels[i].part` / `.type` / `.target` | array of structs (≤ 256) | every `TargetMode="External"` relationship: source `.rels`, Type URI, Target as written |
+| `number_of_external_rels`, `external_rels_truncated` | integer | |
+| `entries[i].name` / `.size` | array (≤ 512) | every ZIP part and its size from the header |
+| `number_of_entries`, `entries_truncated` | integer | |
+| `embedded[i].name` / `.size` / `.is_pe` / `.is_lnk` | array (≤ 64) | every `embeddings/oleObject*.bin` |
+| `number_of_embedded` | integer | |
+| `dde[i]` | string array (≤ 32) | every `DDE…`/`DDEAUTO…` field instruction (up to `<` or `"`) |
+| `number_of_dde` | integer | |
+| `vba_code`, `lnk_target`, `lnk_args` | string | macro source; LNK target and arguments |
+
+Example in a rule: `for any rel in docscan.external_rels : (rel.target matches /^https?:/i)`.
 
 | Function | What it does |
 |---|---|
 | `module_initialize` / `module_finalize` / `module_unload` | Empty, `return ERROR_SUCCESS`. |
-| `module_load(context, module_object, …)` | 1) zeroes `is_*`; 2) takes the **first** memory block (`foreach_memory_block` + `yr_fetch_block_data`; for a file scan that is the whole file); 3) `docscan_detect_magic` → sets `is_<type>=1` and calls the type's inspector; 4) copies every `docscan_result_t` field into the module fields (`yr_set_integer` / `yr_set_string`); 5) `vba_code` via `yr_set_sized_string`, then frees the buffer (or sets an empty string). |
+| `module_load(context, module_object, …)` | 0) allocates `docscan_result_t` on the heap (~250 KB — not on the small scanner-thread stack); 1) zeroes `is_*`; 2) takes the **first** memory block (`foreach_memory_block` + `yr_fetch_block_data`; for a file scan that is the whole file); 3) `docscan_detect_magic` → sets `is_<type>=1` and calls the type's inspector; 4) copies every `docscan_result_t` field into the module fields (`yr_set_integer` / `yr_set_string`); 5) `vba_code` via `yr_set_sized_string`, then frees the buffer (or sets an empty string); 6) sets the fact arrays (`external_rels[%i]…`, `entries`, `embedded`, `dde`) and counters; frees the result. |
 
 ### 4.3 `inspect.h` — shared result
 
@@ -284,21 +283,22 @@ the parts must be decompressed.
 
 | Function | What it does |
 |---|---|
-| `docscan_scan_rels(xml, size, r)` | Walks every `<Relationship …>`; only `TargetMode="External"` is of interest. If `Target` is a protocol handler → `protocol_handler` + `template_url`. Otherwise by the last segment of `Type`: `attachedTemplate` with a remote target → `remote_template` + `template_url`; `oleObject` → `external_ole`; `frame` → `external_frame`. |
+| `docscan_scan_rels(xml, size, part, r)` | Walks every `<Relationship …>`; only `TargetMode="External"` is of interest. Each such relationship is recorded in the `external_rels[]` facts (with the `part` name). If `Target` is a protocol handler → `protocol_handler` + `template_url`. Otherwise by the last segment of `Type`: `attachedTemplate` with a remote target → `remote_template` + `template_url`; `oleObject` → `external_ole`; `frame` → `external_frame`. |
 | `get_attr(tag, len, "Attr=\"", out, sz)` | Attribute value inside the tag up to the next `"`. Leaves the buffer untouched if the attribute is missing (hence the buffers start as `""`). |
 | `starts_with_ci(s, prefix)` | Case-insensitive prefix test. |
-| `is_remote_target(t)` | `http(s)://`, `ftp(s)://`, `sftp://`, UNC `\\host\share`, `file://` (except `file://localhost`). |
+| `is_remote_target(t)` | `http(s)://`, `ftp(s)://`, `sftp://`, UNC `\\host\share`, `file://host/…`, `file:////host/…`. `file:///C:/…` (no host) and `file://localhost` are local. |
 | `is_protocol_handler(t)` | `ms-msdt:`, `search-ms:`, `search:`, `ms-officecmd:`, `mhtml:`, `ms-word:`, `ms-excel:`, `ms-powerpoint:`, `!x-usc:`. |
 
 **`inspect_ooxml.c`**:
 
 | Function | What it does |
 |---|---|
-| `docscan_inspect_ooxml(data, size, r)` | Opens the ZIP and, by the name of each entry: `*.rels` → `docscan_scan_rels`; `*vbaProject.bin` → `macro_present=1` + `docscan_scan_vba_container`; document body → `scan_dde`; `embeddings/oleObject*.bin` → `scan_embedded_ole`. |
+| `docscan_inspect_ooxml(data, size, r)` | Opens the ZIP; records every part in the `entries[]` facts; by the name of each entry: `*.rels` → `docscan_scan_rels`; `*vbaProject.bin` → `macro_present=1` + `docscan_scan_vba_container`; document body → `scan_dde`; `embeddings/oleObject*.bin` → `scan_embedded_ole`. |
 | `is_body_xml(name)` | `word/document.xml`, `word/header*.xml`, `word/footer*.xml`, `xl/worksheets/sheet*.xml`, `xl/workbook.xml`. |
 | `is_embedded_ole(name)` | `embeddings/oleObject*.bin`. |
-| `scan_dde(xml, n, r)` | `DDEAUTO` (case-insensitive) → `dde_auto` + `dde_command` (snippet from `DDEAUTO` up to `<`). Otherwise `DDE ` + cmd/powershell/mshta/rundll32 → `dde_link`. |
-| `scan_embedded_ole(d, n, r)` | 20-byte LNK signature (header + CLSID) → `embedded_lnk` and parse of that LNK (`docscan_inspect_lnk` → target/args); `MZ` whose `e_lfanew` < 0x1000 points at `PE\0\0` → `embedded_pe`. |
+| `record_dde(xml, n, r)` | Fact: every `DDEAUTO…` or `DDE …` instruction (case-insensitive) up to `<`/`"` → `dde[]` (≤ 32). |
+| `scan_dde(xml, n, r)` | Calls `record_dde`; then the flags: `DDEAUTO` (case-insensitive) → `dde_auto` + `dde_command` (snippet from `DDEAUTO` up to `<`). Otherwise `DDE ` + cmd/powershell/mshta/rundll32 → `dde_link`. |
+| `scan_embedded_ole(d, n, e, r)` | Each object is recorded in `embedded[]` (name, size, `is_pe`, `is_lnk`). 20-byte LNK signature (header + CLSID) → `embedded_lnk` and parse of that LNK (`docscan_inspect_lnk` → target/args); `MZ` whose `e_lfanew` < 0x1000 points at `PE\0\0` → `embedded_pe`. |
 | `ends_with(s, suffix)` | Helper. |
 
 ### 4.6 OLE and VBA: `cfb.c`, `msovba.c`, `vba.c`, `inspect_ole.c`
@@ -361,144 +361,186 @@ Compiled into libyara but **called only from the CLI** (`do_disarm` after the sc
 
 | Function | What it does |
 |---|---|
-| `docscan_disarm(path, info, out_action, sz)` | Dispatcher. LNK + `lnk_bad` → backup + delete (`deleted:lnk`). RTF + `rtf_objupdate` → backup + `cure_rtf`. OOXML with any vector → backup + `cure_ooxml`. PDF/OLE → `detect-only`. |
-| `cure_ooxml(path, info, action, sz)` | Repacks the ZIP with miniz into `<file>.docscan-tmp`: **does not copy** `vbaProject.bin`/`vbaData.xml` (macro) or `embeddings/oleObject*.bin`; in `*.rels` removes `<Relationship>` elements with the markers `vbaProject` / `oleObject` / `attachedTemplate` / `ms-msdt` / `search-ms`; in `[Content_Types].xml` the `<Override>` with `vbaProject`; in `word/document.xml`/header/footer `DDEAUTO` → `REMOVED`. Then replaces the original. If any part cannot be read (or is > 64 MB) the cure is aborted, the original is left unchanged and the action is `failed:unreadable-part`. Actions: `removed:vbaProject.bin`, `removed:embeddings`, `removed:remote-template`, `removed:protocol-rel`, `stripped:dde`. |
+| `docscan_disarm(path, info, out_action, sz)` | Dispatcher. If the policy requested no action (HIGH verdict without `meta.disarm`) → `detect-only`. LNK + `lnk_bad` → backup + delete (`deleted:lnk`). RTF + `rtf_objupdate` → backup + `cure_rtf`. OOXML with any vector → backup + `cure_ooxml`. PDF/OLE → `detect-only`. |
+| `cure_ooxml(path, info, action, sz)` | Repacks the ZIP with miniz into `<file>.docscan-tmp`: **does not copy** `vbaProject.bin`/`vbaData.xml` (macro) or `embeddings/oleObject*.bin`; in `*.rels` removes `<Relationship>` elements with the markers `vbaProject` / `oleObject` / `attachedTemplate` / every protocol handler (`ms-msdt:`, `search-ms:`, `search:`, `ms-officecmd:`, `mhtml:`, `ms-word:`, `ms-excel:`, `ms-powerpoint:`, `!x-usc:`); in `[Content_Types].xml` the `<Override>` with `vbaProject`; in `word/document.xml`/header/footer `DDEAUTO` → `REMOVED`. Then replaces the original. If any part cannot be read (or is > 64 MB) the cure is aborted, the original is left unchanged and the action is `failed:unreadable-part`. Actions: `removed:vbaProject.bin`, `removed:embeddings`, `removed:remote-template`, `removed:protocol-rel`, `stripped:dde`. |
 | `cure_rtf(path, action, sz)` | `\objupdate` → `\objupdatX` (control word broken, same length) → `stripped:objupdate`. |
 | `remove_elements(in, len, markers, n, &out_len)` | Copies the XML, dropping `<Relationship …>` / `<Override …>` elements that contain any marker. |
 | `strip_dde(buf, len)` | `DDEAUTO` → `REMOVED` in place (7 chars, no "DDE" left, so `dde_link` does not linger). |
 | `backup(path)` | Copy to `<path>.docscan-bak`. |
 | `read_file` / `write_file` / `append` / `name_is` | File into memory / write; append an action with a comma; name suffix test. |
 
-### 4.9 Changes in `cli/yara.c` (+314 lines)
+### 4.9 Changes in `cli/yara.c`
 
 **Flags:**
 
 | Flag | Variable | Action |
 |---|---|---|
-| `--docscan-json` | `docscan_json` | prints one JSON line with the module result; **suppresses the normal rule-match output** for the file |
+| `--docscan-json` | `docscan_json` | one JSON line per file: findings and verdict **from the policy rules**, vendor matches on the file and on the VBA; **suppresses the normal match output** |
 | `--docscan-extract=FILE` | `docscan_extract` | writes `vba_code` to FILE (manual Layer 2) |
-| `--docscan-disarm` | `docscan_disarm_flag` | disarms the file in place after the scan if a HIGH vector was found |
+| `--docscan-disarm` | `docscan_disarm_flag` | after the scan, disarms the file according to `meta.disarm` of the matching rules; HIGH without actions → `detect-only` |
 
-Globals: `g_rules` — pointer to the loaded rules (set after compiling/loading), needed for Layer 2.
-`CALLBACK_ARGS` gains `docscan_disarm_info ds`.
+**Per-file state** — `DOCSCAN_STATE` in `CALLBACK_ARGS` (`dsc`): `ftype`, evidence copies, a copy of
+`vba_code`, `max_severity`, `findings`, `details`, `file_matches`, `docscan_disarm_info ds`. Global:
+`g_rules` — the loaded rules (for Layer 2).
 
-**Hooks into the existing YARA flow:**
-- `callback()` → `CALLBACK_MSG_RULE_MATCHING/NOT_MATCHING`: in `--docscan-json` mode returns
-  `CALLBACK_CONTINUE` immediately (only the JSON is printed).
-- `callback()` → `CALLBACK_MSG_MODULE_IMPORTED` for the `docscan` object:
-  with `--docscan-disarm` fills `ds` from the module fields; with `--docscan-extract` writes
-  `vba_code` to the file; with `--docscan-json` calls `print_docscan_json` (on Windows switching
-  stdout to text mode).
-- After `yr_scanner_scan_file` (both the single-threaded and the multi-threaded path): if
-  `--docscan-disarm && ds.present && ds.high` → `do_disarm`.
+**Why this way.** YARA unloads modules at the end of `yr_execute_code`, **before** the rule-match
+callbacks. So the facts are copied at `MODULE_IMPORTED`, matches are collected at `RULE_MATCHING`, and
+the JSON is printed at `SCAN_FINISHED`, when everything is known.
 
-**New functions:**
+**Hooks into the YARA flow:**
+- `CALLBACK_MSG_MODULE_IMPORTED` (the `docscan` object) → `docscan_capture`; with `--docscan-extract` — writes `vba_code`.
+- `CALLBACK_MSG_RULE_MATCHING` → `docscan_on_match`; in `--docscan-json` mode the normal output is not printed.
+- `CALLBACK_MSG_SCAN_FINISHED` → `print_docscan_json`.
+- After `yr_scanner_scan_file` (single- and multi-threaded path): `--docscan-disarm` and (a policy
+  action **or** a HIGH verdict) → `do_disarm`.
+
+**Functions:**
 
 | Function | What it does |
 |---|---|
-| `print_docscan_json(module)` | Determines `ftype`; collects `findings` from the `F[]` table and computes the verdict (any HIGH → `HIGH`, else any MEDIUM → `MEDIUM`, else `INFO`); prints `evidence`; **Layer 2**: if `vba_code` is non-empty and `g_rules` is set, creates a second `YR_SCANNER` with the same rules, scans `vba_code` in memory (`yr_scanner_scan_mem`), matches via `vendor_match_cb` → `yara_matches`. |
-| `vendor_match_cb(...)` | Callback of the second scanner: appends identifiers of matching rules (except `_docscan_probe`) to a JSON array (2 KB buffer). |
-| `docscan_json_evidence(m, field, defang, &first)` | Prints one evidence field if non-empty (up to 2 KB), defanging URL fields (`template_url`, `dde_command`, `lnk_args`). |
-| `docscan_defang(s)` | `http` → `hxxp`, `ftp` → `fxp` (so URLs in logs are not clickable). |
-| `docscan_json_puts(s)` | JSON escaping: `"` `\` `\n` `\r` `\t`, control chars < 0x20 → `\u00XX`. |
-| `do_disarm(file_path, ds)` | Calls `docscan_disarm`, prints `docscan-disarm: <path> -> <action>`. In the Windows Unicode build converts the wide path to UTF-8 and temporarily switches stdout to text mode. |
-
-The wide/UTF-8 code is guarded by `#if defined(_WIN32) && defined(_UNICODE)` so the file builds with
-both MSVC (Unicode) and MinGW (ANSI), as upstream YARA does.
+| `docscan_capture(m, st)` | Resets the state, determines `ftype`/`ds.type`, copies evidence and `vba_code` from the module object. |
+| `docscan_on_match(rule, st)` | If the rule has `meta.severity` it is a **policy rule**: updates `max_severity`, adds `meta.finding` (or the rule name) to `findings`, an object to `details` (`rule`, `finding`, `severity`, `disarm`, `mitre`), `meta.disarm` → a flag in `ds`. Otherwise it is a **vendor rule** → `file_matches`. |
+| `docscan_meta(rule, name)` | Value of a string meta field (via `yr_rule_metas_foreach`). |
+| `print_docscan_json(st)` | Prints the JSON; **Layer 2**: a second `YR_SCANNER` with `g_rules` over the `vba_code` copy, matches via `vendor_match_cb` → `yara_matches`. |
+| `vendor_match_cb(...)` | Second-scanner callback: adds rules **without** `meta.severity` (the policy describes documents, not VBA text). |
+| `docscan_json_evidence` / `docscan_defang` / `docscan_json_puts` | Evidence printing with defang (`http`→`hxxp`) and JSON escaping. |
+| `docscan_list_add` / `docscan_list_has` / `docscan_state_reset` / `docscan_copy_string` | Helpers: JSON lists, state reset (frees the VBA copy), copying module strings. |
+| `do_disarm(file_path, ds)` | `docscan_disarm` + the line `docscan-disarm: <path> -> <action>`; on Windows Unicode — wide→UTF-8. |
 
 **JSON format (line 1):**
 ```json
-{"ftype":"ooxml","findings":["MACRO_SUSPICIOUS","MACRO_PRESENT"],"verdict":"HIGH",
- "evidence":{"vba_evidence":"powershell | Shell | DownloadFile | AutoOpen"},
- "yara_matches":["gen_macro_ShellExecute_action"]}
+{"ftype":"ooxml","findings":["MACRO_PRESENT","MACRO_SUSPICIOUS","MACRO_AUTOEXEC"],"verdict":"HIGH",
+ "evidence":{"vba_evidence":"powershell | DownloadFile | AutoOpen"},
+ "yara_matches":["powershell","VBA_AutoExec_DownloadCradle"],
+ "yara_file_matches":["Contains_VBA_macro_code","office_document_vba"],
+ "details":[{"rule":"DS_MACRO_SUSPICIOUS","finding":"MACRO_SUSPICIOUS","severity":"HIGH","disarm":"macro","mitre":"T1204.002"}, …]}
 ```
-`ftype` ∈ ooxml/ole/rtf/pdf/lnk/unknown; `findings` — flag names in upper case; `evidence` — only
-non-empty fields; `yara_matches` — Layer 2 (empty if the index has no vendor rules).
-**Line 2** (only with `--docscan-disarm` and HIGH): `docscan-disarm: <path> -> <action>[,<action>…]`.
-
----
+`verdict` — the highest `meta.severity` among matching policy rules (`INFO` if none). `evidence` —
+non-empty module strings (`vba_evidence` is an informative keyword list from `vba.c`, it does not
+affect the verdict). **Line 2** (only with `--docscan-disarm`): `docscan-disarm: <path> -> <action>[,…]`
+or `detect-only`.
 
 ## 5. Behaviour: how a scan runs
 
 1. **Preparation.** The original is never touched: for manual tests use a copy `work.<ext>`
    (`run_tests.ps1` does this itself and compares the originals' SHA256). The watcher scans the file in place.
-2. **Rule compilation.** `index.yar` = `import "docscan"` + `include` vendor rules → `g_rules`.
-3. **Module.** `module_load`: magic → inspector → fields (see §4).
-4. **STAGE 1 — detection.** `print_docscan_json`: findings → verdict → evidence (defanged) → JSON.
+2. **Rule compilation.** `docscan-index.yar` = `docscan-policy.yar` + `file-index.yar` → `g_rules`.
+3. **Module.** `module_load`: magic → inspector → facts and flags (see §4). The facts are copied in the CLI.
+4. **Rules on the file.** Policy rules (`meta.severity`) → findings, verdict, disarm actions; other
+   rules → `yara_file_matches`.
+5. **LAYER 2.** The decompressed VBA is re-scanned with the same rules → `yara_matches`. Ordinary
+   `$string` rules only see the input buffer, and VBA inside a document is compressed — without
+   Layer 2 vendor rules never see the macro.
+6. **STAGE 1 — JSON** at `SCAN_FINISHED`. `verdict`: **HIGH** → respond/disarm; **MEDIUM** → review; **INFO** → clean.
+7. **STAGE 2 — disarm** (`--docscan-disarm`): the actions from `meta.disarm` of the matching rules.
+   First a backup `<file>.docscan-bak`, then:
 
-   | HIGH | MEDIUM |
-   |---|---|
-   | REMOTE_TEMPLATE, PROTOCOL_HANDLER, DDE_AUTO, RTF_OBJUPDATE, PDF_JS_AUTO, PDF_LAUNCH, EMBEDDED_PE, EMBEDDED_LNK, MACRO_SUSPICIOUS, LNK_URL_ARGS, LNK_OBFUSCATED | MACRO_PRESENT, LNK_LOLBIN, EXTERNAL_OLE, EXTERNAL_FRAME, DDE_LINK, PDF_JS, PDF_OPENACTION, PDF_EMBEDDED |
-
-   `verdict`: **HIGH** → respond/disarm; **MEDIUM** → review; **INFO** → clean.
-5. **LAYER 2.** The decompressed VBA (`vba_code`) is re-scanned with the same rules → `yara_matches`.
-   Ordinary `$string` rules only see the input buffer, and VBA inside a document is compressed —
-   so without Layer 2 vendor rules never see the macro.
-6. **STAGE 2 — disarm** (only with `--docscan-disarm` and a HIGH vector). First a backup
-   `<file>.docscan-bak`, then:
-
-   | Type | Action | Output | Document |
+   | `meta.disarm` | Type | Action | Output |
    |---|---|---|---|
-   | OOXML macro | strip `vbaProject.bin` + rels/content-type | `removed:vbaProject.bin` | stays valid |
-   | OOXML remote template | remove the external rel | `removed:remote-template` | kept |
-   | OOXML Follina | remove the protocol rel | `removed:protocol-rel` | kept |
-   | OOXML DDE | `DDEAUTO` → `REMOVED` | `stripped:dde` | kept |
-   | OOXML embedded PE/LNK | strip embeddings | `removed:embeddings` | kept |
-   | RTF | break `\objupdate` | `stripped:objupdate` | kept |
-   | LNK | delete (the file is the vector) | `deleted:lnk` | deleted (backup kept) |
-   | PDF / OLE | nothing (quarantine is up to the orchestrator) | `detect-only` | — |
-   | OOXML with an unreadable / > 64 MB part | cure aborted | `failed:unreadable-part` | unchanged (backup kept) |
-   | MEDIUM only (e.g. `external_ole`) | not disarmed | — | unchanged |
+   | `macro` | OOXML | strip `vbaProject.bin`/`vbaData.xml` + rels/content-type | `removed:vbaProject.bin` |
+   | `remote_template` | OOXML | remove the external `attachedTemplate` rel | `removed:remote-template` |
+   | `protocol_handler` | OOXML | remove the rel with a protocol handler | `removed:protocol-rel` |
+   | `dde` | OOXML | `DDEAUTO` → `REMOVED` | `stripped:dde` |
+   | `embedded` | OOXML | strip `embeddings/oleObject*.bin` | `removed:embeddings` |
+   | `rtf_objupdate` | RTF | `\objupdate` → `\objupdatX` | `stripped:objupdate` |
+   | `lnk_delete` | LNK | delete the file (backup kept) | `deleted:lnk` |
+   | — (HIGH without actions, e.g. PDF) | any | nothing | `detect-only` |
+   | any | OOXML with an unreadable / > 64 MB part | cure aborted | `failed:unreadable-part` |
 
-7. **Check.** Re-scan the disarmed copy → expect `INFO` (LNK gone, PDF stays HIGH).
+   An action that does not fit the file type (e.g. `macro` for a PDF) is ignored. Legacy OLE (`.doc/.xls`) is not disarmed yet.
+8. **Check.** Re-scan the disarmed copy → expect `INFO` (LNK gone, PDF stays HIGH).
 
----
+## 6. YARA rules and the detection policy
 
-## 6. YARA rules
+### 6.1 The policy — `rules/docscan-policy.yar`
+
+The main file an engineer tunes. Every rule with `meta.severity` is a policy rule:
+
+| meta | Required | Meaning |
+|---|---|---|
+| `severity` | yes | `HIGH` / `MEDIUM` / `INFO` — marks the rule as policy |
+| `finding` | no | name in `findings` (default: the rule name) |
+| `disarm` | no | what to disarm: `macro`, `remote_template`, `protocol_handler`, `dde`, `embedded`, `rtf_objupdate`, `lnk_delete` |
+| `mitre` | no | technique ID, copied into `details` |
+
+A policy rule must not be `private` (YARA never reports private rules).
+
+**Default policy:**
+
+| Rule | Condition (short) | severity | disarm |
+|---|---|---|---|
+| `DS_REMOTE_TEMPLATE` | external `attachedTemplate` to http(s)/ftp/UNC/`file://host` (not `file:///C:`) | HIGH | `remote_template` |
+| `DS_PROTOCOL_HANDLER` | external target `ms-msdt:`, `search-ms:`, `search:`, `ms-officecmd:`, `mhtml:`, `ms-word:`… | HIGH | `protocol_handler` |
+| `DS_DDE_AUTO` | a `dde[]` entry starts with `DDEAUTO` | HIGH | `dde` |
+| `DS_DDE_LINK` | `DDE ` + cmd/powershell/mshta/rundll32 | MEDIUM | — |
+| `DS_EMBEDDED_PE` / `DS_EMBEDDED_LNK` | `embedded[].is_pe` / `.is_lnk` | HIGH | `embedded` |
+| `DS_EXTERNAL_OLE` / `DS_EXTERNAL_FRAME` | external `oleObject` (not Follina) / `frame` | MEDIUM | — |
+| `DS_MACRO_PRESENT` | VBA present | MEDIUM | — |
+| `DS_MACRO_SUSPICIOUS` | in `vba_code`: Shell, WScript.Shell, powershell, cmd.exe, mshta, rundll32, regsvr32, certutil, bitsadmin, URLDownloadToFile, DownloadFile/String, FromBase64String, StrReverse; `.Run`/`.Exec` on a shell object | HIGH | `macro` |
+| `DS_MACRO_AUTOEXEC` | AutoOpen, Document_Open, Workbook_Open… | MEDIUM | — |
+| `DS_MACRO_NETWORK` | XMLHTTP, WinHttp, InternetOpen, Net.WebClient | MEDIUM | — |
+| `DS_RTF_OBJUPDATE` | RTF and `\objupdate` | HIGH | `rtf_objupdate` |
+| `DS_PDF_LAUNCH` | `/Launch` | HIGH | — (detect-only) |
+| `DS_PDF_JS_AUTO` / `DS_PDF_JS` | `/JavaScript`/`/JS` with / without a dangerous API | HIGH / MEDIUM | — |
+| `DS_PDF_OPENACTION` / `DS_PDF_EMBEDDED` | `/OpenAction`/`/AA` without JS / `/EmbeddedFile` | MEDIUM | — |
+| `DS_LNK_URL_ARGS` | URL/UNC in the arguments | HIGH | `lnk_delete` |
+| `DS_LNK_OBFUSCATED` | `-enc`, `iex`, `-w hidden`, `downloadstring`… | HIGH | `lnk_delete` |
+| `DS_LNK_LOLBIN` | the target is a LOLBin | MEDIUM | — (the shortcut is not deleted) |
+
+**How to change it:**
+```yara
+// make any auto-run macro HIGH:
+rule DS_MACRO_AUTOEXEC { meta: severity = "HIGH" finding = "MACRO_AUTOEXEC" disarm = "macro"
+  condition: docscan.vba_code matches /\b(AutoOpen|Document_Open|Workbook_Open)\b/i }
+
+// your own vector: a document with a part larger than 20 MB
+rule ORG_HUGE_PART { meta: severity = "MEDIUM" finding = "HUGE_PART"
+  condition: for any e in docscan.entries : (e.size > 20MB) }
+```
+After a change — check it compiles (`yara64 -w docscan-policy.yar any-file`) and run `run_tests.ps1`.
+
+**What the false-positive test found** (~4,000 open documents, 2026-11-02) and what the default policy
+now handles: local templates `file:///C:\…` (were HIGH), `Selection.Find.Execute` (`.Exec`),
+`Application.Run "Macro"` (`.Run`), a bare `Workbook_Open` or `CreateObject` (were HIGH → now MEDIUM),
+Start-menu shortcuts to PowerShell/cmd (would have been deleted by disarm). Office HIGHs on clean POI
+files — from 11 to 0; RTF 0; LNK 0 (19 MEDIUM).
+
+### 6.2 Rule files
 
 | File | Purpose | Contents |
 |---|---|---|
-| `rules/docscan.yar` | our detection only | `import "docscan"` + `private rule _docscan_probe { condition: false }` → `yara_matches` is always `[]` |
-| `rules/docscan-index.yar` | detection + Layer 2 (pass A) | `import "docscan"` + `include "maldoc/signature-base/gen_macro_ShellExecute_action.yar"` (others commented out) |
-| `rules/file-index.yar` | raw file bytes (watcher pass B) | 165 × `general/` + 33 × `maldoc/` (198 includes) |
-| `rules/general/` | general YARA scan | signature-base subset from `reference/vendor-rules-full-later/dist/index_strict.yar` (score ≥ 75), 1022 rules, 1.4 MB |
+| `rules/docscan-policy.yar` | policy | `import "docscan"` + the `DS_*` rules |
+| `rules/docscan.yar` | our detection only | `include "docscan-policy.yar"` |
+| `rules/docscan-index.yar` | **full scan** (watcher, run_tests) | `include "docscan-policy.yar"` + `include "file-index.yar"` |
+| `rules/file-index.yar` | vendor rules | 165 × `general/` + 33 × `maldoc/` (198 includes) |
+| `rules/general/` | general YARA scan | signature-base subset from `index_strict.yar` (score ≥ 75), 1022 rules |
 | `rules/maldoc/` | document rules | `signature-base/` 15 + `community/` 20 + `vba_plaintext.yar` |
-| `reference/vendor-rules-full-later/` | full corpus (85 MB, not in git) | signature-base + community + Elastic protections-artifacts; `gen_index.py` → `dist/index_strict.yar` (compiles) and `index_advisory.yar` (needs external variables `filename`/`filepath` — not used) |
+| `reference/vendor-rules-full-later/` | full corpus (85 MB, not in git) | `gen_index.py` → `dist/index_strict.yar` (compiles), `index_advisory.yar` (needs external variables — not used) |
 
-Rules for an `index.yar`:
-- `import "docscan"` first.
+Rules for index files:
 - `include` paths **use `/`**, relative to the index file or absolute (YARA treats `\` as an escape).
-- Only rules that compile on their own (no missing modules / external variables). One broken rule
-  breaks the whole index. Check: `yara64 -w index.yar any-file` with no errors.
+- Only rules that compile on their own. One broken rule breaks the whole index.
 - Rule identifiers must be unique. `file-index.yar` excludes these duplicates:
-  `maldoc/signature-base/exploit_rtf_ole2link.yar` (= community/Maldoc_malrtf_ole2link),
-  `maldoc/signature-base/susp_office_template_injection.yar` (= general/…),
-  `maldoc/signature-base/general_officemacros.yar` (clashes on `Office_AutoOpen_Macro`; loses
-  `Office_as_MHTML`, `Docm_in_PDF`).
-
-Why documents need both passes: OOXML is a ZIP, so raw-byte rules only catch macros
-(`Contains_VBA_macro_code`, `office_document_vba`), LNK (`powershell`) and PDF; remote template,
-Follina, DDE and embedded objects are seen **only** by the docscan module.
-
----
+  `maldoc/signature-base/exploit_rtf_ole2link.yar`, `…/susp_office_template_injection.yar`,
+  `…/general_officemacros.yar` (loses `Office_as_MHTML`, `Docm_in_PDF`).
+- Vendor rules must **not** have `meta.severity` — otherwise the CLI treats them as policy.
 
 ## 7. Watcher — auto-scan of new files
 
-`docscan-project/watcher/docscan-watcher.ps1` (PowerShell 5.1, UTF-8 with BOM).
+`docscan-project/watcher/docscan-watcher.ps1` (PowerShell 5.1, UTF-8 with BOM). **One `yara64` run per file.**
 
 ### What gets scanned
 
 | Category | Extensions | Scan |
 |---|---|---|
-| `document` | doc dot docx docm dotx dotm, xls xlt xlsx xlsm xltx xltm xlsb, ppt pps pot pptx pptm potx potm ppsx ppsm, rtf, pdf, lnk | **B** + **A** |
-| `general` | exe dll sys scr cpl ocx com msi, ps1 psm1 vbs vbe js jse wsf wsh hta bat cmd jar, zip rar 7z iso img vhd vhdx | **B** only |
+| `document` | doc dot docx docm dotx dotm, xls xlt xlsx xlsm xltx xltm xlsb, ppt pps pot pptx pptm potx potm ppsx ppsm, rtf, pdf, lnk | `yara64 -w --docscan-json [--docscan-disarm] docscan-index.yar` |
+| `general` | exe dll sys scr cpl ocx com msi, ps1 psm1 vbs vbe js jse wsf wsh hta bat cmd jar, zip rar 7z iso img vhd vhdx | the same without `--docscan-disarm` (only vendor rules apply) |
 | other | — | ignored |
 
-- **A** — `yara64 --docscan-json [--docscan-disarm] docscan-index.yar <file>`.
-- **B** — `yara64 -w file-index.yar <file>` (before disarm, on the original bytes).
-- **Record verdict:** document = the docscan verdict, raised to at least `MEDIUM` if a pass-B rule
-  matched; general = `HIGH` if pass B matched, otherwise `INFO`; also `SKIPPED` (> `-MaxSizeMB`) and
+- **Record verdict:** the verdict from the JSON (policy); if there are `yara_file_matches` — a document
+  is raised to at least `MEDIUM`, a general file becomes `HIGH`. Also `SKIPPED` (> `-MaxSizeMB`) and
   `ERROR` (scan failed).
+- Vendor rules see the bytes **before** disarm: yara collects the matches before `--docscan-disarm` runs.
 - **Not scanned** (`-ExcludePattern`): `results\`, `*.docscan-bak`, Office lock files `~$*`,
   `$Recycle.Bin`, browser/Packages/OneDrive/WebCache caches, `Recent` (it gets an `.lnk` on every file open).
 
@@ -508,24 +550,23 @@ Follina, DDE and embedded objects are seen **only** by the docscan module.
 2. Event → `pending` dictionary (several events for one file are merged).
 3. After `-SettleSeconds` of quiet — `Wait-FileReady`: the file opens for reading and its size is
    stable (up to `-ReadyTimeout` s).
-4. If the SHA256 equals the last scan of that path — skip (Word/Explorer fire several events).
-5. `Scan-File`: SHA256, pass B, for documents pass A; write the JSON line + a log line.
+4. If the SHA256 equals the last scan of that path — skip.
+5. `Scan-File`: SHA256 → `Invoke-Scan` → write the JSON line + a log line.
 6. Ctrl+C / task stop → `finally`: unregister events, `Dispose` the watchers.
-On start it checks that `yara64.exe` and both indexes exist and compile.
+On start it checks that `yara64.exe` and `-Rules` exist and compile.
 
 | Function | What it does |
 |---|---|
 | `Get-Category` | `document` / `general` / `$null` by extension |
 | `Test-Excluded` | path is in `OutDir` or matches `-ExcludePattern` |
 | `Wait-FileReady` | `ready` / `gone` / `timeout` |
-| `Invoke-FileScan` | pass B → rule names + errors |
-| `Invoke-DocScan` | pass A → parsed docscan JSON + disarm action |
+| `Invoke-Scan` | one `yara64` run → parsed JSON + disarm action |
 | `Scan-File` | builds the record, computes the verdict, writes JSON and log |
 | `Max-Verdict` / `Log` | the higher of two verdicts; log to console and `watcher.log` |
 
 ### Parameters
 
-`-WatchPath` (`C:\Users`), `-Base` (`C:\docscan-build`), `-Yara`, `-DocRules`, `-FileRules`,
+`-WatchPath` (`C:\Users`), `-Base` (`C:\docscan-build`), `-Yara`, `-Rules` (`<Base>\yara\docscan-project\rules\docscan-index.yar`),
 `-OutDir` (`<Base>\results`), `-Disarm` (off), `-MaxSizeMB` (100), `-SettleSeconds` (2),
 `-ReadyTimeout` (60), `-DocExt`, `-GenExt`, `-ExcludePattern`.
 
@@ -535,7 +576,7 @@ On start it checks that `yara64.exe` and both indexes exist and compile.
 # manually (Ctrl+C to stop)
 powershell -ExecutionPolicy Bypass -File C:\docscan-build\yara\docscan-project\watcher\docscan-watcher.ps1
 
-# several folders and disarm of HIGH documents (arrays only work with -Command)
+# several folders and disarm according to the policy (arrays only work with -Command)
 powershell -ExecutionPolicy Bypass -Command "& 'C:\...\docscan-watcher.ps1' -WatchPath 'C:\docscan-build\inbox','C:\Users' -Disarm"
 
 # in the background as SYSTEM
@@ -553,15 +594,15 @@ Start-ScheduledTask docscan-watcher          # Stop-ScheduledTask docscan-watche
   {"timestamp":"2026-11-02T13:24:36.205+02:00","source":"docscan","host":"WIN-TEST","event":"Created",
    "category":"document","file":{"path":"C:\\...\\Rakhunok_2026_315368.docm","name":"Rakhunok_2026_315368.docm",
    "ext":".docm","size":1924,"sha256":"822f99e6…"},"verdict":"HIGH",
-   "docscan":{"ftype":"ooxml","findings":["MACRO_SUSPICIOUS","MACRO_PRESENT"],"verdict":"HIGH",
-              "evidence":{"vba_evidence":"powershell | WScript.Shell | …"},"yara_matches":[]},
+   "docscan":{"ftype":"ooxml","findings":["MACRO_PRESENT","MACRO_SUSPICIOUS","MACRO_AUTOEXEC","MACRO_NETWORK"],
+              "verdict":"HIGH","evidence":{"vba_evidence":"powershell | WScript.Shell | …"},
+              "yara_matches":["powershell","VBA_AutoExec_DownloadCradle"],
+              "yara_file_matches":["Contains_VBA_macro_code","office_document_vba"],"details":[…]},
    "yara_file_matches":["Contains_VBA_macro_code","office_document_vba"],"disarm":null,"errors":[]}
   ```
 - `results\watcher.log` — human-readable log. Follow it live:
   `Get-Content C:\docscan-build\results\watcher.log -Encoding UTF8 -Wait` (without `-Encoding UTF8`
   PowerShell 5.1 garbles Cyrillic).
-
----
 
 ## 8. Running — cheat sheet
 
@@ -572,21 +613,21 @@ $r   = "C:\docscan-build\yara\docscan-project\rules"
 
 | I want to | Command |
 |---|---|
-| Just see the threat | `& $y --docscan-json $r\docscan-index.yar <file>` |
-| + disarm (**on a copy!**) | `Copy-Item <file> C:\docscan-build\work.docm -Force; & $y --docscan-json --docscan-disarm $r\docscan-index.yar C:\docscan-build\work.docm` |
-| Disarm only | `& $y --docscan-disarm $r\docscan-index.yar <copy>` (prints only the action line) |
-| Extract VBA to a file | `& $y --docscan-extract=vba.out $r\docscan.yar <file>` → `& $y vendor.yar vba.out` |
-| See every module field | `& $y -D $r\docscan.yar <file>` |
-| Plain YARA scan of a file | `& $y -w $r\file-index.yar <file>` |
+| Full scan (policy + vendor + Layer 2) | `& $y -w --docscan-json $r\docscan-index.yar <file>` |
+| Our detection only | `& $y -w --docscan-json $r\docscan.yar <file>` |
+| + disarm (**on a copy!**) | `Copy-Item <file> C:\docscan-build\work.docm -Force; & $y -w --docscan-json --docscan-disarm $r\docscan-index.yar C:\docscan-build\work.docm` |
+| Disarm only | `& $y -w --docscan-disarm $r\docscan-index.yar <copy>` (prints normal matches + the action line) |
+| Which policy rules matched | `& $y -w $r\docscan-policy.yar <file>` |
+| See every module fact | `& $y -D $r\docscan.yar <file>` |
+| Extract VBA to a file | `& $y --docscan-extract=vba.out $r\docscan.yar <file>` |
+| Change what counts as HIGH / what gets disarmed | edit `docscan-policy.yar` (§6.1) |
 | Regression test | `powershell -ExecutionPolicy Bypass -File ...\test-range\run_tests.ps1 -Yara $y -Samples ...\test-samples -Rules $r\docscan-index.yar` |
 | Auto-scan new files | §7 |
 
-Your own rules: `import "docscan"` + `condition: docscan.remote_template` etc. — every field from §4.2.
+`-w` hides the compiler warnings from the vendor rules (`file-index.yar`).
 
 **Golden rules:** always disarm a copy (the originals in `test-samples` stay untouched);
-an `index.yar` has `import "docscan"` + `include` with `/` and only clean rules.
-
----
+`include` paths use `/`; vendor rules have no `meta.severity`.
 
 ## 9. Building
 
@@ -724,6 +765,7 @@ Final runs after the fixes: module — 2.28 M inputs, parsers — 0.96 M inputs 
 - macOS: all vectors.
 - Windows 10 (MSVC): 12 test-range + 7 real samples, detection + disarm, Layer 2 — 2026-10-30.
 - Clean Windows 11 VM (MSVC v143, fresh build): `run_tests.ps1` with both indexes — 2026-11-02.
+- Policy in rules (2026-11-02, macOS): 19/19 verdicts and disarm actions match the reference; false-positive test — see §6.1.
 - Watcher on the VM: 23 files in `inbox`/`Downloads` + documents dropped on the desktop by hand (2
   clean work reports → INFO, 3 samples → HIGH) — 2026-11-02. No false positives.
 
@@ -769,35 +811,35 @@ described in `reference/doc-scan.ps1`.)
 
 ## 13. Known limitations and caveats
 
-**Module / disarm**
-- `LNK_LOLBIN`: MEDIUM in JSON but HIGH for disarm. An LNK with only a lolbin gets verdict MEDIUM yet
-  is deleted. Needs to be made consistent.
-- MEDIUM vectors (`external_ole`, `external_frame`, `dde_link`) are not disarmed.
-- PDF and OLE are detect-only (quarantine is external).
+**Module / policy / disarm**
+- Rules see the whole `vba_code` **including comments**: a commented-out `Shell` also matches.
+- Fact arrays are capped (rels 256, entries 512, embedded 64, dde 32); on overflow `*_truncated = 1`.
+- A DDE split across several `<w:instrText>` runs (`DDE` + `AUTO`) is not joined — a known evasion.
+- Legacy OLE (`.doc/.xls`) and PDF are not disarmed (a policy action is ignored for them; HIGH → `detect-only`).
+- `protocol_handler` disarm removes rels by handler markers; new schemes added to the rule must also
+  be added in `disarm.c`, otherwise the rel stays.
 - **Disarm on Windows with a non-ASCII path:** `disarm.c` opens the file with `fopen` and a UTF-8
   path; MSVC `fopen` interprets it as ANSI → a file with a Cyrillic name most likely will not be
-  disarmed (detection works). Needs `_wfopen`. The watcher with `-Disarm` on such files — verify/fix.
+  disarmed (detection works). Needs `_wfopen`.
 - CFB v3 only (512-byte sectors, offsets from 512); CFB v4 (4096-byte sectors) will be parsed incorrectly.
 - LNK: UTF-16 strings are taken by the low byte (Cyrillic in target/args is garbled);
   the target comes only from `LocalBasePath`.
 - The module analyses only the first memory block (for files that is the whole file; not meant for process scans).
-- `vba_code` ≤ 2 MB, `yara_matches` ≤ 2 KB, evidence ≤ 511 chars; OOXML parts > 64 MB are not analysed.
+- `vba_code` ≤ 2 MB, `yara_matches` ≤ 4 KB, evidence ≤ 511 chars; OOXML parts > 64 MB are not analysed.
+- If a scan fails (timeout), there is no JSON line for that file (it is printed at `SCAN_FINISHED`).
 
 **CLI**
-- `--docscan-json` suppresses the normal per-file match output — which is why the watcher runs a separate pass B.
+- `--docscan-json` suppresses the normal match output — vendor matches are in `yara_file_matches`.
 
 **Watcher**
 - Defender in ordinary folders may remove a malicious file first → the log says the file vanished before the scan, and there is no JSON record.
-- `invalid_trailer_structure` / `invalid_xref_numbers` (maldoc/PDF) are noisy: a damaged but clean PDF → MEDIUM.
+- `invalid_trailer_structure` / `invalid_xref_numbers` (maldoc/PDF) are noisy: a damaged but clean PDF → `yara_file_matches` → MEDIUM.
 - Archives are scanned as-is, not unpacked.
 - FileSystemWatcher buffer overflow (thousands of files at once) → some events are lost (logged).
 - `results\docscan-results.json` is not rotated.
 
 **Repository**
-- The vcxproj files keep CRLF line endings (as upstream) — do not re-save them with LF, or the diff
-  balloons to the whole file.
-
----
+- The vcxproj files keep CRLF line endings (as upstream) — do not re-save them with LF.
 
 ## 14. Git and licensing
 

@@ -1,18 +1,13 @@
-// DocScan index for the ONE-COMMAND auto-rescan flow:
+// Full DocScan index — one command does everything:
 //
-//   yara64.exe --docscan-json docscan-index.yar <document>
+//   yara64.exe --docscan-json [--docscan-disarm] docscan-index.yar <file>
 //
-// 1) import "docscan" loads our module -> structural detection + VBA extraction.
-// 2) Every rule included below is auto-applied by yara64.exe to the DECOMPRESSED
-//    VBA (Layer 2) -> matches appear in the JSON as "yara_matches":[...].
+// 1) docscan-policy.yar: import "docscan" + policy rules (meta.severity) ->
+//    "findings", "verdict", "details" and what --docscan-disarm removes.
+// 2) file-index.yar: vendor rules (no meta.severity). Each one is applied to
+//    the raw file -> "yara_file_matches", and to the decompressed VBA (Layer 2)
+//    -> "yara_matches".
 //
-// Add vendor / critical-info rules with more `include` lines. Paths are relative
-// to THIS file. Keep only rules that compile standalone (no missing modules/vars).
-
-import "docscan"
-
-include "maldoc/signature-base/gen_macro_ShellExecute_action.yar"
-// include "maldoc/signature-base/gen_maldoc.yar"
-// include "maldoc/signature-base/general_officemacros.yar"
-// include "../reference/vendor-rules-full-later/..."   // full corpus (adjust path)
-// include "crit/critinfo.yar"                           // Function 3 (critical info)
+// Paths are relative to this file. Add your own rules with more include lines.
+include "docscan-policy.yar"
+include "file-index.yar"

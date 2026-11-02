@@ -182,12 +182,17 @@ static int cure_ooxml(const char* path, const docscan_disarm_info* info,
   }
 
   // markers for relationship/override removal
-  const char* markers[6];
+  static const char* handlers[] = {
+      "ms-msdt:", "search-ms:", "search:", "ms-officecmd:", "mhtml:",
+      "ms-word:", "ms-excel:", "ms-powerpoint:", "!x-usc:", NULL};
+  const char* markers[16];
   int nm = 0;
   if (info->macro) markers[nm++] = "vbaProject";
   if (info->embedded) markers[nm++] = "oleObject";
   if (info->remote_template) markers[nm++] = "attachedTemplate";
-  if (info->protocol_handler) { markers[nm++] = "ms-msdt"; markers[nm++] = "search-ms"; }
+  if (info->protocol_handler)
+    for (int h = 0; handlers[h] != NULL; h++)
+      markers[nm++] = handlers[h];
 
   int failed = 0;
   int n = (int) mz_zip_reader_get_num_files(&zin);
@@ -281,6 +286,15 @@ int docscan_disarm(const char* path, const docscan_disarm_info* info,
     out_action[0] = 0;
   if (!info || !info->present)
     return 0;
+
+  // HIGH verdict but the policy asked for no action (e.g. PDF): report it.
+  if (!info->macro && !info->remote_template && !info->protocol_handler &&
+      !info->dde_auto && !info->embedded && !info->rtf_objupdate &&
+      !info->lnk_bad)
+  {
+    append(out_action, out_action_sz, "detect-only");
+    return 0;
+  }
 
   // LNK: the file itself is the vector -> back up and delete.
   if (info->type == 5)

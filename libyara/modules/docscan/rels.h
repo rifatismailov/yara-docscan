@@ -12,6 +12,11 @@
 // Scans a decompressed *.rels document and updates *r:
 //   remote_template / protocol_handler / external_ole / external_frame
 // and captures the offending target into r->template_url.
-void docscan_scan_rels(const uint8_t* xml, size_t size, docscan_result_t* r);
+// part: name of the .rels file inside the package (recorded with each rel).
+void docscan_scan_rels(
+    const uint8_t* xml,
+    size_t size,
+    const char* part,
+    docscan_result_t* r);
 
 #endif

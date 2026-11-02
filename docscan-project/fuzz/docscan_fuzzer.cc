@@ -13,7 +13,11 @@ const char* RULES =
     "  docscan.is_pdf or docscan.is_lnk or docscan.macro_suspicious or "
     "  docscan.remote_template or docscan.dde_auto or "
     "  docscan.vba_code contains \"Shell\" or "
-    "  docscan.lnk_args contains \"http\" "
+    "  docscan.lnk_args contains \"http\" or "
+    "  for any rel in docscan.external_rels : (rel.target matches /^https?:/i) or "
+    "  for any d in docscan.dde : (d matches /^ddeauto/i) or "
+    "  for any e in docscan.embedded : (e.is_pe == 1) or "
+    "  for any x in docscan.entries : (x.name iendswith \"vbaProject.bin\") "
     "}";
 
 YR_RULES* rules = NULL;

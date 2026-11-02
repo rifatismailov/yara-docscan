@@ -68,7 +68,13 @@ static int is_remote_target(const char* t)
   if (t[0] == '\\' && t[1] == '\\')
     return 1;
 
-  if (starts_with_ci(t, "file://") && !starts_with_ci(t, "file://localhost"))
+  // file://host/share is remote; file:///C:/... (empty host) is a local path.
+  if (starts_with_ci(t, "file://") && t[7] != '/' &&
+      !starts_with_ci(t, "file://localhost"))
+    return 1;
+
+  // file:////host/share — UNC written as a file URL
+  if (starts_with_ci(t, "file:////"))
     return 1;
 
   return 0;
@@ -88,7 +94,11 @@ static int is_protocol_handler(const char* t)
   return 0;
 }
 
-void docscan_scan_rels(const uint8_t* xml, size_t size, docscan_result_t* r)
+void docscan_scan_rels(
+    const uint8_t* xml,
+    size_t size,
+    const char* part,
+    docscan_result_t* r)
 {
   const char* p = (const char*) xml;
   const char* end = p + size;
@@ -124,6 +134,19 @@ void docscan_scan_rels(const uint8_t* xml, size_t size, docscan_result_t* r)
       if (get_attr(tag, taglen, "Target=\"", target, sizeof(target)) > 0)
       {
         get_attr(tag, taglen, "Type=\"", type, sizeof(type));
+
+        // Raw fact for policy rules: every external relationship.
+        if (r->n_external_rels < DOCSCAN_MAX_RELS)
+        {
+          docscan_rel_t* e = &r->external_rels[r->n_external_rels++];
+          snprintf(e->part, sizeof(e->part), "%s", part ? part : "");
+          snprintf(e->type, sizeof(e->type), "%s", type);
+          snprintf(e->target, sizeof(e->target), "%s", target);
+        }
+        else
+        {
+          r->external_rels_truncated = 1;
+        }
 
         if (is_protocol_handler(target))
         {

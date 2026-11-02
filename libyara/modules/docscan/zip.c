@@ -63,6 +63,16 @@ int docscan_zip_entry_name(docscan_zip* z, int i, char* buf, size_t buf_size)
   return 0;
 }
 
+uint64_t docscan_zip_entry_size(docscan_zip* z, int i)
+{
+  mz_zip_archive_file_stat st;
+
+  if (!mz_zip_reader_file_stat(&z->ar, (mz_uint) i, &st))
+    return 0;
+
+  return (uint64_t) st.m_uncomp_size;
+}
+
 uint8_t* docscan_zip_extract(docscan_zip* z, int i, size_t* out_size)
 {
   mz_zip_archive_file_stat st;

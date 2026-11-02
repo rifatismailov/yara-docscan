@@ -42,9 +42,35 @@ static int is_embedded_ole(const char* name)
   return strstr(name, "embeddings/oleObject") != NULL && ends_with(name, ".bin");
 }
 
+static int lower(uint8_t c)
+{
+  return (c >= 'A' && c <= 'Z') ? c + 32 : c;
+}
+
+// Raw fact: every "DDE..." field instruction (DDEAUTO or "DDE "), captured up
+// to the next '<' or '"', so rules can decide which commands are dangerous.
+static void record_dde(const uint8_t* xml, size_t n, docscan_result_t* r)
+{
+  for (size_t i = 0; i + 4 <= n && r->n_dde < DOCSCAN_MAX_DDE; i++)
+  {
+    if (lower(xml[i]) != 'd' || lower(xml[i + 1]) != 'd' ||
+        lower(xml[i + 2]) != 'e' ||
+        (lower(xml[i + 3]) != 'a' && xml[i + 3] != ' '))
+      continue;
+
+    char* out = r->dde[r->n_dde++];
+    size_t k = 0;
+    while (i < n && xml[i] != '<' && xml[i] != '"' && k + 1 < 512)
+      out[k++] = (char) xml[i++];
+    out[k] = '\0';
+  }
+}
+
 // DDE detection inside a decompressed body xml part.
 static void scan_dde(const uint8_t* xml, size_t n, docscan_result_t* r)
 {
+  record_dde(xml, n, r);
+
   if (docscan_contains_ci(xml, n, "DDEAUTO"))
   {
     r->dde_auto = 1;
@@ -78,7 +104,12 @@ static void scan_dde(const uint8_t* xml, size_t n, docscan_result_t* r)
 }
 
 // Look for an embedded LNK signature or an embedded PE (MZ..PE).
-static void scan_embedded_ole(const uint8_t* d, size_t n, docscan_result_t* r)
+// Sets the per-object facts in *e and the legacy flags in *r.
+static void scan_embedded_ole(
+    const uint8_t* d,
+    size_t n,
+    docscan_embedded_t* e,
+    docscan_result_t* r)
 {
   static const uint8_t lnk_sig[20] = {
       0x4C, 0x00, 0x00, 0x00, 0x01, 0x14, 0x02, 0x00, 0x00, 0x00,
@@ -88,6 +119,7 @@ static void scan_embedded_ole(const uint8_t* d, size_t n, docscan_result_t* r)
   if (lp != NULL)
   {
     r->embedded_lnk = 1;
+    e->is_lnk = 1;
     docscan_inspect_lnk(lp, (size_t) (d + n - lp), r);  // parse for target/args
   }
 
@@ -104,6 +136,7 @@ static void scan_embedded_ole(const uint8_t* d, size_t n, docscan_result_t* r)
           d[p + 1] == 'E' && d[p + 2] == 0 && d[p + 3] == 0)
       {
         r->embedded_pe = 1;
+        e->is_pe = 1;
         break;
       }
     }
@@ -126,13 +159,25 @@ void docscan_inspect_ooxml(const uint8_t* data, size_t size, docscan_result_t* r
     if (docscan_zip_entry_name(z, i, name, sizeof(name)) != 0)
       continue;
 
+    // Raw fact: every part of the package.
+    if (r->n_entries < DOCSCAN_MAX_ENTRIES)
+    {
+      docscan_entry_t* en = &r->entries[r->n_entries++];
+      snprintf(en->name, sizeof(en->name), "%s", name);
+      en->size = docscan_zip_entry_size(z, i);
+    }
+    else
+    {
+      r->entries_truncated = 1;
+    }
+
     if (ends_with(name, ".rels"))
     {
       size_t sz;
       uint8_t* c = docscan_zip_extract(z, i, &sz);
       if (c != NULL)
       {
-        docscan_scan_rels(c, sz, r);
+        docscan_scan_rels(c, sz, name, r);
         docscan_zip_free(c);
       }
     }
@@ -161,9 +206,16 @@ void docscan_inspect_ooxml(const uint8_t* data, size_t size, docscan_result_t* r
     {
       size_t sz;
       uint8_t* c = docscan_zip_extract(z, i, &sz);
+      docscan_embedded_t tmp;
+      docscan_embedded_t* e = r->n_embedded < DOCSCAN_MAX_EMBEDDED
+                                  ? &r->embedded[r->n_embedded++]
+                                  : &tmp;
+      memset(e, 0, sizeof(*e));
+      snprintf(e->name, sizeof(e->name), "%s", name);
+      e->size = docscan_zip_entry_size(z, i);
       if (c != NULL)
       {
-        scan_embedded_ole(c, sz, r);
+        scan_embedded_ole(c, sz, e, r);
         docscan_zip_free(c);
       }
     }

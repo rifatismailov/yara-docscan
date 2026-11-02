@@ -9,11 +9,56 @@
 
 #include "magic.h"
 
-// All detection results for one document. Grows milestone by milestone.
+// Raw facts exposed to rules (the policy file decides what they mean).
+// Arrays are capped; *_truncated tells a rule that more existed (padding a
+// document with junk entries must not hide the interesting ones silently).
+#define DOCSCAN_MAX_RELS     256
+#define DOCSCAN_MAX_ENTRIES  512
+#define DOCSCAN_MAX_EMBEDDED 64
+#define DOCSCAN_MAX_DDE      32
+
+typedef struct
+{
+  char part[192];    // the .rels file it came from, e.g. word/_rels/settings.xml.rels
+  char type[192];    // relationship Type URI
+  char target[512];  // Target as written in the file
+} docscan_rel_t;
+
+typedef struct
+{
+  char name[256];
+  uint64_t size;  // uncompressed size from the ZIP header
+} docscan_entry_t;
+
+typedef struct
+{
+  char name[256];
+  uint64_t size;
+  int is_pe;
+  int is_lnk;
+} docscan_embedded_t;
+
+// All detection results for one document.
 // docscan.c maps these fields onto the module's YARA-visible fields.
+// Large (~250 KB): always heap-allocate it.
 typedef struct
 {
   docscan_type_t type;
+
+  // --- raw facts for policy rules ---
+  docscan_rel_t external_rels[DOCSCAN_MAX_RELS];  // TargetMode="External" only
+  int n_external_rels;
+  int external_rels_truncated;
+
+  docscan_entry_t entries[DOCSCAN_MAX_ENTRIES];   // every ZIP part
+  int n_entries;
+  int entries_truncated;
+
+  docscan_embedded_t embedded[DOCSCAN_MAX_EMBEDDED];  // embeddings/oleObject*.bin
+  int n_embedded;
+
+  char dde[DOCSCAN_MAX_DDE][512];  // every DDE / DDEAUTO field instruction
+  int n_dde;
 
   // --- RTF ---
   int rtf_objupdate;        // \objupdate — auto-updating OLE object     (HIGH)

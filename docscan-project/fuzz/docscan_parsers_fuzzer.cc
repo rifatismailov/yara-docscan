@@ -63,8 +63,11 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size)
   const uint8_t* d = data + 1;
   size_t n = size - 1;
 
-  docscan_result_t r;
-  memset(&r, 0, sizeof(r));
+  // ~250 KB: heap, like the module does.
+  docscan_result_t* rp = (docscan_result_t*) calloc(1, sizeof(docscan_result_t));
+  if (rp == NULL)
+    return 0;
+  docscan_result_t& r = *rp;
 
   switch (sel)
   {
@@ -80,10 +83,11 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size)
     free(p);
     break;
   }
-  case 6: docscan_scan_rels(d, n, &r); break;
+  case 6: docscan_scan_rels(d, n, "word/_rels/settings.xml.rels", &r); break;
   case 7: fuzz_disarm(d, n); break;
   }
 
   free(r.vba_code);
+  free(rp);
   return 0;
 }
