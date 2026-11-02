@@ -56,7 +56,8 @@ for f in "$FUZZ"/regressions/*; do
 done
 [ "$fail" -eq 0 ] || { echo "Regression inputs fail — fix before fuzzing further."; exit 1; }
 
-python3 "$FUZZ/make_corpus.py" "$REPO/docscan-project/test-samples" "$BUILD/corpus"
+EXTRA=""; [ -d "$FUZZ/external" ] && EXTRA="$FUZZ/external"    # fetch_corpus.sh
+python3 "$FUZZ/make_corpus.py" "$BUILD/corpus" "$REPO/docscan-project/test-samples" $EXTRA
 
 cat <<EOF
 

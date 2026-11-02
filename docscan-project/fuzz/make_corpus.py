@@ -5,11 +5,14 @@
   corpus/parsers/  <selector byte> + payload        -> docscan_parsers_fuzzer
                    (selectors as in docscan_parsers_fuzzer.cc)
 
-Usage: make_corpus.py <test-samples dir> <out dir>
+Usage: make_corpus.py <out dir> <source dir> [<source dir> ...]
+Type is detected by magic bytes (test-data folders often use odd extensions).
+Files larger than MAX_SEED are skipped: libFuzzer truncates inputs to -max_len.
 """
 import hashlib, os, sys, zipfile
 from pathlib import Path
 
+MAX_SEED = 256 * 1024
 SEL = dict(ole=0, lnk=1, rtf=2, pdf=3, ooxml=4, msovba=5, rels=6, disarm=7)
 
 
@@ -27,12 +30,19 @@ def msovba_containers(cfb):
     return out[:20]
 
 
-def main(src, dst):
+def main(dst, srcs):
     mod, par = Path(dst) / "module", Path(dst) / "parsers"
-    for f in sorted(Path(src).rglob("*")):
-        if not f.is_file():
+    files = (f for src in srcs for f in sorted(Path(src).rglob("*"))
+             if f.is_file() and ".git" not in f.parts)
+    for f in files:
+        try:
+            if f.stat().st_size > MAX_SEED:
+                continue
+            data = f.read_bytes()
+        except OSError:
             continue
-        data = f.read_bytes()
+        if data[:4] not in (b"PK\x03\x04", b"\xd0\xcf\x11\xe0", b"{\\rt", b"%PDF", b"L\x00\x00\x00"):
+            continue
         put(mod, data)
         head = data[:4]
         if head[:2] == b"PK":
@@ -51,7 +61,7 @@ def main(src, dst):
                             put(par, bytes([SEL["msovba"]]) + c)
                     elif "embeddings/oleObject" in name:
                         put(par, bytes([SEL["ole"]]) + part)
-            except zipfile.BadZipFile:
+            except Exception:  # broken zips are welcome as raw seeds
                 pass
         elif head == b"\xd0\xcf\x11\xe0":
             put(par, bytes([SEL["ole"]]) + data)
@@ -67,4 +77,6 @@ def main(src, dst):
 
 
 if __name__ == "__main__":
-    main(sys.argv[1], sys.argv[2])
+    if len(sys.argv) < 3:
+        sys.exit(__doc__)
+    main(sys.argv[1], sys.argv[2:])
