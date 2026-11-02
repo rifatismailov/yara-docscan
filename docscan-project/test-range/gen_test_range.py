@@ -43,6 +43,37 @@ def write_docx(name, extra):
             z.writestr(path, data)
     return p
 
+def write_xlsx(name, sheet_cells, ddelink=None):
+    """Minimal valid workbook: one sheet; optional external DDE link part."""
+    SS = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+    R = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+    ct = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+          '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+          '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+          '<Default Extension="xml" ContentType="application/xml"/>'
+          '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'
+          '<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'
+          + ('<Override PartName="/xl/externalLinks/externalLink1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.externalLink+xml"/>' if ddelink else '')
+          + '</Types>')
+    root = ('<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            '<Relationship Id="rId1" Type="%s/officeDocument" Target="xl/workbook.xml"/></Relationships>' % R)
+    wb = ('<?xml version="1.0"?><workbook xmlns="%s" xmlns:r="%s"><sheets><sheet name="Sheet1" sheetId="1" r:id="rId1"/></sheets>'
+          + ('<externalReferences><externalReference r:id="rId2"/></externalReferences>' if ddelink else '')
+          + '</workbook>') % (SS, R)
+    wbrels = ('<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+              '<Relationship Id="rId1" Type="%s/worksheet" Target="worksheets/sheet1.xml"/>' % R
+              + ('<Relationship Id="rId2" Type="%s/externalLink" Target="externalLinks/externalLink1.xml"/>' % R if ddelink else '')
+              + '</Relationships>')
+    sheet = '<?xml version="1.0"?><worksheet xmlns="%s"><sheetData><row r="1">%s</row></sheetData></worksheet>' % (SS, sheet_cells)
+    parts = {"[Content_Types].xml": ct, "_rels/.rels": root, "xl/workbook.xml": wb,
+             "xl/_rels/workbook.xml.rels": wbrels, "xl/worksheets/sheet1.xml": sheet}
+    if ddelink:
+        parts["xl/externalLinks/externalLink1.xml"] = (
+            '<?xml version="1.0"?><externalLink xmlns="%s">%s</externalLink>' % (SS, ddelink))
+    with zipfile.ZipFile(os.path.join(OUT, name), "w", zipfile.ZIP_DEFLATED) as z:
+        for path, data in parts.items():
+            z.writestr(path, data.encode())
+
 def rels(entries):
     """entries: list of (type_suffix, target, mode)."""
     body = ['<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">']
@@ -131,13 +162,13 @@ def gen():
     created.append("rtf_objupdate.rtf")
 
     # 2. PDF auto-JS (OpenAction + JavaScript + dangerous API)
-    pdf = ("%PDF-1.5\n1 0 obj<</OpenAction<</S/JavaScript/JS(app.launchURL('%s'))>>>>endobj\n"
+    pdf = ("%%PDF-1.5\n1 0 obj<</OpenAction<</S/JavaScript/JS(app.launchURL('%s'))>>>>endobj\n"
            "trailer<</Root 1 0 R>>\n%%%%EOF" % TEST_URL)
     open(os.path.join(OUT, "pdf_js_auto.pdf"), "w").write(pdf)
     created.append("pdf_js_auto.pdf")
 
     # 3. PDF /Launch
-    pdf2 = "%PDF-1.5\n1 0 obj<</OpenAction<</S/Launch/F(cmd.exe)>>>>endobj\ntrailer<</Root 1 0 R>>\n%%%%EOF"
+    pdf2 = "%PDF-1.5\n1 0 obj<</OpenAction<</S/Launch/F(cmd.exe)>>>>endobj\ntrailer<</Root 1 0 R>>\n%%EOF"   # not %-formatted: a literal %%EOF
     open(os.path.join(OUT, "pdf_launch.pdf"), "w").write(pdf2)
     created.append("pdf_launch.pdf")
 
@@ -164,6 +195,28 @@ def gen():
     dde_link = dde_doc.replace(" DDEAUTO c:", " DDE c:").replace("notepad.exe TEST", "cmd.exe /c notepad.exe TEST")
     write_docx("dde_link.docx", {"word/document.xml": dde_link.encode()})
     created.append("dde_link.docx")
+
+    # 6c. DDEAUTO split over two <w:instrText> runs (evades a plain string search)
+    W = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"'
+    split = ('<?xml version="1.0"?><w:document %s><w:body><w:p>'
+             '<w:r><w:fldChar w:fldCharType="begin"/></w:r>'
+             '<w:r><w:instrText xml:space="preserve"> DDE</w:instrText></w:r>'
+             '<w:r><w:instrText xml:space="preserve">AUTO c:\\Windows\\System32\\cmd.exe "/c notepad.exe" </w:instrText></w:r>'
+             '<w:r><w:fldChar w:fldCharType="separate"/></w:r><w:r><w:t>TEST</w:t></w:r>'
+             '<w:r><w:fldChar w:fldCharType="end"/></w:r>'
+             '</w:p></w:body></w:document>') % W
+    write_docx("dde_split.docx", {"word/document.xml": split.encode()})
+    created.append("dde_split.docx")
+
+    # 6d/6e. Excel DDE: a formula cmd|'..'!A0, and an external <ddeLink>
+    write_xlsx("excel_dde_formula.xlsx",
+               sheet_cells='<c r="A1"><f>cmd|\' /C notepad.exe\'!A0</f><v>0</v></c>')
+    created.append("excel_dde_formula.xlsx")
+    write_xlsx("excel_ddelink.xlsx", sheet_cells='<c r="A1"><v>1</v></c>',
+               ddelink='<ddeLink xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+                       'ddeService="cmd" ddeTopic="/c notepad.exe"><ddeItems>'
+                       '<ddeItem name="A0" advise="1"/></ddeItems></ddeLink>')
+    created.append("excel_ddelink.xlsx")
 
     # 7. External OLE (MEDIUM)
     write_docx("external_ole.docx", {

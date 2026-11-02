@@ -13,6 +13,7 @@
 #include "vba.h"
 #include "search.h"
 
+#include <ctype.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -77,10 +78,148 @@ static void record_dde(const uint8_t* xml, size_t n, docscan_result_t* r)
   }
 }
 
+// Add an instruction to dde[] (trimmed, deduplicated).
+static void add_dde(docscan_result_t* r, const char* s)
+{
+  while (*s == ' ')
+    s++;
+  if (*s == '\0' || r->n_dde >= DOCSCAN_MAX_DDE)
+    return;
+  for (int i = 0; i < r->n_dde; i++)
+    if (strcmp(r->dde[i], s) == 0)
+      return;
+  snprintf(r->dde[r->n_dde++], sizeof(r->dde[0]), "%s", s);
+  if (r->dde_command[0] == '\0')
+    snprintf(r->dde_command, sizeof(r->dde_command), "%s", s);
+}
+
+// Word complex fields: the instruction may be split over several
+// <w:instrText> runs ("DDE" + "AUTO c:\..."), a known way to dodge a plain
+// string search. Join the runs of each field (fldChar begin .. separate/end).
+static void record_complex_fields(const uint8_t* xml, size_t n, docscan_result_t* r)
+{
+  char instr[512];
+  size_t il = 0;
+  int open = 0;
+
+  for (size_t i = 0; i < n; i++)
+  {
+    if (xml[i] != '<')
+      continue;
+
+    if (n - i > 10 && memcmp(xml + i, "<w:fldChar", 10) == 0)
+    {
+      const uint8_t* gt = docscan_memmem(xml + i, n - i, ">", 1);
+      size_t tag = gt ? (size_t) (gt - (xml + i)) : n - i;
+      int begin = docscan_contains(xml + i, tag, "\"begin\"");
+      if (begin)
+      {
+        open = 1;
+        il = 0;
+      }
+      else if (open && (docscan_contains(xml + i, tag, "\"separate\"") ||
+                        docscan_contains(xml + i, tag, "\"end\"")))
+      {
+        instr[il] = '\0';
+        const char* t = instr;
+        while (*t == ' ')
+          t++;
+        if (lower((uint8_t) t[0]) == 'd' && lower((uint8_t) t[1]) == 'd' &&
+            lower((uint8_t) t[2]) == 'e')
+          add_dde(r, t);
+        open = 0;
+      }
+    }
+    else if (open && n - i > 12 && memcmp(xml + i, "<w:instrText", 12) == 0)
+    {
+      const uint8_t* gt = docscan_memmem(xml + i, n - i, ">", 1);
+      if (gt == NULL)
+        break;
+      size_t c = (size_t) (gt - xml) + 1;
+      while (c < n && xml[c] != '<' && il + 1 < sizeof(instr))
+        instr[il++] = (char) xml[c++];
+      i = c - 1;
+    }
+  }
+}
+
+// Excel DDE formula: service|'topic'!item  e.g.  cmd|' /c calc'!A0
+static int is_dde_formula(const uint8_t* f, size_t len)
+{
+  for (size_t p = 1; p < len; p++)
+  {
+    if (f[p] != '|')
+      continue;
+    size_t k = p;
+    while (k > 0 && (isalnum(f[k - 1]) || f[k - 1] == '_' || f[k - 1] == '.'))
+      k--;
+    if (k < p && docscan_memmem(f + p, len - p, "!", 1) != NULL)
+      return 1;
+  }
+  return 0;
+}
+
+// xl/worksheets/sheetN.xml: every <f>..</f> holding a DDE formula -> dde[].
+static void record_excel_formulas(const uint8_t* xml, size_t n, docscan_result_t* r)
+{
+  for (size_t i = 0; i + 3 < n && r->n_dde < DOCSCAN_MAX_DDE; i++)
+  {
+    if (xml[i] != '<' || xml[i + 1] != 'f' || (xml[i + 2] != '>' && xml[i + 2] != ' '))
+      continue;
+    const uint8_t* gt = docscan_memmem(xml + i, n - i, ">", 1);
+    if (gt == NULL || gt[-1] == '/')
+      continue;
+    size_t c0 = (size_t) (gt - xml) + 1;
+    const uint8_t* end = docscan_memmem(xml + c0, n - c0, "</f>", 4);
+    if (end == NULL)
+      break;
+    size_t flen = (size_t) (end - (xml + c0));
+    if (is_dde_formula(xml + c0, flen))
+    {
+      char buf[512];
+      size_t k = (size_t) snprintf(buf, sizeof(buf), "DDE ");
+      for (size_t j = 0; j < flen && k + 1 < sizeof(buf); j++)
+        buf[k++] = (char) xml[c0 + j];
+      buf[k] = '\0';
+      add_dde(r, buf);
+    }
+    i = (size_t) (end - xml);
+  }
+}
+
+// xl/externalLinks/externalLinkN.xml: <ddeLink ddeService=".." ddeTopic="..">
+static void record_excel_ddelink(const uint8_t* xml, size_t n, docscan_result_t* r)
+{
+  const uint8_t* at = docscan_memmem(xml, n, "<ddeLink", 8);
+  if (at == NULL)
+    return;
+  const uint8_t* gt = docscan_memmem(at, n - (size_t) (at - xml), ">", 1);
+  size_t tl = gt ? (size_t) (gt - at) : n - (size_t) (at - xml);
+  char svc[200] = "", topic[300] = "";
+  const char* names[2] = {"ddeService=\"", "ddeTopic=\""};
+  char* outs[2] = {svc, topic};
+  size_t szs[2] = {sizeof(svc), sizeof(topic)};
+  for (int a = 0; a < 2; a++)
+  {
+    const uint8_t* v = docscan_memmem(at, tl, names[a], strlen(names[a]));
+    if (v == NULL)
+      continue;
+    v += strlen(names[a]);
+    size_t k = 0;
+    while (v < at + tl && *v != '"' && k + 1 < szs[a])
+      outs[a][k++] = (char) *v++;
+    outs[a][k] = '\0';
+  }
+  char buf[512];
+  snprintf(buf, sizeof(buf), "DDE %s %s", svc, topic);
+  add_dde(r, buf);
+}
+
 // DDE detection inside a decompressed body xml part.
 static void scan_dde(const uint8_t* xml, size_t n, docscan_result_t* r)
 {
   record_dde(xml, n, r);
+  record_complex_fields(xml, n, r);
 
   if (docscan_contains_ci(xml, n, "DDEAUTO"))
   {
@@ -210,6 +349,18 @@ void docscan_inspect_ooxml(const uint8_t* data, size_t size, docscan_result_t* r
       if (c != NULL)
       {
         scan_dde(c, sz, r);
+        if (strstr(name, "xl/worksheets/"))
+          record_excel_formulas(c, sz, r);
+        docscan_zip_free(c);
+      }
+    }
+    else if (strstr(name, "xl/externalLinks/externalLink") && ends_with(name, ".xml"))
+    {
+      size_t sz;
+      uint8_t* c = docscan_zip_extract(z, i, &sz);
+      if (c != NULL)
+      {
+        record_excel_ddelink(c, sz, r);
         docscan_zip_free(c);
       }
     }

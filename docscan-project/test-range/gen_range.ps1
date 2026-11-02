@@ -95,6 +95,19 @@ New-Injected "$R\dde_link.docx" {
   $doc = $doc -replace '</w:body>', ($fld + '</w:body>')
   Add-TextEntry $zip "word/document.xml" $doc
 }
+# DDEAUTO split over two instrText runs (evades plain string search)
+New-Injected "$R\dde_split.docx" {
+  param($zip)
+  $doc = Get-EntryText $zip "word/document.xml"
+  $fld = '<w:p><w:r><w:fldChar w:fldCharType="begin"/></w:r>' +
+         '<w:r><w:instrText xml:space="preserve"> DDE</w:instrText></w:r>' +
+         '<w:r><w:instrText xml:space="preserve">AUTO c:\\Windows\\System32\\cmd.exe "/c notepad.exe" </w:instrText></w:r>' +
+         '<w:r><w:fldChar w:fldCharType="separate"/></w:r><w:r><w:t>TEST</w:t></w:r>' +
+         '<w:r><w:fldChar w:fldCharType="end"/></w:r></w:p>'
+  $doc = $doc -replace '</w:body>', ($fld + '</w:body>')
+  Add-TextEntry $zip "word/document.xml" $doc
+}
+# (Excel DDE samples: gen_test_range.py -> excel_dde_formula.xlsx, excel_ddelink.xlsx)
 # embedded PE
 New-Injected "$R\embedded_pe.docx" {
   param($zip)

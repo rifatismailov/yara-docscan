@@ -184,6 +184,11 @@ static bool disable_console_logs = false;
 static bool docscan_json = false;
 static char* docscan_extract = NULL;
 static bool docscan_disarm_flag = false;
+// --docscan-backup-dir. The arg parser hands string options over as ANSI on
+// Windows (lossy for Cyrillic), so there the UTF-8 value is taken from the
+// original wide argv in _tmain (docscan_backup_dir_utf8).
+static char* docscan_backup_dir = NULL;
+static char docscan_backup_dir_utf8[4096];
 static YR_RULES* g_rules = NULL;  // loaded rules, for Layer-2 VBA re-scan
 static long total_count = 0;
 static long limit = 0;
@@ -229,6 +234,13 @@ args_option_t options[] = {
         _T("docscan-disarm"),
         &docscan_disarm_flag,
         _T("cure (disarm) the document in place if a HIGH vector is found")),
+
+    OPT_STRING(
+        0,
+        _T("docscan-backup-dir"),
+        &docscan_backup_dir,
+        _T("store disarm backups and quarantined files in DIR (must exist)"),
+        _T("DIR")),
 
     OPT_BOOLEAN(
         'c',
@@ -1440,6 +1452,7 @@ static void docscan_on_match(YR_RULE* rule, DOCSCAN_STATE* st)
     else if (strcmp(disarm, "embedded") == 0) ds->embedded = 1;
     else if (strcmp(disarm, "rtf_objupdate") == 0) ds->rtf_objupdate = 1;
     else if (strcmp(disarm, "lnk_delete") == 0) ds->lnk_bad = 1;
+    else if (strcmp(disarm, "quarantine") == 0) ds->quarantine = 1;
     else return;
     ds->high = 1;  // "something to cure"
   }
@@ -1518,6 +1531,7 @@ static void do_disarm(const char_t* file_path, docscan_disarm_info* ds)
   char utf8[4096];
   WideCharToMultiByte(
       CP_UTF8, 0, file_path, -1, utf8, (int) sizeof(utf8), NULL, NULL);
+  ds->backup_dir = docscan_backup_dir_utf8[0] ? docscan_backup_dir_utf8 : NULL;
   docscan_disarm(utf8, ds, action, sizeof(action));
   // Print the whole line in narrow mode (wide/narrow mixing drops output).
   fflush(stdout);
@@ -1526,6 +1540,7 @@ static void do_disarm(const char_t* file_path, docscan_disarm_info* ds)
   fflush(stdout);
   _setmode(_fileno(stdout), _O_U8TEXT);
 #else
+  ds->backup_dir = docscan_backup_dir_utf8[0] ? docscan_backup_dir_utf8 : NULL;
   docscan_disarm(file_path, ds, action, sizeof(action));
   printf("docscan-disarm: %s -> %s\n", file_path, action[0] ? action : "none");
   fflush(stdout);
@@ -1836,7 +1851,30 @@ int _tmain(int argc, const char_t** argv)
   int flags = 0;
   int result;
 
+#if defined(_WIN32) && defined(_UNICODE)
+  // Keep --docscan-backup-dir lossless: read it from the wide argv as UTF-8.
+  for (int i = 1; i < argc; i++)
+  {
+    const wchar_t* opt = L"--docscan-backup-dir";
+    size_t ol = wcslen(opt);
+    const wchar_t* val = NULL;
+    if (wcsncmp(argv[i], opt, ol) == 0 && argv[i][ol] == L'=')
+      val = argv[i] + ol + 1;
+    else if (wcscmp(argv[i], opt) == 0 && i + 1 < argc)
+      val = argv[i + 1];
+    if (val != NULL)
+      WideCharToMultiByte(CP_UTF8, 0, val, -1, docscan_backup_dir_utf8,
+                          (int) sizeof(docscan_backup_dir_utf8), NULL, NULL);
+  }
+#endif
+
   argc = args_parse(options, argc, argv);
+
+#if !(defined(_WIN32) && defined(_UNICODE))
+  if (docscan_backup_dir != NULL)
+    snprintf(docscan_backup_dir_utf8, sizeof(docscan_backup_dir_utf8), "%s",
+             docscan_backup_dir);
+#endif
 
   scan_opts.follow_symlinks = follow_symlinks;
   scan_opts.recursive_search = recursive_search;

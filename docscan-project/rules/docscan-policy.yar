@@ -9,7 +9,10 @@
 //   meta.finding   name shown in JSON "findings" (default: rule name)
 //   meta.disarm    what --docscan-disarm removes when this rule matches:
 //                    macro | remote_template | protocol_handler | dde |
-//                    embedded | rtf_objupdate | lnk_delete
+//                    embedded | rtf_objupdate | lnk_delete | quarantine
+//                  quarantine = back up to --docscan-backup-dir and delete the
+//                  file (for what cannot be cured in place; legacy .doc/.xls
+//                  with "macro" are quarantined automatically)
 //                  (no disarm meta = detect only)
 //
 // verdict = highest severity among matching policy rules (INFO if none).
@@ -61,8 +64,8 @@ rule DS_DDE_AUTO
     for any d in docscan.dde : ( d matches /^ddeauto/i )
 }
 
-// Plain DDE needs the user to accept Word's link-update prompt, but a DDE field
-// that starts cmd/powershell/mshta/rundll32 has no legitimate use.
+// Plain DDE (Word field, Excel formula cmd|'..'!A0, Excel ddeLink) needs the user
+// to accept a prompt, but a DDE link that starts a shell/LOLBin has no legitimate use.
 rule DS_DDE_LINK
 {
   meta:
@@ -72,7 +75,8 @@ rule DS_DDE_LINK
     mitre    = "T1559.002"
   condition:
     for any d in docscan.dde : (
-      d matches /^dde /i and d matches /(cmd|powershell|mshta|rundll32)/i
+      d matches /^dde /i and
+      d matches /(cmd|powershell|pwsh|mshta|rundll32|regsvr32|msiexec|certutil|bitsadmin|wscript|cscript|msexcel)/i
     )
 }
 
@@ -188,6 +192,7 @@ rule DS_PDF_LAUNCH
   meta:
     severity = "HIGH"
     finding  = "PDF_LAUNCH"
+    disarm   = "quarantine"   // a PDF cannot be cured in place
   strings:
     $launch = "/Launch"
   condition:
@@ -199,6 +204,7 @@ rule DS_PDF_JS_AUTO
   meta:
     severity = "HIGH"
     finding  = "PDF_JS_AUTO"
+    disarm   = "quarantine"
   strings:
     $js1  = "/JavaScript"
     $js2  = "/JS"
@@ -289,6 +295,28 @@ rule DS_LNK_OBFUSCATED
     mitre    = "T1204.001"
   condition:
     docscan.lnk_args matches /(\s-(e|en|enc|ec|encodedcommand)\s|frombase64string|-w(indowstyle)?\s+hidden|\biex\b|invoke-expression|downloadstring)/i
+}
+
+// Target on a network share / WebDAV. Executable there = classic remote payload.
+rule DS_LNK_REMOTE_EXEC
+{
+  meta:
+    severity = "HIGH"
+    finding  = "LNK_REMOTE_EXEC"
+    disarm   = "lnk_delete"
+    mitre    = "T1204.001"
+  condition:
+    docscan.lnk_target matches /^\\\\.*\.(exe|scr|com|pif|bat|cmd|ps1|vbs|vbe|js|jse|wsf|hta|dll|cpl|msi|lnk)$/i
+}
+
+// Shortcuts to folders/documents on file servers are normal in companies.
+rule DS_LNK_REMOTE_TARGET
+{
+  meta:
+    severity = "MEDIUM"
+    finding  = "LNK_REMOTE_TARGET"
+  condition:
+    docscan.lnk_target matches /^\\\\/ and not DS_LNK_REMOTE_EXEC
 }
 
 // A shortcut to a LOLBin alone is common (Start menu "Windows PowerShell"):

@@ -157,7 +157,7 @@ docscan-project/
     samples/generated/              локальний дубль test-samples/generated (не в git)
   test-samples/                     ОРИГІНАЛИ тест-набору (не лікувати напряму!)
     provided/  (7)                  реальні семпли замовника (живий C2) — НЕ в git
-    generated/ (13)                 безпечний полігон, по файлу на вектор
+    generated/ (16)                 безпечний полігон, по файлу на вектор
   reference/                        першоджерела (PS-скрипт, Mandiant, стаття, повний vendor-корпус)
 ```
 
@@ -234,7 +234,7 @@ docscan-project/
 | `number_of_entries`, `entries_truncated` | integer | |
 | `embedded[i].name` / `.size` / `.is_pe` / `.is_lnk` | масив (≤ 64) | кожен `embeddings/oleObject*.bin` |
 | `number_of_embedded` | integer | |
-| `dde[i]` | масив рядків (≤ 32) | кожна інструкція поля `DDE…`/`DDEAUTO…` (до `<` або `"`) |
+| `dde[i]` | масив рядків (≤ 32) | кожна DDE-інструкція: поле Word `DDE…`/`DDEAUTO…` (і розбите на кілька `<w:instrText>` — склеєне), формула Excel `сервіс\|'тема'!…` → `DDE сервіс\|…`, Excel `ddeLink` → `DDE <ddeService> <ddeTopic>` |
 | `number_of_dde` | integer | |
 | `vba_code`, `lnk_target`, `lnk_args` | string | текст макросу; ціль і аргументи LNK |
 
@@ -290,11 +290,15 @@ OOXML (docx/xlsx/pptx) — ZIP із DEFLATE, тому сирий пошук не
 
 | Функція | Що робить |
 |---|---|
-| `docscan_inspect_ooxml(data, size, r)` | Відкриває ZIP; кожну частину записує у факти `entries[]`; за іменем кожного запису: `*.rels` → `docscan_scan_rels`; `*vbaProject.bin` → `macro_present=1` + `docscan_scan_vba_container`; тіло документа → `scan_dde`; `embeddings/oleObject*.bin` → `scan_embedded_ole`. |
+| `docscan_inspect_ooxml(data, size, r)` | Відкриває ZIP; кожну частину записує у факти `entries[]`; за іменем кожного запису: `*.rels` → `docscan_scan_rels`; `*vbaProject.bin` → `macro_present=1` + `docscan_scan_vba_container`; тіло документа (Word/Excel) → `scan_dde`, для `xl/worksheets/` ще `record_excel_formulas`; `xl/externalLinks/externalLink*.xml` → `record_excel_ddelink`; `embeddings/oleObject*.bin` → `scan_embedded_ole`. |
 | `is_body_xml(name)` | `word/document.xml`, `word/header*.xml`, `word/footer*.xml`, `xl/worksheets/sheet*.xml`, `xl/workbook.xml`. |
 | `is_embedded_ole(name)` | `embeddings/oleObject*.bin`. |
 | `record_dde(xml, n, r)` | Факт: кожна інструкція `DDEAUTO…` або `DDE …` (без регістру) → `dde[]` (≤ 32). Кінець: в атрибуті `w:instr="…"` — до `"`, у тексті `<w:instrText>` — до `<` (лапки всередині команди зберігаються). Перша інструкція → доказ `dde_command`. |
-| `scan_dde(xml, n, r)` | Викликає `record_dde`; далі прапорці: `DDEAUTO` (без регістру) → `dde_auto` + `dde_command` (фрагмент від `DDEAUTO` до `<`). Інакше `DDE ` + cmd/powershell/mshta/rundll32 → `dde_link`. |
+| `scan_dde(xml, n, r)` | `record_dde` + `record_complex_fields`; далі прапорці: `DDEAUTO` (без регістру) → `dde_auto`; `DDE ` + cmd/powershell/mshta/rundll32 → `dde_link`. |
+| `record_complex_fields(xml, n, r)` | Складені поля Word: склеює текст усіх `<w:instrText>` від `fldChar begin` до `separate`/`end` — ловить `DDE` + `AUTO …`, розбиті на кілька runs (відомий обхід пошуку рядка). |
+| `is_dde_formula` / `record_excel_formulas(xml, n, r)` | Формула в `<f>…</f>` з конструкцією `сервіс\|'…'!…` (`cmd\|' /c calc'!A0`) → `dde[]` як `DDE <формула>`. |
+| `record_excel_ddelink(xml, n, r)` | `<ddeLink ddeService="…" ddeTopic="…">` → `dde[]` як `DDE <service> <topic>`. |
+| `add_dde(r, s)` | Додає інструкцію в `dde[]` (обрізає пробіли, без дублікатів); перша → доказ `dde_command`. |
 | `scan_embedded_ole(d, n, e, r)` | Кожен об'єкт записується у `embedded[]` (ім'я, розмір, `is_pe`, `is_lnk`). 20-байтова сигнатура LNK (header + CLSID) → `embedded_lnk` і розбір цього LNK (`docscan_inspect_lnk` → target/args); `MZ` з `e_lfanew` < 0x1000, що вказує на `PE\0\0` → `embedded_pe`. |
 | `ends_with(s, suffix)` | Допоміжна. |
 
@@ -303,8 +307,9 @@ OOXML (docx/xlsx/pptx) — ZIP із DEFLATE, тому сирий пошук не
 Макроси лежать у Compound File (`vbaProject.bin` в OOXML, або весь legacy `.doc/.xls`) і стиснуті
 MS-OVBA. Ланцюжок: **CFB → потоки → пошук контейнера MS-OVBA → декомпресія → текст VBA → ключові слова**.
 
-**`cfb.c`** — мінімальний CFB-reader (v3, сектори від офсету 512), усі читання з перевіркою меж;
-усі ланцюги (FAT, DIFAT, mini FAT) і розміри масивів обмежені кількістю секторів у файлі — довший
+**`cfb.c`** — мінімальний CFB-reader для v3 (сектор 512) і v4 (сектор 4096): сектор `n` починається з
+`(n+1) × розмір_сектора`. Усі читання з перевіркою меж; усі ланцюги (FAT, DIFAT, mini FAT) і масиви
+обмежені кількістю секторів у файлі; потік ≤ 4 МБ, сумарно ≤ 64 МБ; показники розміру сектора (7–16) перевіряються до зсуву.
 ланцюг означає цикл; потік ≤ 4 МБ, сумарно віддається колбеку ≤ 64 МБ. Показники розміру сектора
 перевіряються (7–16) до зсуву.
 
@@ -346,25 +351,36 @@ MS-OVBA. Ланцюжок: **CFB → потоки → пошук контейн�
 | `docscan_inspect_rtf` | `inspect_rtf.c` | `\objupdate` → `rtf_objupdate`; `\objdata`/`\objlink`/`\objhtml` → `rtf_embedded_object`. |
 | `docscan_inspect_pdf` | `inspect_pdf.c` | `/Launch` → `pdf_launch`; `/JavaScript` або `/JS` + небезпечний API → `pdf_js_auto`, без нього → `pdf_js`; `/OpenAction` або `/AA` без JS → `pdf_openaction`; `/EmbeddedFile` → `pdf_embedded`. |
 | `pdf_has_dangerous_js` | `inspect_pdf.c` | Шукає: `app.launchURL`, `exportDataObject`, `importDataObject`, `getAnnots`, `submitForm`, `Collab.`, `util.printf`, `getIcon`, `media.newPlayer`, `eval(`, `unescape(`, `String.fromCharCode`, `.exe`, `powershell`, `cmd.exe`, `rundll32`, `mshta`, `certutil`, `Net.HTTP`, `SOAP.`, `heapLib`, `shellcode`. Безпечний JS переглядача (`this.print`, `app.alert`) навмисно не в списку. |
-| `docscan_inspect_lnk` | `lnk.c` | Розбір MS-SHLLINK (замість COM `WScript.Shell`): HeaderSize=0x4C → LinkFlags → пропуск IDList → `LinkInfo.LocalBasePath` = **target** → StringData (Name, RelPath, WorkDir пропускаються) → **Arguments**. Заповнює `lnk_target`/`lnk_args`. Ім'я файлу цілі ∈ {cmd, powershell, pwsh, mshta, rundll32, wscript, cscript, regsvr32, certutil, bitsadmin, msiexec, forfiles, conhost}`.exe` → `lnk_lolbin`; `http://`/`https://`/`ftp://`/`\\`/`www.` в аргументах → `lnk_url_args`; `-enc`, `-encodedcommand`, `frombase64string`, `-w hidden`, `-windowstyle hidden`, `iex`, `invoke-expression`, `downloadstring` → `lnk_obfuscated`. |
-| `rd16` / `rd32` / `ci_streq` / `cpy_ansi` / `cpy_stringdata` | `lnk.c` | Читання з перевіркою меж; порівняння без регістру (MSVC не має `strcasecmp`); копіювання ANSI-рядка та StringData (UTF-16 → беремо молодший байт). |
+| `docscan_inspect_lnk` | `lnk.c` | Розбір MS-SHLLINK (замість COM `WScript.Shell`): HeaderSize=0x4C → LinkFlags → IDList → LinkInfo → StringData (Name, RelativePath, WorkDir, **Arguments**). **Ціль** — по черзі: `LocalBasePathUnicode` (якщо `LinkInfoHeaderSize ≥ 0x24`) → `LocalBasePath` (ANSI) → мережева: `NetName` + `CommonPathSuffix` (`\\сервер\шара\…`) → `RelativePath` → шлях, відновлений з IDList. Рядки UTF-16 → UTF-8 (кирилиця зберігається); ANSI-байти ≥ 0x80 → U+0080…U+00FF, тож вихід — завжди валідний UTF-8. Прапорці `lnk_lolbin` / `lnk_url_args` / `lnk_obfuscated` (списки — як у політиці). |
+| `put_utf8` / `cpy_utf16` / `cpy_ansi` / `cpy_stringdata` | `lnk.c` | UTF-16LE → UTF-8 (сурогатні пари; одиночний сурогат → U+FFFD); ANSI → валідний UTF-8; StringData (лічильник + символи). |
+| `idlist_path` / `beef0004_name` / `printable` | `lnk.c` | Шлях з LinkTargetIDList: елемент диска (`X:\`) + елементи файлів/тек (довге ім'я з розширення `0xBEEF0004`, зсув за версією: v9 0x2E, v8 0x2A, v7 0x26, v3 0x14; інакше коротке 8.3); непридатні до друку імена відкидаються. |
+| `rd16` / `rd32` / `ci_streq` | `lnk.c` | Читання з перевіркою меж; порівняння без регістру (MSVC не має `strcasecmp`). |
 
 ### 4.8 Лікування: `docscan_disarm.h` + `disarm.c`
 
 Компілюється в libyara, але **викликається тільки з CLI** (`do_disarm` після скану).
 
 `docscan_disarm_info` — що знайшов скан: `present`, `type` (1 ooxml, 2 ole, 3 rtf, 4 pdf, 5 lnk),
-`high`, `macro`, `remote_template`, `protocol_handler`, `dde_auto`, `embedded`, `rtf_objupdate`, `lnk_bad`.
+`high`, `macro`, `remote_template`, `protocol_handler`, `dde_auto`, `embedded`, `rtf_objupdate`, `lnk_bad`,
+`quarantine`, `backup_dir` (UTF-8; NULL → `<file>.docscan-bak` поруч).
+
+Усі шляхи — UTF-8; на Windows файлові операції йдуть через `_wfopen`/`_wremove`/`_wrename`
+(`ds_fopen`/`ds_remove`/`ds_rename`), тож кириличні імена файлів і тек працюють. Вилікуваний ZIP
+збирається в пам'яті (`mz_zip_writer_init_heap`) і записується нашим `write_file` — файловий API miniz
+використовує ANSI `fopen`.
 
 | Функція | Що робить |
 |---|---|
-| `docscan_disarm(path, info, out_action, sz)` | Диспетчер. Якщо політика не вказала жодної дії (вердикт HIGH без `meta.disarm`) → `detect-only`. LNK + `lnk_bad` → бекап + видалення (`deleted:lnk`). RTF + `rtf_objupdate` → бекап + `cure_rtf`. OOXML з будь-яким вектором → бекап + `cure_ooxml`. PDF/OLE → `detect-only`. |
+| `docscan_disarm(path, info, out_action, sz)` | Диспетчер: немає жодної дії → `detect-only`; legacy OLE (`.doc/.xls`) з будь-якою дією → карантин (вилікувати на місці неможливо); PDF без `quarantine` → `detect-only`; **бекап** — якщо не вдався, файл не чіпається (`failed:backup`); `quarantine` або LNK з `lnk_bad` → видалення (`quarantined` / `deleted:lnk`); RTF → `cure_rtf`; OOXML → `cure_ooxml`. |
 | `cure_ooxml(path, info, action, sz)` | Перепаковує ZIP через miniz у `<file>.docscan-tmp`: **не копіює** `vbaProject.bin`/`vbaData.xml` (макрос) і `embeddings/oleObject*.bin`; у `*.rels` видаляє `<Relationship>` з маркерами `vbaProject` / `oleObject` / `attachedTemplate` / усі обробники протоколів (`ms-msdt:`, `search-ms:`, `search:`, `ms-officecmd:`, `mhtml:`, `ms-word:`, `ms-excel:`, `ms-powerpoint:`, `!x-usc:`); у `[Content_Types].xml` — `<Override>` з `vbaProject`; у `word/document.xml`/header/footer `DDEAUTO` → `REMOVED`. Потім підміняє оригінал. Якщо будь-яку частину не вдалося прочитати (чи вона > 64 МБ) — лікування скасовується, оригінал не змінюється, дія `failed:unreadable-part`. Дії: `removed:vbaProject.bin`, `removed:embeddings`, `removed:remote-template`, `removed:protocol-rel`, `stripped:dde`. |
 | `cure_rtf(path, action, sz)` | `\objupdate` → `\objupdatX` (керуюче слово зламане, довжина та сама) → `stripped:objupdate`. |
 | `remove_elements(in, len, markers, n, &out_len)` | Копіює XML, викидаючи елементи `<Relationship …>` / `<Override …>`, що містять будь-який маркер. |
 | `strip_dde(buf, len)` | На місці, тієї ж довжини: `DDEAUTO` → `REMOVED`, `DDE ` → `REM `. Без урахування регістру (як детекція) і лише на початку інструкції поля (після `>` або `"` і пробілів) — звичайний текст зі словом «DDE» не чіпається. |
-| `backup(path)` | Копія в `<path>.docscan-bak`. |
-| `read_file` / `write_file` / `append` / `name_is` | Файл у пам'ять / запис; дописати дію через кому; перевірка суфікса імені. |
+| `backup(path, backup_dir)` | Копія оригіналу: з `backup_dir` — `<тека>\<ім'я>.<n>.docscan-bak` (унікальне `n`, старі бекапи не перезаписуються), інакше `<path>.docscan-bak`. При помилці — повідомлення в stderr з шляхом і `errno`. |
+| `blank_dde_fields(buf, len)` | Складені поля Word, чия склеєна інструкція починається з `DDE`: усі `<w:instrText>` цього поля заповнюються пробілами (та сама довжина). |
+| `remove_dde_formulas(in, len, &out)` | Excel: видаляє `<f>…</f>` з DDE-формулою; збережене значення `<v>` лишається. |
+| `blank_ddelink(buf, len)` | Excel: значення `ddeService`/`ddeTopic` → пробіли. |
+| `read_file` / `write_file` / `file_exists` / `base_name` / `append` / `name_is` | Файл у пам'ять / запис (через `ds_fopen`); допоміжні. |
 
 ### 4.9 Зміни в `cli/yara.c`
 
@@ -375,6 +391,7 @@ MS-OVBA. Ланцюжок: **CFB → потоки → пошук контейн�
 | `--docscan-json` | `docscan_json` | один рядок JSON на файл: знахідки й вердикт **з правил політики**, vendor-збіги по файлу й по VBA; **придушує звичайний вивід збігів** |
 | `--docscan-extract=FILE` | `docscan_extract` | пише `vba_code` у FILE (ручний Шар 2) |
 | `--docscan-disarm` | `docscan_disarm_flag` | після скану лікує файл за `meta.disarm` правил, що спрацювали; HIGH без дій → `detect-only` |
+| `--docscan-backup-dir=DIR` | `docscan_backup_dir_utf8` | бекапи й карантин у DIR (має існувати). На Windows значення береться з оригінальних Unicode-аргументів (парсер YARA віддає рядкові опції в ANSI — кирилиця б загубилась) |
 
 **Стан на файл** — `DOCSCAN_STATE` у `CALLBACK_ARGS` (`dsc`): `ftype`, копії доказів, копія `vba_code`,
 `max_severity`, `findings`, `details`, `file_matches`, `docscan_disarm_info ds`. Глобально: `g_rules` —
@@ -437,14 +454,17 @@ MS-OVBA. Ланцюжок: **CFB → потоки → пошук контейн�
    | `macro` | OOXML | вирізати `vbaProject.bin`/`vbaData.xml` + rels/content-type | `removed:vbaProject.bin` |
    | `remote_template` | OOXML | прибрати external `attachedTemplate` rel | `removed:remote-template` |
    | `protocol_handler` | OOXML | прибрати rel з обробником протоколу | `removed:protocol-rel` |
-   | `dde` | OOXML | `DDEAUTO` → `REMOVED`, `DDE` → `REM` | `stripped:dde` |
+   | `dde` | Word | `DDEAUTO` → `REMOVED`, `DDE` → `REM`; розбите поле — усі `<w:instrText>` → пробіли | `stripped:dde` |
+   | `dde` | Excel | DDE-формули `<f>` видаляються (значення `<v>` лишається); `ddeLink` — `ddeService`/`ddeTopic` → пробіли | `stripped:dde` |
    | `embedded` | OOXML | вирізати `embeddings/oleObject*.bin` | `removed:embeddings` |
    | `rtf_objupdate` | RTF | `\objupdate` → `\objupdatX` | `stripped:objupdate` |
    | `lnk_delete` | LNK | видалити файл (бекап є) | `deleted:lnk` |
+   | `quarantine` | будь-який | бекап у `--docscan-backup-dir` + видалити оригінал | `quarantined` |
+   | будь-яка | legacy OLE (`.doc/.xls`) | вилікувати на місці неможливо → карантин | `quarantined` |
    | — (HIGH без дій, напр. PDF) | будь-який | нічого | `detect-only` |
    | будь-яка | OOXML з частиною, що не читається / > 64 МБ | лікування скасовано | `failed:unreadable-part` |
 
-   Дія, що не підходить до типу файлу (напр. `macro` для PDF), ігнорується. Legacy OLE (`.doc/.xls`) поки не лікується.
+   Будь-яка дія: якщо бекап не вдався → `failed:backup`, файл не змінюється. Дія, що не підходить до типу файлу, ігнорується.
 8. **Контроль.** Повторний скан вилікуваної копії → очікуємо `INFO` (LNK відсутній, PDF лишається HIGH).
 
 ## 6. Правила YARA і політика детекту
@@ -457,7 +477,7 @@ MS-OVBA. Ланцюжок: **CFB → потоки → пошук контейн�
 |---|---|---|
 | `severity` | так | `HIGH` / `MEDIUM` / `INFO` — позначає правило як політику |
 | `finding` | ні | назва в `findings` (за замовчуванням — ім'я правила) |
-| `disarm` | ні | що лікувати: `macro`, `remote_template`, `protocol_handler`, `dde`, `embedded`, `rtf_objupdate`, `lnk_delete` |
+| `disarm` | ні | що лікувати: `macro`, `remote_template`, `protocol_handler`, `dde`, `embedded`, `rtf_objupdate`, `lnk_delete`, `quarantine` |
 | `mitre` | ні | ID техніки, потрапляє в `details` |
 
 Правило політики не може бути `private` (YARA не повідомляє про private-правила).
@@ -469,7 +489,7 @@ MS-OVBA. Ланцюжок: **CFB → потоки → пошук контейн�
 | `DS_REMOTE_TEMPLATE` | external `attachedTemplate` на http(s)/ftp/UNC/`file://host` (не `file:///C:`) | HIGH | `remote_template` |
 | `DS_PROTOCOL_HANDLER` | external target `ms-msdt:`, `search-ms:`, `search:`, `ms-officecmd:`, `mhtml:`, `ms-word:`… | HIGH | `protocol_handler` |
 | `DS_DDE_AUTO` | `dde[]` починається з `DDEAUTO` | HIGH | `dde` |
-| `DS_DDE_LINK` | `DDE ` (не AUTO) + cmd/powershell/mshta/rundll32 — потрібна згода користувача на оновлення, але легітимного застосування немає | HIGH | `dde` |
+| `DS_DDE_LINK` | `DDE ` (не AUTO): поле Word, формула Excel `cmd\|'…'!A0`, Excel `ddeLink` — і в ній cmd/powershell/mshta/rundll32/regsvr32/msiexec/certutil/bitsadmin/wscript/cscript | HIGH | `dde` |
 | `DS_EMBEDDED_PE` / `DS_EMBEDDED_LNK` | `embedded[].is_pe` / `.is_lnk` | HIGH | `embedded` |
 | `DS_EXTERNAL_OLE` / `DS_EXTERNAL_FRAME` | external `oleObject` (не Follina) / `frame` | MEDIUM | — |
 | `DS_MACRO_PRESENT` | є VBA | MEDIUM | — |
@@ -477,11 +497,13 @@ MS-OVBA. Ланцюжок: **CFB → потоки → пошук контейн�
 | `DS_MACRO_AUTOEXEC` | AutoOpen, Document_Open, Workbook_Open… | MEDIUM | — |
 | `DS_MACRO_NETWORK` | XMLHTTP, WinHttp, InternetOpen, Net.WebClient | MEDIUM | — |
 | `DS_RTF_OBJUPDATE` | RTF і `\objupdate` | HIGH | `rtf_objupdate` |
-| `DS_PDF_LAUNCH` | `/Launch` | HIGH | — (detect-only) |
-| `DS_PDF_JS_AUTO` / `DS_PDF_JS` | `/JavaScript`/`/JS` з небезпечним API / без | HIGH / MEDIUM | — |
+| `DS_PDF_LAUNCH` | `/Launch` | HIGH | `quarantine` |
+| `DS_PDF_JS_AUTO` / `DS_PDF_JS` | `/JavaScript`/`/JS` з небезпечним API / без | HIGH (`quarantine`) / MEDIUM | |
 | `DS_PDF_OPENACTION` / `DS_PDF_EMBEDDED` | `/OpenAction`/`/AA` без JS / `/EmbeddedFile` | MEDIUM | — |
 | `DS_LNK_URL_ARGS` | URL/UNC в аргументах | HIGH | `lnk_delete` |
 | `DS_LNK_OBFUSCATED` | `-enc`, `iex`, `-w hidden`, `downloadstring`… | HIGH | `lnk_delete` |
+| `DS_LNK_REMOTE_EXEC` | ціль — виконуваний файл на мережевій шарі (`\\сервер\…\x.exe`, `.ps1`, `.vbs`, `.hta`…) | HIGH | `lnk_delete` |
+| `DS_LNK_REMOTE_TARGET` | ціль на шарі, але не виконувана (тека, документ) | MEDIUM | — |
 | `DS_LNK_LOLBIN` | ціль — LOLBin | MEDIUM | — (ярлик не видаляється) |
 
 **Як змінювати:**
@@ -500,7 +522,9 @@ rule ORG_HUGE_PART { meta: severity = "MEDIUM" finding = "HUGE_PART"
 політиці за замовчуванням: локальні шаблони `file:///C:\…` (раніше HIGH), `Selection.Find.Execute`
 (`.Exec`), `Application.Run "Macro"` (`.Run`), лише `Workbook_Open` чи `CreateObject` (раніше HIGH →
 тепер MEDIUM), ярлики меню «Пуск» на PowerShell/cmd (раніше видалялися б лікуванням). Офісних HIGH на
-чистих файлах POI — з 11 до 0; RTF 0; LNK 0 (19 MEDIUM).
+чистих файлах POI — з 11 до 0 (Excel DDE — 0); RTF 0; LNK 0 HIGH (32 MEDIUM: LOLBin, ярлики на файлові
+сервери). PDF: 2 HIGH на тестових файлах pdf.js саме для `/Launch` і `launchURL` — за політикою вони
+йдуть у **карантин**; якщо у вас бувають такі легітимні PDF — приберіть `disarm = "quarantine"`.
 
 ### 6.2 Файли правил
 
@@ -563,8 +587,11 @@ rule ORG_HUGE_PART { meta: severity = "MEDIUM" finding = "HUGE_PART"
 ### Параметри
 
 `-WatchPath` (`C:\Users`), `-Base` (`C:\docscan-build`), `-Yara`, `-Rules` (`<Base>\yara\docscan-project\rules\docscan-index.yar`),
-`-OutDir` (`<Base>\results`), `-Disarm` (вимкнено), `-MaxSizeMB` (100), `-SettleSeconds` (2),
-`-ReadyTimeout` (60), `-DocExt`, `-GenExt`, `-ExcludePattern`.
+`-OutDir` (`<Base>\results`), `-BackupDir` (`<Base>\quarantine`; watcher її не сканує),
+**лікування увімкнене завжди** (`-NoDisarm` — тільки для діагностики), `-QuarantineGeneral` (вимкнено:
+exe/скрипти/архіви зі збігом vendor-правил → у карантин), `-MaxSizeMB` (100), `-SettleSeconds` (2),
+`-ReadyTimeout` (60), `-MaxLogMB` (50) і `-KeepLogs` (5) — ротація `docscan-results.json` і `watcher.log`
+(`file` → `file.1` … `file.5`), `-DocExt`, `-GenExt`, `-ExcludePattern`.
 
 ### Запуск
 
@@ -572,8 +599,8 @@ rule ORG_HUGE_PART { meta: severity = "MEDIUM" finding = "HUGE_PART"
 # вручну (Ctrl+C — стоп)
 powershell -ExecutionPolicy Bypass -File C:\docscan-build\yara\docscan-project\watcher\docscan-watcher.ps1
 
-# кілька тек і лікування за політикою (масив — тільки через -Command)
-powershell -ExecutionPolicy Bypass -Command "& 'C:\...\docscan-watcher.ps1' -WatchPath 'C:\docscan-build\inbox','C:\Users' -Disarm"
+# кілька тек (масив — тільки через -Command); лікування й карантин — за замовчуванням
+powershell -ExecutionPolicy Bypass -Command "& 'C:\...\docscan-watcher.ps1' -WatchPath 'C:\docscan-build\inbox','C:\Users'"
 
 # фоном як SYSTEM
 $s = "C:\docscan-build\yara\docscan-project\watcher\docscan-watcher.ps1"
@@ -613,6 +640,7 @@ $r   = "C:\docscan-build\yara\docscan-project\rules"
 | Тільки наш детект | `& $y -w --docscan-json $r\docscan.yar <file>` |
 | + лікувати (**на копії!**) | `Copy-Item <file> C:\docscan-build\work.docm -Force; & $y -w --docscan-json --docscan-disarm $r\docscan-index.yar C:\docscan-build\work.docm` |
 | Тільки лікувати | `& $y -w --docscan-disarm $r\docscan-index.yar <copy>` (друкує звичайні збіги + рядок дії) |
+| Лікувати з бекапами в окремій теці | `& $y -w --docscan-json --docscan-disarm --docscan-backup-dir=C:\docscan-build\quarantine $r\docscan-index.yar <file>` |
 | Які правила політики спрацювали | `& $y -w $r\docscan-policy.yar <file>` |
 | Подивитись усі факти модуля | `& $y -D $r\docscan.yar <file>` |
 | Витягти VBA у файл | `& $y --docscan-extract=vba.out $r\docscan.yar <file>` |
@@ -671,7 +699,7 @@ make -j8 yara.exe      # PE32+ x64, залежить лише від UCRT (є у
 
 ## 10. Тестування
 
-### Тест-набір `docscan-project/test-samples/` (20 файлів, оригінали)
+### Тест-набір `docscan-project/test-samples/` (23 файли, оригінали)
 
 `provided/` — реальні семпли замовника (усі ведуть на один внутрішній C2; у git не входять):
 
@@ -693,6 +721,9 @@ make -j8 yara.exe      # PE32+ x64, залежить лише від UCRT (є у
 | `protocol_handler.docx` | PROTOCOL_HANDLER, HIGH |
 | `dde_auto.docx` | DDE_AUTO, HIGH |
 | `dde_link.docx` | DDE_LINK (`DDE cmd.exe /c …`, не AUTO), HIGH |
+| `dde_split.docx` | DDE_AUTO (`DDE` + `AUTO cmd.exe …` у двох `<w:instrText>`), HIGH |
+| `excel_dde_formula.xlsx` | DDE_LINK (формула `cmd\|' /C notepad.exe'!A0`), HIGH |
+| `excel_ddelink.xlsx` | DDE_LINK (`<ddeLink ddeService="cmd" ddeTopic="/c notepad.exe">`), HIGH |
 | `external_ole.docx` | EXTERNAL_OLE, **MEDIUM** |
 | `embedded_pe.docx` | EMBEDDED_PE, HIGH |
 | `embedded_lnk.docx` | EMBEDDED_LNK, HIGH |
@@ -709,9 +740,10 @@ make -j8 yara.exe      # PE32+ x64, залежить лише від UCRT (є у
 наприкінці SHA256 оригінали до/після. Параметри: `-Yara`, `-Rules`, `-Samples`, `-WorkDir`.
 Файл має бути **UTF-8 з BOM** (інакше PowerShell 5.1 ламає кирилицю).
 
-**Еталонний результат (20 файлів):** детект HIGH 19 / MEDIUM 1; після лікування INFO 14 /
-DELETED 2 (LNK) / HIGH 3 (PDF) / MEDIUM 1 (`external_ole`); оригінали не змінені; з
+**Еталонний результат (23 файли):** детект HIGH 22 / MEDIUM 1; після лікування INFO 17 / DELETED 5
+(2 LNK видалено, 3 PDF у карантині) / MEDIUM 1 (`external_ole`); оригінали не змінені; з
 `docscan-index.yar` — `vendor_shellexec.docm` → `yara_matches:["gen_macro_ShellExecute_action"]`.
+Однаковий на macOS і Windows (MSVC).
 
 ### Фазинг (libFuzzer)
 
@@ -765,6 +797,9 @@ cd /tmp/docscan-fuzz
 - Політика в правилах (2026-11-02, macOS): 19/19 вердиктів (з `dde_link.docx` — 20/20) і дій лікування як в еталоні; тест на хибні спрацювання — див. §6.1.
 - Watcher на VM: 23 файли в `inbox`/`Downloads` + ручні документи на робочому столі (2 чисті
   робочі звіти → INFO, 3 семпли → HIGH) — 2026-11-02. Хибних спрацювань не було.
+- Windows (MSVC, 2026-11-02): кириличні імена файлів і теки «Карантин» — 7/7 вилікувано/у карантині;
+  `run_tests.ps1` — 23/23 як еталон; watcher з лікуванням за замовчуванням — 27 файлів, 24 бекапи,
+  27/27 валідних JSON-рядків (UTF-8), після лікування 20 INFO + 1 MEDIUM.
 
 ---
 
@@ -811,16 +846,16 @@ watcher → results\docscan-results.json (JSON Lines) → агент Wazuh (loca
 **Модуль / політика / лікування**
 - Правила бачать `vba_code` повністю, **включно з коментарями**: закоментований `Shell` теж спрацює.
 - Масиви фактів обмежені (rels 256, entries 512, embedded 64, dde 32); при переповненні `*_truncated = 1`.
-- DDE, розбитий на кілька `<w:instrText>` (`DDE` + `AUTO` в різних runs), не склеюється — відомий спосіб обходу.
-- Легасі OLE (`.doc/.xls`) і PDF не лікуються (дія з політики для них ігнорується; HIGH → `detect-only`).
+- Legacy OLE (`.doc/.xls`) з дією лікування → **карантин** (не лікується на місці); PDF — лише `quarantine` або `detect-only`.
+- Excel: DDE-формула видаляється разом з `<f>` (лишається збережене значення); якщо це «головна» спільна
+  формула (`t="shared"`), залежні комірки Excel може попросити відновити. `ddeLink` після лікування —
+  порожній зовнішній зв'язок (Excel покаже його як недоступний).
 - `protocol_handler`-лікування прибирає rel за маркерами обробників; свої нові схеми в правилі треба
   додати й у `disarm.c`, інакше rel лишиться.
-- **Лікування на Windows з не-ASCII шляхом:** `disarm.c` відкриває файл через `fopen` з UTF-8
-  шляхом; MSVC `fopen` трактує його як ANSI → кирилична назва файлу, ймовірно, не вилікується
-  (детект працює). Потрібен `_wfopen`.
-- CFB — лише v3 (сектор 512, офсети від 512); CFB v4 (сектор 4096) розбереться неправильно.
-- LNK: UTF-16 рядки беруться молодшим байтом (кирилиця в target/args спотворюється);
-  target — тільки з `LocalBasePath`.
+- LNK: ANSI-рядки (старі ярлики) — кодова сторінка невідома, байти ≥ 0x80 показуються як U+0080…U+00FF
+  (кирилиця CP1251 у таких ярликах буде «латинськими» символами; сучасні ярлики — UTF-16, ок). Ярлики на
+  спецтеки/апплети (лише IDList без файлових елементів) лишаються без `lnk_target`.
+- `--docscan-extract=FILE` на Windows отримує шлях через ANSI-парсер YARA (кирилиця в цьому шляху не підтримується).
 - Модуль аналізує лише перший блок пам'яті (для файлів — увесь файл; для скану процесів не призначений).
 - `vba_code` ≤ 2 МБ, `yara_matches` ≤ 4 КБ, докази ≤ 511 символів; частини OOXML > 64 МБ не аналізуються.
 - Якщо скан завершився помилкою (таймаут), JSON-рядка для файлу немає (друкується на `SCAN_FINISHED`).
@@ -833,7 +868,7 @@ watcher → results\docscan-results.json (JSON Lines) → агент Wazuh (loca
 - `invalid_trailer_structure` / `invalid_xref_numbers` (maldoc/PDF) шумні: зіпсований чистий PDF → `yara_file_matches` → MEDIUM.
 - Архіви скануються як є, без розпакування.
 - Переповнення буфера FileSystemWatcher (тисячі файлів разом) → частина подій втрачається (пишеться в лог).
-- `results\docscan-results.json` не ротується.
+- Тека карантину (`-BackupDir`) росте без обмежень — чистити вручну або політикою зберігання.
 
 **Репозиторій**
 - vcxproj зберігають закінчення рядків CRLF (як в upstream) — не перезберігати їх з LF.

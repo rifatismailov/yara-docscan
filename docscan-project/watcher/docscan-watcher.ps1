@@ -5,7 +5,7 @@
 #                     + file-index.yar     (vendor-правила: по файлу і по розпакованому VBA)
 #
 # Категорії файлів:
-#   document — Office / RTF / PDF / LNK: модуль + політика + vendor; -Disarm лікує за політикою
+#   document — Office / RTF / PDF / LNK: модуль + політика + vendor; ЛІКУВАННЯ ЗА ПОЛІТИКОЮ (за замовч.)
 #   general  — exe/dll/скрипти/hta/архіви/образи: тільки vendor-правила (модуль нічого не знайде)
 #
 # Результат: один JSON на рядок у $OutDir\docscan-results.json (у майбутньому забиратиме Wazuh:
@@ -13,7 +13,7 @@
 #
 # Запуск (PowerShell від адміністратора, щоб бачити файли всіх користувачів):
 #   powershell -ExecutionPolicy Bypass -File docscan-watcher.ps1
-#   powershell -ExecutionPolicy Bypass -File docscan-watcher.ps1 -WatchPath C:\docscan-build\inbox -Disarm
+#   powershell -ExecutionPolicy Bypass -File docscan-watcher.ps1 -WatchPath C:\docscan-build\inbox -NoDisarm   (тільки детект)
 # Зупинка: Ctrl+C.
 
 param(
@@ -22,7 +22,11 @@ param(
   [string]$Yara        = "",
   [string]$Rules       = "",       # за замовчуванням <Base>\yara\docscan-project\rules\docscan-index.yar
   [string]$OutDir      = "",
-  [switch]$Disarm,                 # лікувати документи за meta.disarm правил політики (оригінал -> <file>.docscan-bak)
+  [switch]$NoDisarm,               # НЕ лікувати (діагностика). За замовчуванням документи лікуються за meta.disarm
+  [string]$BackupDir   = "",       # бекапи й карантин (за замовч. <Base>\quarantine); watcher її не сканує
+  [switch]$QuarantineGeneral,      # general-файли (exe/скрипти/архіви) зі збігом vendor-правил -> у карантин
+  [int]$MaxLogMB       = 50,       # ротація docscan-results.json і watcher.log
+  [int]$KeepLogs       = 5,
   [int]$MaxSizeMB      = 100,      # більші файли пропускаємо (запис у лог)
   [int]$SettleSeconds  = 2,        # скільки чекати тиші після останньої події по файлу
   [int]$ReadyTimeout   = 60,       # скільки чекати, поки файл перестане записуватись
@@ -47,6 +51,7 @@ param(
 if (-not $Yara)      { $Yara      = "$Base\yara\windows\vs2019\Release\yara64.exe" }
 if (-not $Rules)     { $Rules     = "$Base\yara\docscan-project\rules\docscan-index.yar" }
 if (-not $OutDir)    { $OutDir    = "$Base\results" }
+if (-not $BackupDir) { $BackupDir = "$Base\quarantine" }
 
 [Console]::OutputEncoding = [Text.Encoding]::UTF8   # вивід yara64 (шляхи, докази) — UTF-8
 $utf8   = New-Object Text.UTF8Encoding($false)
@@ -55,7 +60,18 @@ $LogF   = Join-Path $OutDir "watcher.log"
 $DocSet = @{}; $DocExt | % { $DocSet[$_.ToLower()] = 1 }
 $GenSet = @{}; $GenExt | % { $GenSet[$_.ToLower()] = 1 }
 
+# Ротація: file -> file.1 -> ... -> file.$KeepLogs (найстаріший видаляється).
+function Rotate-IfBig([string]$file) {
+  if (-not (Test-Path -LiteralPath $file)) { return }
+  if ((Get-Item -LiteralPath $file).Length -lt $MaxLogMB * 1MB) { return }
+  for ($k = $KeepLogs - 1; $k -ge 1; $k--) {
+    if (Test-Path -LiteralPath "$file.$k") { Move-Item -LiteralPath "$file.$k" "$file.$($k + 1)" -Force }
+  }
+  Move-Item -LiteralPath $file "$file.1" -Force
+}
+
 function Log([string]$msg, [string]$level = "INFO") {
+  Rotate-IfBig $LogF
   $line = "{0} [{1}] {2}" -f (Get-Date -Format "yyyy-MM-dd HH:mm:ss"), $level, $msg
   Write-Host $line -ForegroundColor @{INFO="Gray";WARN="Yellow";ERROR="Red";HIT="Magenta";OK="Green"}[$level]
   [IO.File]::AppendAllText($LogF, $line + "`r`n", $utf8)
@@ -70,6 +86,7 @@ function Get-Category([string]$path) {
 
 function Test-Excluded([string]$path) {
   if ($path.StartsWith($OutDir, [StringComparison]::OrdinalIgnoreCase)) { return $true }
+  if ($path.StartsWith($BackupDir, [StringComparison]::OrdinalIgnoreCase)) { return $true }
   foreach ($p in $ExcludePattern) { if ($path -match $p) { return $true } }
   return $false
 }
@@ -94,7 +111,7 @@ function Wait-FileReady([string]$path) {
 # Один запуск yara64: JSON (політика + vendor) і, для документів, дія лікування.
 function Invoke-Scan([string]$path, [bool]$cure) {
   $yargs = @("-w", "--docscan-json")
-  if ($cure) { $yargs += "--docscan-disarm" }
+  if ($cure) { $yargs += @("--docscan-disarm", "--docscan-backup-dir=$BackupDir") }
   $out = & $Yara @yargs $Rules $path 2>&1 | ForEach-Object { "$_" }
   $json = $out | Where-Object { $_ -like '{*' } | Select-Object -First 1
   $act  = $out | Where-Object { $_ -like 'docscan-disarm:*' } | Select-Object -First 1
@@ -138,7 +155,7 @@ function Scan-File([string]$path, [string]$evt) {
       $rec.file.sha256 = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLower()
 
       # vendor-правила бачать байти ДО лікування: yara збирає збіги до --docscan-disarm
-      $ds = Invoke-Scan $path ($Disarm -and $cat -eq "document")
+      $ds = Invoke-Scan $path ((-not $NoDisarm) -and $cat -eq "document")
       $rec.errors += $ds.errors
       if ($ds.docscan) {
         $rec.docscan = $ds.docscan
@@ -151,6 +168,13 @@ function Scan-File([string]$path, [string]$evt) {
         if ($cat -eq "document") { $rec.verdict = Max-Verdict $rec.verdict "MEDIUM" }
         else { $rec.verdict = "HIGH" }
       }
+      # general-файл зі збігом vendor-правил: опційний карантин (копія -> BackupDir, оригінал видаляється)
+      if ($QuarantineGeneral -and -not $NoDisarm -and $cat -eq "general" -and $rec.yara_file_matches.Count) {
+        $i = 0
+        do { $dst = Join-Path $BackupDir ("{0}.{1}.docscan-bak" -f [IO.Path]::GetFileName($path), $i++) } while (Test-Path -LiteralPath $dst)
+        try { Copy-Item -LiteralPath $path $dst -ErrorAction Stop; Remove-Item -LiteralPath $path -Force -ErrorAction Stop; $rec.disarm = "quarantined" }
+        catch { $rec.errors += "quarantine failed: $_"; $rec.disarm = "failed:quarantine" }
+      }
     }
   } catch {
     $rec.errors += "$_"
@@ -160,6 +184,7 @@ function Scan-File([string]$path, [string]$evt) {
   }
 
   $json = $rec | ConvertTo-Json -Depth 8 -Compress
+  Rotate-IfBig $Result
   [IO.File]::AppendAllText($Result, $json + "`n", $utf8)
 
   $what = @()
@@ -172,6 +197,7 @@ function Scan-File([string]$path, [string]$evt) {
 
 # ---------- старт ----------
 New-Item -ItemType Directory -Force $OutDir | Out-Null
+New-Item -ItemType Directory -Force $BackupDir | Out-Null
 foreach ($p in $Yara, $Rules) {
   if (-not (Test-Path $p)) { Write-Host "НЕ ЗНАЙДЕНО: $p" -ForegroundColor Red; exit 1 }
 }
@@ -198,7 +224,7 @@ foreach ($wp in $WatchPath) {
 }
 if (-not $watchers.Count) { Log "жодної теки для спостереження" "ERROR"; exit 1 }
 
-Log ("старт: стежу за {0} | disarm={1} | результат: {2}" -f ($WatchPath -join ", "), [bool]$Disarm, $Result)
+Log ("старт: стежу за {0} | disarm={1} | карантин: {2} | результат: {3}" -f ($WatchPath -join ", "), (-not $NoDisarm), $BackupDir, $Result)
 
 $pending = @{}   # path -> @{ t = час останньої події; evt = тип першої події }
 $recent  = @{}   # path -> sha256 останнього скану (щоб не дублювати Changed після того ж вмісту)

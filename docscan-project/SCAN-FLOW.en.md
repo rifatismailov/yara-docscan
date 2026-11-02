@@ -159,7 +159,7 @@ docscan-project/
     samples/generated/              local duplicate of test-samples/generated (not in git)
   test-samples/                     ORIGINAL test set (never disarm in place!)
     provided/  (7)                  real customer samples (live C2) — NOT in git
-    generated/ (13)                 safe test range, one file per vector
+    generated/ (16)                 safe test range, one file per vector
   reference/                        primary sources (PS script, Mandiant, article, full vendor corpus) — not in git
 ```
 
@@ -236,7 +236,7 @@ document with junk must not silently hide the interesting part):
 | `number_of_entries`, `entries_truncated` | integer | |
 | `embedded[i].name` / `.size` / `.is_pe` / `.is_lnk` | array (≤ 64) | every `embeddings/oleObject*.bin` |
 | `number_of_embedded` | integer | |
-| `dde[i]` | string array (≤ 32) | every `DDE…`/`DDEAUTO…` field instruction (up to `<` or `"`) |
+| `dde[i]` | string array (≤ 32) | every DDE instruction: Word field `DDE…`/`DDEAUTO…` (also split over several `<w:instrText>` — joined), Excel formula `service\|'topic'!…` → `DDE service\|…`, Excel `ddeLink` → `DDE <ddeService> <ddeTopic>` |
 | `number_of_dde` | integer | |
 | `vba_code`, `lnk_target`, `lnk_args` | string | macro source; LNK target and arguments |
 
@@ -293,11 +293,15 @@ the parts must be decompressed.
 
 | Function | What it does |
 |---|---|
-| `docscan_inspect_ooxml(data, size, r)` | Opens the ZIP; records every part in the `entries[]` facts; by the name of each entry: `*.rels` → `docscan_scan_rels`; `*vbaProject.bin` → `macro_present=1` + `docscan_scan_vba_container`; document body → `scan_dde`; `embeddings/oleObject*.bin` → `scan_embedded_ole`. |
+| `docscan_inspect_ooxml(data, size, r)` | Opens the ZIP; records every part in the `entries[]` facts; by the name of each entry: `*.rels` → `docscan_scan_rels`; `*vbaProject.bin` → `macro_present=1` + `docscan_scan_vba_container`; document body (Word/Excel) → `scan_dde`, plus `record_excel_formulas` for `xl/worksheets/`; `xl/externalLinks/externalLink*.xml` → `record_excel_ddelink`; `embeddings/oleObject*.bin` → `scan_embedded_ole`. |
 | `is_body_xml(name)` | `word/document.xml`, `word/header*.xml`, `word/footer*.xml`, `xl/worksheets/sheet*.xml`, `xl/workbook.xml`. |
 | `is_embedded_ole(name)` | `embeddings/oleObject*.bin`. |
 | `record_dde(xml, n, r)` | Fact: every `DDEAUTO…` or `DDE …` instruction (case-insensitive) → `dde[]` (≤ 32). End: in a `w:instr="…"` attribute — at `"`, in `<w:instrText>` text — at `<` (quotes inside the command are kept). The first instruction → `dde_command` evidence. |
-| `scan_dde(xml, n, r)` | Calls `record_dde`; then the flags: `DDEAUTO` (case-insensitive) → `dde_auto` + `dde_command` (snippet from `DDEAUTO` up to `<`). Otherwise `DDE ` + cmd/powershell/mshta/rundll32 → `dde_link`. |
+| `scan_dde(xml, n, r)` | `record_dde` + `record_complex_fields`; then the flags: `DDEAUTO` (case-insensitive) → `dde_auto`; `DDE ` + cmd/powershell/mshta/rundll32 → `dde_link`. |
+| `record_complex_fields(xml, n, r)` | Word complex fields: joins the text of every `<w:instrText>` from `fldChar begin` to `separate`/`end` — catches `DDE` + `AUTO …` split over several runs (a known way to dodge a string search). |
+| `is_dde_formula` / `record_excel_formulas(xml, n, r)` | A formula in `<f>…</f>` of the form `service\|'…'!…` (`cmd\|' /c calc'!A0`) → `dde[]` as `DDE <formula>`. |
+| `record_excel_ddelink(xml, n, r)` | `<ddeLink ddeService="…" ddeTopic="…">` → `dde[]` as `DDE <service> <topic>`. |
+| `add_dde(r, s)` | Adds an instruction to `dde[]` (trimmed, deduplicated); the first one → `dde_command` evidence. |
 | `scan_embedded_ole(d, n, e, r)` | Each object is recorded in `embedded[]` (name, size, `is_pe`, `is_lnk`). 20-byte LNK signature (header + CLSID) → `embedded_lnk` and parse of that LNK (`docscan_inspect_lnk` → target/args); `MZ` whose `e_lfanew` < 0x1000 points at `PE\0\0` → `embedded_pe`. |
 | `ends_with(s, suffix)` | Helper. |
 
@@ -306,8 +310,9 @@ the parts must be decompressed.
 Macros live in a Compound File (`vbaProject.bin` in OOXML, or the whole legacy `.doc/.xls`) and are
 MS-OVBA-compressed. The chain: **CFB → streams → find an MS-OVBA container → decompress → VBA source → keywords**.
 
-**`cfb.c`** — a minimal CFB reader (v3, sectors from offset 512), every read bounds-checked;
-every chain (FAT, DIFAT, mini FAT) and array size is bounded by the number of sectors in the file —
+**`cfb.c`** — a minimal CFB reader for v3 (512-byte sectors) and v4 (4096-byte sectors): sector `n` starts at
+`(n+1) × sectorSize`. Every read is bounds-checked; every chain (FAT, DIFAT, mini FAT) and array is bounded
+by the sectors in the file; stream ≤ 4 MB, ≤ 64 MB in total; sector-size exponents (7–16) are validated before shifting.
 a longer chain means a cycle; stream ≤ 4 MB, at most 64 MB in total handed to the callback. The sector
 size exponents are validated (7–16) before shifting.
 
@@ -349,25 +354,35 @@ size exponents are validated (7–16) before shifting.
 | `docscan_inspect_rtf` | `inspect_rtf.c` | `\objupdate` → `rtf_objupdate`; `\objdata`/`\objlink`/`\objhtml` → `rtf_embedded_object`. |
 | `docscan_inspect_pdf` | `inspect_pdf.c` | `/Launch` → `pdf_launch`; `/JavaScript` or `/JS` + a dangerous API → `pdf_js_auto`, without one → `pdf_js`; `/OpenAction` or `/AA` without JS → `pdf_openaction`; `/EmbeddedFile` → `pdf_embedded`. |
 | `pdf_has_dangerous_js` | `inspect_pdf.c` | Looks for: `app.launchURL`, `exportDataObject`, `importDataObject`, `getAnnots`, `submitForm`, `Collab.`, `util.printf`, `getIcon`, `media.newPlayer`, `eval(`, `unescape(`, `String.fromCharCode`, `.exe`, `powershell`, `cmd.exe`, `rundll32`, `mshta`, `certutil`, `Net.HTTP`, `SOAP.`, `heapLib`, `shellcode`. Benign viewer JS (`this.print`, `app.alert`) is deliberately not listed. |
-| `docscan_inspect_lnk` | `lnk.c` | MS-SHLLINK parsing (instead of the `WScript.Shell` COM object): HeaderSize=0x4C → LinkFlags → skip IDList → `LinkInfo.LocalBasePath` = **target** → StringData (Name, RelPath, WorkDir skipped) → **Arguments**. Fills `lnk_target`/`lnk_args`. Target file name ∈ {cmd, powershell, pwsh, mshta, rundll32, wscript, cscript, regsvr32, certutil, bitsadmin, msiexec, forfiles, conhost}`.exe` → `lnk_lolbin`; `http://`/`https://`/`ftp://`/`\\`/`www.` in the arguments → `lnk_url_args`; `-enc`, `-encodedcommand`, `frombase64string`, `-w hidden`, `-windowstyle hidden`, `iex`, `invoke-expression`, `downloadstring` → `lnk_obfuscated`. |
-| `rd16` / `rd32` / `ci_streq` / `cpy_ansi` / `cpy_stringdata` | `lnk.c` | Bounds-checked reads; case-insensitive compare (MSVC has no `strcasecmp`); copy of an ANSI string and of StringData (UTF-16 → low byte taken). |
+| `docscan_inspect_lnk` | `lnk.c` | MS-SHLLINK parsing (instead of the `WScript.Shell` COM object): HeaderSize=0x4C → LinkFlags → IDList → LinkInfo → StringData (Name, RelativePath, WorkDir, **Arguments**). **Target**, in order: `LocalBasePathUnicode` (if `LinkInfoHeaderSize ≥ 0x24`) → `LocalBasePath` (ANSI) → network: `NetName` + `CommonPathSuffix` (`\\server\share\…`) → `RelativePath` → path rebuilt from the IDList. UTF-16 strings → UTF-8 (Cyrillic preserved); ANSI bytes ≥ 0x80 → U+0080…U+00FF, so the output is always valid UTF-8. Flags `lnk_lolbin` / `lnk_url_args` / `lnk_obfuscated` (lists as in the policy). |
+| `put_utf8` / `cpy_utf16` / `cpy_ansi` / `cpy_stringdata` | `lnk.c` | UTF-16LE → UTF-8 (surrogate pairs; a lone surrogate → U+FFFD); ANSI → valid UTF-8; StringData (count + chars). |
+| `idlist_path` / `beef0004_name` / `printable` | `lnk.c` | Path from the LinkTargetIDList: volume item (`X:\`) + file/folder items (long name from the `0xBEEF0004` extension, offset by version: v9 0x2E, v8 0x2A, v7 0x26, v3 0x14; otherwise the 8.3 name); non-printable names are dropped. |
+| `rd16` / `rd32` / `ci_streq` | `lnk.c` | Bounds-checked reads; case-insensitive compare (MSVC has no `strcasecmp`). |
 
 ### 4.8 Disarm: `docscan_disarm.h` + `disarm.c`
 
 Compiled into libyara but **called only from the CLI** (`do_disarm` after the scan).
 
 `docscan_disarm_info` — what the scan found: `present`, `type` (1 ooxml, 2 ole, 3 rtf, 4 pdf, 5 lnk),
-`high`, `macro`, `remote_template`, `protocol_handler`, `dde_auto`, `embedded`, `rtf_objupdate`, `lnk_bad`.
+`high`, `macro`, `remote_template`, `protocol_handler`, `dde_auto`, `embedded`, `rtf_objupdate`, `lnk_bad`,
+`quarantine`, `backup_dir` (UTF-8; NULL → `<file>.docscan-bak` next to it).
+
+All paths are UTF-8; on Windows file operations go through `_wfopen`/`_wremove`/`_wrename`
+(`ds_fopen`/`ds_remove`/`ds_rename`), so Cyrillic file and folder names work. The cured ZIP is built in
+memory (`mz_zip_writer_init_heap`) and written by our `write_file` — miniz's file API uses ANSI `fopen`.
 
 | Function | What it does |
 |---|---|
-| `docscan_disarm(path, info, out_action, sz)` | Dispatcher. If the policy requested no action (HIGH verdict without `meta.disarm`) → `detect-only`. LNK + `lnk_bad` → backup + delete (`deleted:lnk`). RTF + `rtf_objupdate` → backup + `cure_rtf`. OOXML with any vector → backup + `cure_ooxml`. PDF/OLE → `detect-only`. |
+| `docscan_disarm(path, info, out_action, sz)` | Dispatcher: no action → `detect-only`; legacy OLE (`.doc/.xls`) with any action → quarantine (cannot be cured in place); PDF without `quarantine` → `detect-only`; **backup** — if it fails the file is not touched (`failed:backup`); `quarantine` or LNK with `lnk_bad` → delete (`quarantined` / `deleted:lnk`); RTF → `cure_rtf`; OOXML → `cure_ooxml`. |
 | `cure_ooxml(path, info, action, sz)` | Repacks the ZIP with miniz into `<file>.docscan-tmp`: **does not copy** `vbaProject.bin`/`vbaData.xml` (macro) or `embeddings/oleObject*.bin`; in `*.rels` removes `<Relationship>` elements with the markers `vbaProject` / `oleObject` / `attachedTemplate` / every protocol handler (`ms-msdt:`, `search-ms:`, `search:`, `ms-officecmd:`, `mhtml:`, `ms-word:`, `ms-excel:`, `ms-powerpoint:`, `!x-usc:`); in `[Content_Types].xml` the `<Override>` with `vbaProject`; in `word/document.xml`/header/footer `DDEAUTO` → `REMOVED`. Then replaces the original. If any part cannot be read (or is > 64 MB) the cure is aborted, the original is left unchanged and the action is `failed:unreadable-part`. Actions: `removed:vbaProject.bin`, `removed:embeddings`, `removed:remote-template`, `removed:protocol-rel`, `stripped:dde`. |
 | `cure_rtf(path, action, sz)` | `\objupdate` → `\objupdatX` (control word broken, same length) → `stripped:objupdate`. |
 | `remove_elements(in, len, markers, n, &out_len)` | Copies the XML, dropping `<Relationship …>` / `<Override …>` elements that contain any marker. |
 | `strip_dde(buf, len)` | In place, same length: `DDEAUTO` → `REMOVED`, `DDE ` → `REM `. Case-insensitive (like detection) and only at the start of a field instruction (after `>` or `"` plus spaces) — ordinary text containing "DDE" is left alone. |
-| `backup(path)` | Copy to `<path>.docscan-bak`. |
-| `read_file` / `write_file` / `append` / `name_is` | File into memory / write; append an action with a comma; name suffix test. |
+| `backup(path, backup_dir)` | Copy of the original: with `backup_dir` — `<dir>\<name>.<n>.docscan-bak` (unique `n`, earlier backups are never overwritten), otherwise `<path>.docscan-bak`. On failure — a message on stderr with the path and `errno`. |
+| `blank_dde_fields(buf, len)` | Word complex fields whose joined instruction starts with `DDE`: every `<w:instrText>` of that field is filled with spaces (same length). |
+| `remove_dde_formulas(in, len, &out)` | Excel: removes `<f>…</f>` holding a DDE formula; the cached `<v>` value stays. |
+| `blank_ddelink(buf, len)` | Excel: `ddeService`/`ddeTopic` values → spaces. |
+| `read_file` / `write_file` / `file_exists` / `base_name` / `append` / `name_is` | File into memory / write (via `ds_fopen`); helpers. |
 
 ### 4.9 Changes in `cli/yara.c`
 
@@ -378,6 +393,7 @@ Compiled into libyara but **called only from the CLI** (`do_disarm` after the sc
 | `--docscan-json` | `docscan_json` | one JSON line per file: findings and verdict **from the policy rules**, vendor matches on the file and on the VBA; **suppresses the normal match output** |
 | `--docscan-extract=FILE` | `docscan_extract` | writes `vba_code` to FILE (manual Layer 2) |
 | `--docscan-disarm` | `docscan_disarm_flag` | after the scan, disarms the file according to `meta.disarm` of the matching rules; HIGH without actions → `detect-only` |
+| `--docscan-backup-dir=DIR` | `docscan_backup_dir_utf8` | backups and quarantine go to DIR (must exist). On Windows the value is taken from the original Unicode arguments (YARA's parser hands string options over as ANSI — Cyrillic would be lost) |
 
 **Per-file state** — `DOCSCAN_STATE` in `CALLBACK_ARGS` (`dsc`): `ftype`, evidence copies, a copy of
 `vba_code`, `max_severity`, `findings`, `details`, `file_matches`, `docscan_disarm_info ds`. Global:
@@ -440,14 +456,17 @@ or `detect-only`.
    | `macro` | OOXML | strip `vbaProject.bin`/`vbaData.xml` + rels/content-type | `removed:vbaProject.bin` |
    | `remote_template` | OOXML | remove the external `attachedTemplate` rel | `removed:remote-template` |
    | `protocol_handler` | OOXML | remove the rel with a protocol handler | `removed:protocol-rel` |
-   | `dde` | OOXML | `DDEAUTO` → `REMOVED`, `DDE` → `REM` | `stripped:dde` |
+   | `dde` | Word | `DDEAUTO` → `REMOVED`, `DDE` → `REM`; a split field — every `<w:instrText>` → spaces | `stripped:dde` |
+   | `dde` | Excel | DDE formulas `<f>` removed (the `<v>` value stays); `ddeLink` — `ddeService`/`ddeTopic` → spaces | `stripped:dde` |
    | `embedded` | OOXML | strip `embeddings/oleObject*.bin` | `removed:embeddings` |
    | `rtf_objupdate` | RTF | `\objupdate` → `\objupdatX` | `stripped:objupdate` |
    | `lnk_delete` | LNK | delete the file (backup kept) | `deleted:lnk` |
+   | `quarantine` | any | back up to `--docscan-backup-dir` + delete the original | `quarantined` |
+   | any | legacy OLE (`.doc/.xls`) | cannot be cured in place → quarantine | `quarantined` |
    | — (HIGH without actions, e.g. PDF) | any | nothing | `detect-only` |
    | any | OOXML with an unreadable / > 64 MB part | cure aborted | `failed:unreadable-part` |
 
-   An action that does not fit the file type (e.g. `macro` for a PDF) is ignored. Legacy OLE (`.doc/.xls`) is not disarmed yet.
+   Any action: if the backup fails → `failed:backup`, the file is not changed. An action that does not fit the file type is ignored.
 8. **Check.** Re-scan the disarmed copy → expect `INFO` (LNK gone, PDF stays HIGH).
 
 ## 6. YARA rules and the detection policy
@@ -460,7 +479,7 @@ The main file an engineer tunes. Every rule with `meta.severity` is a policy rul
 |---|---|---|
 | `severity` | yes | `HIGH` / `MEDIUM` / `INFO` — marks the rule as policy |
 | `finding` | no | name in `findings` (default: the rule name) |
-| `disarm` | no | what to disarm: `macro`, `remote_template`, `protocol_handler`, `dde`, `embedded`, `rtf_objupdate`, `lnk_delete` |
+| `disarm` | no | what to disarm: `macro`, `remote_template`, `protocol_handler`, `dde`, `embedded`, `rtf_objupdate`, `lnk_delete`, `quarantine` |
 | `mitre` | no | technique ID, copied into `details` |
 
 A policy rule must not be `private` (YARA never reports private rules).
@@ -472,7 +491,7 @@ A policy rule must not be `private` (YARA never reports private rules).
 | `DS_REMOTE_TEMPLATE` | external `attachedTemplate` to http(s)/ftp/UNC/`file://host` (not `file:///C:`) | HIGH | `remote_template` |
 | `DS_PROTOCOL_HANDLER` | external target `ms-msdt:`, `search-ms:`, `search:`, `ms-officecmd:`, `mhtml:`, `ms-word:`… | HIGH | `protocol_handler` |
 | `DS_DDE_AUTO` | a `dde[]` entry starts with `DDEAUTO` | HIGH | `dde` |
-| `DS_DDE_LINK` | `DDE ` (not AUTO) + cmd/powershell/mshta/rundll32 — needs the user to accept the update prompt, but has no legitimate use | HIGH | `dde` |
+| `DS_DDE_LINK` | `DDE ` (not AUTO): Word field, Excel formula `cmd\|'…'!A0`, Excel `ddeLink` — containing cmd/powershell/mshta/rundll32/regsvr32/msiexec/certutil/bitsadmin/wscript/cscript | HIGH | `dde` |
 | `DS_EMBEDDED_PE` / `DS_EMBEDDED_LNK` | `embedded[].is_pe` / `.is_lnk` | HIGH | `embedded` |
 | `DS_EXTERNAL_OLE` / `DS_EXTERNAL_FRAME` | external `oleObject` (not Follina) / `frame` | MEDIUM | — |
 | `DS_MACRO_PRESENT` | VBA present | MEDIUM | — |
@@ -480,11 +499,13 @@ A policy rule must not be `private` (YARA never reports private rules).
 | `DS_MACRO_AUTOEXEC` | AutoOpen, Document_Open, Workbook_Open… | MEDIUM | — |
 | `DS_MACRO_NETWORK` | XMLHTTP, WinHttp, InternetOpen, Net.WebClient | MEDIUM | — |
 | `DS_RTF_OBJUPDATE` | RTF and `\objupdate` | HIGH | `rtf_objupdate` |
-| `DS_PDF_LAUNCH` | `/Launch` | HIGH | — (detect-only) |
-| `DS_PDF_JS_AUTO` / `DS_PDF_JS` | `/JavaScript`/`/JS` with / without a dangerous API | HIGH / MEDIUM | — |
+| `DS_PDF_LAUNCH` | `/Launch` | HIGH | `quarantine` |
+| `DS_PDF_JS_AUTO` / `DS_PDF_JS` | `/JavaScript`/`/JS` with / without a dangerous API | HIGH (`quarantine`) / MEDIUM | |
 | `DS_PDF_OPENACTION` / `DS_PDF_EMBEDDED` | `/OpenAction`/`/AA` without JS / `/EmbeddedFile` | MEDIUM | — |
 | `DS_LNK_URL_ARGS` | URL/UNC in the arguments | HIGH | `lnk_delete` |
 | `DS_LNK_OBFUSCATED` | `-enc`, `iex`, `-w hidden`, `downloadstring`… | HIGH | `lnk_delete` |
+| `DS_LNK_REMOTE_EXEC` | the target is an executable on a network share (`\\server\…\x.exe`, `.ps1`, `.vbs`, `.hta`…) | HIGH | `lnk_delete` |
+| `DS_LNK_REMOTE_TARGET` | the target is on a share but not executable (folder, document) | MEDIUM | — |
 | `DS_LNK_LOLBIN` | the target is a LOLBin | MEDIUM | — (the shortcut is not deleted) |
 
 **How to change it:**
@@ -503,7 +524,9 @@ After a change — check it compiles (`yara64 -w docscan-policy.yar any-file`) a
 now handles: local templates `file:///C:\…` (were HIGH), `Selection.Find.Execute` (`.Exec`),
 `Application.Run "Macro"` (`.Run`), a bare `Workbook_Open` or `CreateObject` (were HIGH → now MEDIUM),
 Start-menu shortcuts to PowerShell/cmd (would have been deleted by disarm). Office HIGHs on clean POI
-files — from 11 to 0; RTF 0; LNK 0 (19 MEDIUM).
+files — from 11 to 0 (Excel DDE — 0); RTF 0; LNK 0 HIGH (32 MEDIUM: LOLBins, shortcuts to file servers).
+PDF: 2 HIGHs on pdf.js test files made exactly for `/Launch` and `launchURL` — by policy they go to
+**quarantine**; if you see such legitimate PDFs, remove `disarm = "quarantine"`.
 
 ### 6.2 Rule files
 
@@ -567,8 +590,11 @@ On start it checks that `yara64.exe` and `-Rules` exist and compile.
 ### Parameters
 
 `-WatchPath` (`C:\Users`), `-Base` (`C:\docscan-build`), `-Yara`, `-Rules` (`<Base>\yara\docscan-project\rules\docscan-index.yar`),
-`-OutDir` (`<Base>\results`), `-Disarm` (off), `-MaxSizeMB` (100), `-SettleSeconds` (2),
-`-ReadyTimeout` (60), `-DocExt`, `-GenExt`, `-ExcludePattern`.
+`-OutDir` (`<Base>\results`), `-BackupDir` (`<Base>\quarantine`; not watched),
+**disarm is always on** (`-NoDisarm` — diagnostics only), `-QuarantineGeneral` (off: exe/scripts/archives
+with a vendor-rule match → quarantine), `-MaxSizeMB` (100), `-SettleSeconds` (2), `-ReadyTimeout` (60),
+`-MaxLogMB` (50) and `-KeepLogs` (5) — rotation of `docscan-results.json` and `watcher.log`
+(`file` → `file.1` … `file.5`), `-DocExt`, `-GenExt`, `-ExcludePattern`.
 
 ### Running
 
@@ -576,8 +602,8 @@ On start it checks that `yara64.exe` and `-Rules` exist and compile.
 # manually (Ctrl+C to stop)
 powershell -ExecutionPolicy Bypass -File C:\docscan-build\yara\docscan-project\watcher\docscan-watcher.ps1
 
-# several folders and disarm according to the policy (arrays only work with -Command)
-powershell -ExecutionPolicy Bypass -Command "& 'C:\...\docscan-watcher.ps1' -WatchPath 'C:\docscan-build\inbox','C:\Users' -Disarm"
+# several folders (arrays only work with -Command); disarm and quarantine are the default
+powershell -ExecutionPolicy Bypass -Command "& 'C:\...\docscan-watcher.ps1' -WatchPath 'C:\docscan-build\inbox','C:\Users'"
 
 # in the background as SYSTEM
 $s = "C:\docscan-build\yara\docscan-project\watcher\docscan-watcher.ps1"
@@ -617,6 +643,7 @@ $r   = "C:\docscan-build\yara\docscan-project\rules"
 | Our detection only | `& $y -w --docscan-json $r\docscan.yar <file>` |
 | + disarm (**on a copy!**) | `Copy-Item <file> C:\docscan-build\work.docm -Force; & $y -w --docscan-json --docscan-disarm $r\docscan-index.yar C:\docscan-build\work.docm` |
 | Disarm only | `& $y -w --docscan-disarm $r\docscan-index.yar <copy>` (prints normal matches + the action line) |
+| Disarm with backups in a separate folder | `& $y -w --docscan-json --docscan-disarm --docscan-backup-dir=C:\docscan-build\quarantine $r\docscan-index.yar <file>` |
 | Which policy rules matched | `& $y -w $r\docscan-policy.yar <file>` |
 | See every module fact | `& $y -D $r\docscan.yar <file>` |
 | Extract VBA to a file | `& $y --docscan-extract=vba.out $r\docscan.yar <file>` |
@@ -675,7 +702,7 @@ then `autoreconf` + `configure` (macOS).
 
 ## 10. Testing
 
-### Test set `docscan-project/test-samples/` (20 files, originals)
+### Test set `docscan-project/test-samples/` (23 files, originals)
 
 `provided/` — real customer samples (all point to one internal C2; not in git):
 
@@ -697,6 +724,9 @@ then `autoreconf` + `configure` (macOS).
 | `protocol_handler.docx` | PROTOCOL_HANDLER, HIGH |
 | `dde_auto.docx` | DDE_AUTO, HIGH |
 | `dde_link.docx` | DDE_LINK (`DDE cmd.exe /c …`, not AUTO), HIGH |
+| `dde_split.docx` | DDE_AUTO (`DDE` + `AUTO cmd.exe …` in two `<w:instrText>`), HIGH |
+| `excel_dde_formula.xlsx` | DDE_LINK (formula `cmd\|' /C notepad.exe'!A0`), HIGH |
+| `excel_ddelink.xlsx` | DDE_LINK (`<ddeLink ddeService="cmd" ddeTopic="/c notepad.exe">`), HIGH |
 | `external_ole.docx` | EXTERNAL_OLE, **MEDIUM** |
 | `embedded_pe.docx` | EMBEDDED_PE, HIGH |
 | `embedded_lnk.docx` | EMBEDDED_LNK, HIGH |
@@ -713,9 +743,10 @@ For each file: copy → `work.<ext>`; run 1 `--docscan-json --docscan-disarm`; r
 SHA256 before/after. Parameters: `-Yara`, `-Rules`, `-Samples`, `-WorkDir`.
 The file must be **UTF-8 with BOM** (otherwise PowerShell 5.1 garbles Cyrillic).
 
-**Reference result (20 files):** detection HIGH 19 / MEDIUM 1; after disarm INFO 14 / DELETED 2
-(LNK) / HIGH 3 (PDF) / MEDIUM 1 (`external_ole`); originals unchanged; with `docscan-index.yar`
-`vendor_shellexec.docm` → `yara_matches:["gen_macro_ShellExecute_action"]`.
+**Reference result (23 files):** detection HIGH 22 / MEDIUM 1; after disarm INFO 17 / DELETED 5
+(2 LNK deleted, 3 PDF quarantined) / MEDIUM 1 (`external_ole`); originals unchanged; with
+`docscan-index.yar` `vendor_shellexec.docm` → `yara_matches:["gen_macro_ShellExecute_action"]`.
+Identical on macOS and Windows (MSVC).
 
 ### Fuzzing (libFuzzer)
 
@@ -769,6 +800,9 @@ Final runs after the fixes: module — 2.28 M inputs, parsers — 0.96 M inputs 
 - Policy in rules (2026-11-02, macOS): 19/19 verdicts (with `dde_link.docx` — 20/20) and disarm actions match the reference; false-positive test — see §6.1.
 - Watcher on the VM: 23 files in `inbox`/`Downloads` + documents dropped on the desktop by hand (2
   clean work reports → INFO, 3 samples → HIGH) — 2026-11-02. No false positives.
+- Windows (MSVC, 2026-11-02): Cyrillic file names and a Cyrillic quarantine folder — 7/7 cured/quarantined;
+  `run_tests.ps1` — 23/23 as the reference; watcher with disarm on by default — 27 files, 24 backups,
+  27/27 valid JSON lines (UTF-8), after disarm 20 INFO + 1 MEDIUM.
 
 ---
 
@@ -815,16 +849,16 @@ described in `reference/doc-scan.ps1`.)
 **Module / policy / disarm**
 - Rules see the whole `vba_code` **including comments**: a commented-out `Shell` also matches.
 - Fact arrays are capped (rels 256, entries 512, embedded 64, dde 32); on overflow `*_truncated = 1`.
-- A DDE split across several `<w:instrText>` runs (`DDE` + `AUTO`) is not joined — a known evasion.
-- Legacy OLE (`.doc/.xls`) and PDF are not disarmed (a policy action is ignored for them; HIGH → `detect-only`).
-- `protocol_handler` disarm removes rels by handler markers; new schemes added to the rule must also
-  be added in `disarm.c`, otherwise the rel stays.
-- **Disarm on Windows with a non-ASCII path:** `disarm.c` opens the file with `fopen` and a UTF-8
-  path; MSVC `fopen` interprets it as ANSI → a file with a Cyrillic name most likely will not be
-  disarmed (detection works). Needs `_wfopen`.
-- CFB v3 only (512-byte sectors, offsets from 512); CFB v4 (4096-byte sectors) will be parsed incorrectly.
-- LNK: UTF-16 strings are taken by the low byte (Cyrillic in target/args is garbled);
-  the target comes only from `LocalBasePath`.
+- Legacy OLE (`.doc/.xls`) with a disarm action → **quarantine** (not cured in place); PDF — only `quarantine` or `detect-only`.
+- Excel: a DDE formula is removed together with `<f>` (the cached value stays); if it is the "master" of a
+  shared formula (`t="shared"`), Excel may offer to repair dependent cells. A `ddeLink` becomes an empty
+  external link after disarm (Excel shows it as unavailable).
+- `protocol_handler` disarm removes rels by handler markers; new schemes added to the rule must also be
+  added in `disarm.c`, otherwise the rel stays.
+- LNK: ANSI strings (old shortcuts) — the code page is unknown, bytes ≥ 0x80 are shown as U+0080…U+00FF
+  (CP1251 Cyrillic in such shortcuts looks like Latin-1; modern shortcuts are UTF-16 and fine). Shortcuts
+  to special folders/applets (IDList without file items) have no `lnk_target`.
+- `--docscan-extract=FILE` on Windows gets its path through YARA's ANSI parser (no Cyrillic in that path).
 - The module analyses only the first memory block (for files that is the whole file; not meant for process scans).
 - `vba_code` ≤ 2 MB, `yara_matches` ≤ 4 KB, evidence ≤ 511 chars; OOXML parts > 64 MB are not analysed.
 - If a scan fails (timeout), there is no JSON line for that file (it is printed at `SCAN_FINISHED`).
@@ -837,7 +871,7 @@ described in `reference/doc-scan.ps1`.)
 - `invalid_trailer_structure` / `invalid_xref_numbers` (maldoc/PDF) are noisy: a damaged but clean PDF → `yara_file_matches` → MEDIUM.
 - Archives are scanned as-is, not unpacked.
 - FileSystemWatcher buffer overflow (thousands of files at once) → some events are lost (logged).
-- `results\docscan-results.json` is not rotated.
+- The quarantine folder (`-BackupDir`) grows without limit — clean it manually or with a retention job.
 
 **Repository**
 - The vcxproj files keep CRLF line endings (as upstream) — do not re-save them with LF.

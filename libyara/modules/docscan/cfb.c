@@ -1,5 +1,6 @@
 /* DocScan: minimal CFB reader. See cfb.h. Ported from Read-CfbStreams.
-   Assumes v3 layout (sectors numbered from offset 512), as do typical .doc/.xls
+   Sector n starts at (n + 1) * sectorSize: v3 (512-byte sectors) and v4
+   (4096-byte sectors, the header padded to a full sector) alike.
    and vbaProject.bin. All reads are bounds-checked (untrusted input). */
 
 #include "cfb.h"
@@ -67,12 +68,12 @@ static void read_chain(
 {
   // A chain can't be longer than the number of sectors in the file; anything
   // longer is a cycle (crafted FAT), so stop there.
-  size_t nSec = (size - 512) / sectorSize + 1;
+  size_t nSec = size / sectorSize;  // sectors after the header (+1 slack)
   int32_t sid = start;
   size_t g = 0;
   while (sid >= 0 && (size_t) sid < fat->len && g < nSec && g < CFB_MAX_ITER)
   {
-    size_t o = 512 + (size_t) sid * sectorSize;
+    size_t o = ((size_t) sid + 1) * sectorSize;
     if (o >= size)
       break;
     size_t end = o + sectorSize;
@@ -117,7 +118,7 @@ int docscan_cfb_foreach_stream(
   // Every count below is bounded by the sectors that physically exist in the
   // file: a crafted DIFAT/FAT/miniFAT can loop, and without these bounds a
   // 1 KB file made the FAT grow to billions of entries (found by libFuzzer).
-  size_t nSec = (size - 512) / sectorSize + 1;
+  size_t nSec = size / sectorSize;  // sectors after the header (+1 slack)
   size_t budget = CFB_MAX_BUILD;  // total stream bytes handed to cb
 
   int rc = 0;
@@ -136,7 +137,7 @@ int docscan_cfb_foreach_stream(
     size_t g = 0;
     while (d >= 0 && g < nSec && fatSecs.len < nSec)
     {
-      size_t o = 512 + (size_t) d * sectorSize;
+      size_t o = ((size_t) d + 1) * sectorSize;
       if (o + sectorSize > size)
         break;
       for (uint32_t i = 0; i + 1 < sectorSize / 4; i++)
@@ -154,7 +155,7 @@ int docscan_cfb_foreach_stream(
   // FAT entries past the last real sector address nothing, so stop at nSec.
   for (size_t k = 0; k < fatSecs.len && fat.len < nSec; k++)
   {
-    size_t o = 512 + (size_t) fatSecs.p[k] * sectorSize;
+    size_t o = ((size_t) fatSecs.p[k] + 1) * sectorSize;
     if (o + sectorSize > size)
       continue;
     for (uint32_t i = 0; i < sectorSize / 4; i++)
@@ -179,7 +180,7 @@ int docscan_cfb_foreach_stream(
     size_t g = 0;
     while (mf >= 0 && (size_t) mf < fat.len && g < nSec)
     {
-      size_t o = 512 + (size_t) mf * sectorSize;
+      size_t o = ((size_t) mf + 1) * sectorSize;
       if (o + sectorSize > size)
         break;
       for (uint32_t i = 0; i < sectorSize / 4; i++)
