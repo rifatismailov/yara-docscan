@@ -22,9 +22,8 @@
 10. [Тестування](#10-тестування)
 11. [Середовище](#11-середовище)
 12. [Інтеграція з Wazuh](#12-інтеграція-з-wazuh)
-13. [Статус і дорожня карта](#13-статус-і-дорожня-карта)
-14. [Відомі обмеження і нюанси](#14-відомі-обмеження-і-нюанси)
-15. [Git і ліцензії](#15-git-і-ліцензії)
+13. [Відомі обмеження і нюанси](#13-відомі-обмеження-і-нюанси)
+14. [Git і ліцензії](#14-git-і-ліцензії)
 
 ---
 
@@ -240,7 +239,7 @@ docscan-project/
 | докази | `template_url` `dde_command` `vba_evidence` `lnk_target` `lnk_args` | — | рядки ≤ 511 символів |
 | Шар 2 | `vba_code` | — | весь розпакований VBA (≤ 2 МБ) для перескану vendor-правилами |
 
-\* `lnk_lolbin` у JSON рахується як MEDIUM, а для рішення «лікувати» — як HIGH (див. §14).
+\* `lnk_lolbin` у JSON рахується як MEDIUM, а для рішення «лікувати» — як HIGH (див. §13).
 
 | Функція | Що робить |
 |---|---|
@@ -677,7 +676,7 @@ DELETED 2 (LNK) / HIGH 3 (PDF) / MEDIUM 1 (`external_ole`); оригінали �
   Word може не відкрити).
 
 ### Історія перевірок
-- macOS: усі вектори M1–M7.
+- macOS: усі вектори.
 - Windows 10 (MSVC): 12 полігон + 7 реальних, детект + лікування, Шар 2 — 2026-10-30.
 - Чиста VM Windows 11 (MSVC v143, свіжа збірка): `run_tests.ps1` з обома index — 2026-11-02.
 - Watcher на VM: 23 файли в `inbox`/`Downloads` + ручні документи на робочому столі (2 чисті
@@ -723,29 +722,7 @@ watcher → results\docscan-results.json (JSON Lines) → агент Wazuh (loca
 
 ---
 
-## 13. Статус і дорожня карта
-
-| Етап | Що | Стан |
-|---|---|---|
-| M0 | збірка базової YARA 4.6.0 | ✅ |
-| M1 | скелет модуля + magic (5 типів) | ✅ |
-| M2 | RTF + PDF інспектори, `search.c`, `inspect.h` | ✅ |
-| M3 | ZIP (miniz) + OOXML: remote template, Follina, DDE, embedded, macro_present | ✅ |
-| M4 | CFB + MS-OVBA + VBA/OLE: macro_suspicious + vba_evidence | ✅ |
-| M5 | LNK-парсер | ✅ |
-| M6 | `--docscan-json` у yara64.exe | ✅ macOS + Windows |
-| M6b | `vba_code` + `--docscan-extract` + авто-перескан (Шар 2) | ✅ macOS + Windows |
-| M7 | `--docscan-disarm` | ✅ macOS + Windows |
-| W1 | watcher → `results\docscan-results.json` | ✅ VM |
-| — | публічний репозиторій, гілка `feature/docscan-module` | ✅ https://github.com/rifatismailov/yara-docscan |
-| — | тест на корпусі чистих документів, відкриття вилікуваних у Word | ⬜ |
-| — | підключення Wazuh | ⬜ |
-| M8 | Функція 2: текст → вектор (`paraphrase-multilingual-MiniLM-L12-v2`); модуль витягує текст, вектор рахує зовнішній сервіс | ⬜ |
-| M9 | Функція 3: критична інформація (`reference/mandiant/crit/critinfo.yar`, корпус `crit/test_corpus`) | ⬜ |
-
----
-
-## 14. Відомі обмеження і нюанси
+## 13. Відомі обмеження і нюанси
 
 **Модуль / лікування**
 - `LNK_LOLBIN`: у JSON — MEDIUM, а для лікування — HIGH. LNK лише з lolbin отримає verdict MEDIUM,
@@ -777,7 +754,7 @@ watcher → results\docscan-results.json (JSON Lines) → агент Wazuh (loca
 
 ---
 
-## 15. Git і ліцензії
+## 14. Git і ліцензії
 
 **Репозиторій:** https://github.com/rifatismailov/yara-docscan (публічний).
 - `master` — upstream YARA 4.6.0 (`6d47342e`) з повною історією;

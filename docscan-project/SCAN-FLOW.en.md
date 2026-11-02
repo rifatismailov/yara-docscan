@@ -23,9 +23,8 @@ in **one binary**, `yara64.exe`. On top of it, a **watcher** automatically scans
 10. [Testing](#10-testing)
 11. [Environment](#11-environment)
 12. [Wazuh integration](#12-wazuh-integration)
-13. [Status and roadmap](#13-status-and-roadmap)
-14. [Known limitations and caveats](#14-known-limitations-and-caveats)
-15. [Git and licensing](#15-git-and-licensing)
+13. [Known limitations and caveats](#13-known-limitations-and-caveats)
+14. [Git and licensing](#14-git-and-licensing)
 
 ---
 
@@ -241,7 +240,7 @@ Data flow: raw bytes → `docscan_detect_magic` → inspector → `docscan_resul
 | evidence | `template_url` `dde_command` `vba_evidence` `lnk_target` `lnk_args` | — | strings ≤ 511 chars |
 | Layer 2 | `vba_code` | — | the whole decompressed VBA (≤ 2 MB) for re-scanning with vendor rules |
 
-\* In JSON `lnk_lolbin` counts as MEDIUM, but the "should we disarm" decision treats it as HIGH (see §14).
+\* In JSON `lnk_lolbin` counts as MEDIUM, but the "should we disarm" decision treats it as HIGH (see §13).
 
 | Function | What it does |
 |---|---|
@@ -680,7 +679,7 @@ The file must be **UTF-8 with BOM** (otherwise PowerShell 5.1 garbles Cyrillic).
   Word may refuse to open it).
 
 ### Verification history
-- macOS: all vectors M1–M7.
+- macOS: all vectors.
 - Windows 10 (MSVC): 12 test-range + 7 real samples, detection + disarm, Layer 2 — 2026-10-30.
 - Clean Windows 11 VM (MSVC v143, fresh build): `run_tests.ps1` with both indexes — 2026-11-02.
 - Watcher on the VM: 23 files in `inbox`/`Downloads` + documents dropped on the desktop by hand (2
@@ -726,29 +725,7 @@ described in `reference/doc-scan.ps1`.)
 
 ---
 
-## 13. Status and roadmap
-
-| Stage | What | State |
-|---|---|---|
-| M0 | build stock YARA 4.6.0 | ✅ |
-| M1 | module skeleton + magic (5 types) | ✅ |
-| M2 | RTF + PDF inspectors, `search.c`, `inspect.h` | ✅ |
-| M3 | ZIP (miniz) + OOXML: remote template, Follina, DDE, embedded, macro_present | ✅ |
-| M4 | CFB + MS-OVBA + VBA/OLE: macro_suspicious + vba_evidence | ✅ |
-| M5 | LNK parser | ✅ |
-| M6 | `--docscan-json` in yara64.exe | ✅ macOS + Windows |
-| M6b | `vba_code` + `--docscan-extract` + auto re-scan (Layer 2) | ✅ macOS + Windows |
-| M7 | `--docscan-disarm` | ✅ macOS + Windows |
-| W1 | watcher → `results\docscan-results.json` | ✅ VM |
-| — | public repository, branch `feature/docscan-module` | ✅ https://github.com/rifatismailov/yara-docscan |
-| — | test on a corpus of clean documents, open disarmed files in Word | ⬜ |
-| — | Wazuh hookup | ⬜ |
-| M8 | Function 2: text → vector (`paraphrase-multilingual-MiniLM-L12-v2`); the module extracts text, an external service computes the vector | ⬜ |
-| M9 | Function 3: critical information (`reference/mandiant/crit/critinfo.yar`, corpus `crit/test_corpus`) | ⬜ |
-
----
-
-## 14. Known limitations and caveats
+## 13. Known limitations and caveats
 
 **Module / disarm**
 - `LNK_LOLBIN`: MEDIUM in JSON but HIGH for disarm. An LNK with only a lolbin gets verdict MEDIUM yet
@@ -780,7 +757,7 @@ described in `reference/doc-scan.ps1`.)
 
 ---
 
-## 15. Git and licensing
+## 14. Git and licensing
 
 **Repository:** https://github.com/rifatismailov/yara-docscan (public).
 - `master` — upstream YARA 4.6.0 (`6d47342e`) with full history;
