@@ -1,5 +1,7 @@
 # DocScan on YARA — повна документація
 
+**Мова:** українська · [English](SCAN-FLOW.en.md)
+
 Форк YARA 4.6.0 з власним модулем **`docscan`**: виявляє заражені документи, перевіряє витягнутий
 макрос vendor-правилами, лікує документ і віддає результат у JSON. Усе — в **одному бінарнику**
 `yara64.exe`. Поверх нього — **watcher**, що автоматично сканує нові файли в системі.
@@ -159,7 +161,7 @@ windows/vs20{15,17,19}/libyara/libyara.vcxproj   + 15 ClCompile docscan
 cli/yara.c                          + прапори --docscan-json/-extract/-disarm, JSON, Шар 2, do_disarm
 
 docscan-project/
-  SCAN-FLOW.md                      цей документ
+  SCAN-FLOW.md / SCAN-FLOW.en.md    цей документ (українська / англійська)
   rules/
     docscan.yar                     мінімальний: import "docscan" (тільки наш детект)
     docscan-index.yar               import "docscan" + include vendor → детект + Шар 2 (VBA)
@@ -171,7 +173,7 @@ docscan-project/
     run_tests.ps1                   регресійний тест (копія → детект+лікування → повторний скан)
     gen_range.ps1                   генератор полігону (Windows + Word COM)
     gen_test_range.py               швидкий синтетичний генератор (без Office)
-    samples/generated/              ранній експорт полігону (дубль test-samples/generated)
+    samples/generated/              локальний дубль test-samples/generated (не в git)
   test-samples/                     ОРИГІНАЛИ тест-набору (не лікувати напряму!)
     provided/  (7)                  реальні семпли замовника (живий C2) — НЕ в git
     generated/ (12)                 безпечний полігон, по файлу на вектор
@@ -735,7 +737,7 @@ watcher → results\docscan-results.json (JSON Lines) → агент Wazuh (loca
 | M6b | `vba_code` + `--docscan-extract` + авто-перескан (Шар 2) | ✅ macOS + Windows |
 | M7 | `--docscan-disarm` | ✅ macOS + Windows |
 | W1 | watcher → `results\docscan-results.json` | ✅ VM |
-| — | коміт у гілку `feature/docscan-module` | ⬜ (усе поки незакомічене) |
+| — | публічний репозиторій, гілка `feature/docscan-module` | ✅ https://github.com/rifatismailov/yara-docscan |
 | — | тест на корпусі чистих документів, відкриття вилікуваних у Word | ⬜ |
 | — | підключення Wazuh | ⬜ |
 | M8 | Функція 2: текст → вектор (`paraphrase-multilingual-MiniLM-L12-v2`); модуль витягує текст, вектор рахує зовнішній сервіс | ⬜ |
@@ -770,27 +772,31 @@ watcher → results\docscan-results.json (JSON Lines) → агент Wazuh (loca
 - `results\docscan-results.json` не ротується.
 
 **Репозиторій**
-- `windows/vs2015` і `vs2017` `libyara.vcxproj` у диффі ~585 рядків через зміну закінчень рядків;
-  реально додано 15. Перед комітом повернути CRLF.
-- `test-range/samples/generated/` дублює `test-samples/generated/`.
+- vcxproj зберігають закінчення рядків CRLF (як в upstream) — не перезберігати їх з LF, інакше
+  дифф роздувається на весь файл.
 
 ---
 
 ## 15. Git і ліцензії
 
-**Гілка і коміт** (ще не зроблено):
-```sh
-git checkout -b feature/docscan-module
-```
-Не комітити (`.gitignore`): `attack-vectors/`, `docscan-project/test-samples/provided/`
-(живий C2), `docscan-project/reference/` (чужі матеріали, 95 МБ).
-Комітити: `libyara/modules/docscan/`, `libyara/include/yara/docscan_disarm.h`, `cli/yara.c`,
-`module_list`, `Makefile.am`, vcxproj, `docscan-project/` (крім виключеного).
+**Репозиторій:** https://github.com/rifatismailov/yara-docscan (публічний).
+- `master` — upstream YARA 4.6.0 (`6d47342e`) з повною історією;
+- `feature/docscan-module` — наша робота поверх нього, гілка за замовчуванням.
 
-**Fork:** форкнути `VirusTotal/yara`, `git remote add fork <url>`, `git push fork feature/docscan-module`.
+Локально: remote `origin` = `virustotal/yara`, remote `docscan` = наш репозиторій.
+```sh
+git push docscan feature/docscan-module
+```
+
+**Ніколи не публікується** (`.gitignore`): `docscan-project/test-samples/provided/` (живі семпли
+замовника, внутрішній C2), `attack-vectors`, `docscan-project/reference/` (Mandiant, правила Elastic),
+`.claude/`, `docscan-project/test-range/samples/`, `*.docscan-bak`, `*.docscan-tmp`. Upstream-правило
+`test-*[^.c]` ховає теки `test-range`/`test-samples` — для них у `.gitignore` є явний виняток.
+Репозиторій публічний: перед кожним пушем перевіряти, що немає внутрішніх IP, імен хостів, облікових даних.
+
 Апстрім такий модуль не прийме: YARA в maintenance mode, нове — у YARA-X (Rust, модулі через
 Protobuf). Офіційний шлях — лише порт логіки на YARA-X (окрема задача).
 
-**Ліцензії:** YARA — BSD-3-Clause (форк і поширення дозволені зі збереженням копірайту); miniz —
-public domain; signature-base — Detection Rule License (DRL) 1.1 (`rules/general/`, `rules/maldoc/`
-— зберігати атрибуцію). Для публічного fork — додати стандартні копірайт-хедери YARA в наші `.c/.h`.
+**Ліцензії:** форк — BSD-3-Clause YARA (`COPYING`); miniz — public domain / MIT;
+`rules/general/` і `rules/maldoc/signature-base/` — Detection Rule License 1.1 (кілька правил — CC BY 4.0,
+Volexity); `rules/maldoc/community/` — GNU GPLv2. Заголовки й поле `license` у правилах не прибирати.

@@ -4,6 +4,8 @@
 > This is a **fork of [VirusTotal/yara](https://github.com/VirusTotal/yara) 4.6.0** that adds a new
 > module, **`docscan`**, for detecting and disarming weaponised documents. Everything else is
 > upstream YARA, unchanged. See [About YARA](#about-yara) below.
+>
+> 📖 **Full documentation:** [English](docscan-project/SCAN-FLOW.en.md) · [Українська](docscan-project/SCAN-FLOW.md)
 
 ## What DocScan adds
 
@@ -70,7 +72,7 @@ rule weaponised_document
 | `docscan-project/rules/` | `docscan.yar`, `docscan-index.yar`, `file-index.yar`, vendor rule subsets (signature-base, community) |
 | `docscan-project/watcher/` | the file watcher |
 | `docscan-project/test-range/`, `test-samples/generated/` | regression test script and safe, inert test documents (one per vector) |
-| **[`docscan-project/SCAN-FLOW.md`](docscan-project/SCAN-FLOW.md)** | **full documentation** (Ukrainian): architecture diagram, every function, behaviour, build, tests, limitations |
+| **[`docscan-project/SCAN-FLOW.en.md`](docscan-project/SCAN-FLOW.en.md)** · [українською](docscan-project/SCAN-FLOW.md) | **full documentation**: architecture diagram, every function, behaviour, build, tests, limitations |
 
 ### Building
 
