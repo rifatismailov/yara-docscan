@@ -159,7 +159,7 @@ docscan-project/
     samples/generated/              local duplicate of test-samples/generated (not in git)
   test-samples/                     ORIGINAL test set (never disarm in place!)
     provided/  (7)                  real customer samples (live C2) — NOT in git
-    generated/ (12)                 safe test range, one file per vector
+    generated/ (13)                 safe test range, one file per vector
   reference/                        primary sources (PS script, Mandiant, article, full vendor corpus) — not in git
 ```
 
@@ -218,7 +218,7 @@ for compatibility and convenience; the policy mostly works with the facts below.
 | | `macro_present` | MEDIUM | `vbaProject.bin` / a VBA module is present |
 | | `external_ole` | MEDIUM | external `oleObject` relationship |
 | | `external_frame` | MEDIUM | external `frame` relationship |
-| | `dde_link` | MEDIUM | `DDE ` + cmd/powershell/mshta/rundll32 (not AUTO) |
+| | `dde_link` | HIGH | `DDE ` + cmd/powershell/mshta/rundll32 (not AUTO) |
 | LNK | `lnk_url_args` | HIGH | URL/UNC in the arguments |
 | | `lnk_obfuscated` | HIGH | `-enc`, `iex`, `-w hidden`, `downloadstring`… in the arguments |
 | | `lnk_lolbin` | MEDIUM* | target is a LOLBin (cmd/powershell/mshta/rundll32/…) |
@@ -296,7 +296,7 @@ the parts must be decompressed.
 | `docscan_inspect_ooxml(data, size, r)` | Opens the ZIP; records every part in the `entries[]` facts; by the name of each entry: `*.rels` → `docscan_scan_rels`; `*vbaProject.bin` → `macro_present=1` + `docscan_scan_vba_container`; document body → `scan_dde`; `embeddings/oleObject*.bin` → `scan_embedded_ole`. |
 | `is_body_xml(name)` | `word/document.xml`, `word/header*.xml`, `word/footer*.xml`, `xl/worksheets/sheet*.xml`, `xl/workbook.xml`. |
 | `is_embedded_ole(name)` | `embeddings/oleObject*.bin`. |
-| `record_dde(xml, n, r)` | Fact: every `DDEAUTO…` or `DDE …` instruction (case-insensitive) up to `<`/`"` → `dde[]` (≤ 32). |
+| `record_dde(xml, n, r)` | Fact: every `DDEAUTO…` or `DDE …` instruction (case-insensitive) → `dde[]` (≤ 32). End: in a `w:instr="…"` attribute — at `"`, in `<w:instrText>` text — at `<` (quotes inside the command are kept). The first instruction → `dde_command` evidence. |
 | `scan_dde(xml, n, r)` | Calls `record_dde`; then the flags: `DDEAUTO` (case-insensitive) → `dde_auto` + `dde_command` (snippet from `DDEAUTO` up to `<`). Otherwise `DDE ` + cmd/powershell/mshta/rundll32 → `dde_link`. |
 | `scan_embedded_ole(d, n, e, r)` | Each object is recorded in `embedded[]` (name, size, `is_pe`, `is_lnk`). 20-byte LNK signature (header + CLSID) → `embedded_lnk` and parse of that LNK (`docscan_inspect_lnk` → target/args); `MZ` whose `e_lfanew` < 0x1000 points at `PE\0\0` → `embedded_pe`. |
 | `ends_with(s, suffix)` | Helper. |
@@ -365,7 +365,7 @@ Compiled into libyara but **called only from the CLI** (`do_disarm` after the sc
 | `cure_ooxml(path, info, action, sz)` | Repacks the ZIP with miniz into `<file>.docscan-tmp`: **does not copy** `vbaProject.bin`/`vbaData.xml` (macro) or `embeddings/oleObject*.bin`; in `*.rels` removes `<Relationship>` elements with the markers `vbaProject` / `oleObject` / `attachedTemplate` / every protocol handler (`ms-msdt:`, `search-ms:`, `search:`, `ms-officecmd:`, `mhtml:`, `ms-word:`, `ms-excel:`, `ms-powerpoint:`, `!x-usc:`); in `[Content_Types].xml` the `<Override>` with `vbaProject`; in `word/document.xml`/header/footer `DDEAUTO` → `REMOVED`. Then replaces the original. If any part cannot be read (or is > 64 MB) the cure is aborted, the original is left unchanged and the action is `failed:unreadable-part`. Actions: `removed:vbaProject.bin`, `removed:embeddings`, `removed:remote-template`, `removed:protocol-rel`, `stripped:dde`. |
 | `cure_rtf(path, action, sz)` | `\objupdate` → `\objupdatX` (control word broken, same length) → `stripped:objupdate`. |
 | `remove_elements(in, len, markers, n, &out_len)` | Copies the XML, dropping `<Relationship …>` / `<Override …>` elements that contain any marker. |
-| `strip_dde(buf, len)` | `DDEAUTO` → `REMOVED` in place (7 chars, no "DDE" left, so `dde_link` does not linger). |
+| `strip_dde(buf, len)` | In place, same length: `DDEAUTO` → `REMOVED`, `DDE ` → `REM `. Case-insensitive (like detection) and only at the start of a field instruction (after `>` or `"` plus spaces) — ordinary text containing "DDE" is left alone. |
 | `backup(path)` | Copy to `<path>.docscan-bak`. |
 | `read_file` / `write_file` / `append` / `name_is` | File into memory / write; append an action with a comma; name suffix test. |
 
@@ -440,7 +440,7 @@ or `detect-only`.
    | `macro` | OOXML | strip `vbaProject.bin`/`vbaData.xml` + rels/content-type | `removed:vbaProject.bin` |
    | `remote_template` | OOXML | remove the external `attachedTemplate` rel | `removed:remote-template` |
    | `protocol_handler` | OOXML | remove the rel with a protocol handler | `removed:protocol-rel` |
-   | `dde` | OOXML | `DDEAUTO` → `REMOVED` | `stripped:dde` |
+   | `dde` | OOXML | `DDEAUTO` → `REMOVED`, `DDE` → `REM` | `stripped:dde` |
    | `embedded` | OOXML | strip `embeddings/oleObject*.bin` | `removed:embeddings` |
    | `rtf_objupdate` | RTF | `\objupdate` → `\objupdatX` | `stripped:objupdate` |
    | `lnk_delete` | LNK | delete the file (backup kept) | `deleted:lnk` |
@@ -472,7 +472,7 @@ A policy rule must not be `private` (YARA never reports private rules).
 | `DS_REMOTE_TEMPLATE` | external `attachedTemplate` to http(s)/ftp/UNC/`file://host` (not `file:///C:`) | HIGH | `remote_template` |
 | `DS_PROTOCOL_HANDLER` | external target `ms-msdt:`, `search-ms:`, `search:`, `ms-officecmd:`, `mhtml:`, `ms-word:`… | HIGH | `protocol_handler` |
 | `DS_DDE_AUTO` | a `dde[]` entry starts with `DDEAUTO` | HIGH | `dde` |
-| `DS_DDE_LINK` | `DDE ` + cmd/powershell/mshta/rundll32 | MEDIUM | — |
+| `DS_DDE_LINK` | `DDE ` (not AUTO) + cmd/powershell/mshta/rundll32 — needs the user to accept the update prompt, but has no legitimate use | HIGH | `dde` |
 | `DS_EMBEDDED_PE` / `DS_EMBEDDED_LNK` | `embedded[].is_pe` / `.is_lnk` | HIGH | `embedded` |
 | `DS_EXTERNAL_OLE` / `DS_EXTERNAL_FRAME` | external `oleObject` (not Follina) / `frame` | MEDIUM | — |
 | `DS_MACRO_PRESENT` | VBA present | MEDIUM | — |
@@ -675,7 +675,7 @@ then `autoreconf` + `configure` (macOS).
 
 ## 10. Testing
 
-### Test set `docscan-project/test-samples/` (19 files, originals)
+### Test set `docscan-project/test-samples/` (20 files, originals)
 
 `provided/` — real customer samples (all point to one internal C2; not in git):
 
@@ -696,6 +696,7 @@ then `autoreconf` + `configure` (macOS).
 | `remote_template.docx` | REMOTE_TEMPLATE, HIGH |
 | `protocol_handler.docx` | PROTOCOL_HANDLER, HIGH |
 | `dde_auto.docx` | DDE_AUTO, HIGH |
+| `dde_link.docx` | DDE_LINK (`DDE cmd.exe /c …`, not AUTO), HIGH |
 | `external_ole.docx` | EXTERNAL_OLE, **MEDIUM** |
 | `embedded_pe.docx` | EMBEDDED_PE, HIGH |
 | `embedded_lnk.docx` | EMBEDDED_LNK, HIGH |
@@ -712,7 +713,7 @@ For each file: copy → `work.<ext>`; run 1 `--docscan-json --docscan-disarm`; r
 SHA256 before/after. Parameters: `-Yara`, `-Rules`, `-Samples`, `-WorkDir`.
 The file must be **UTF-8 with BOM** (otherwise PowerShell 5.1 garbles Cyrillic).
 
-**Reference result (19 files):** detection HIGH 18 / MEDIUM 1; after disarm INFO 13 / DELETED 2
+**Reference result (20 files):** detection HIGH 19 / MEDIUM 1; after disarm INFO 14 / DELETED 2
 (LNK) / HIGH 3 (PDF) / MEDIUM 1 (`external_ole`); originals unchanged; with `docscan-index.yar`
 `vendor_shellexec.docm` → `yara_matches:["gen_macro_ShellExecute_action"]`.
 
@@ -765,7 +766,7 @@ Final runs after the fixes: module — 2.28 M inputs, parsers — 0.96 M inputs 
 - macOS: all vectors.
 - Windows 10 (MSVC): 12 test-range + 7 real samples, detection + disarm, Layer 2 — 2026-10-30.
 - Clean Windows 11 VM (MSVC v143, fresh build): `run_tests.ps1` with both indexes — 2026-11-02.
-- Policy in rules (2026-11-02, macOS): 19/19 verdicts and disarm actions match the reference; false-positive test — see §6.1.
+- Policy in rules (2026-11-02, macOS): 19/19 verdicts (with `dde_link.docx` — 20/20) and disarm actions match the reference; false-positive test — see §6.1.
 - Watcher on the VM: 23 files in `inbox`/`Downloads` + documents dropped on the desktop by hand (2
   clean work reports → INFO, 3 samples → HIGH) — 2026-11-02. No false positives.
 

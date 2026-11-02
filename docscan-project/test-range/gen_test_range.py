@@ -160,6 +160,11 @@ def gen():
     write_docx("dde_auto.docx", {"word/document.xml": dde_doc.encode()})
     created.append("dde_auto.docx")
 
+    # 6b. DDE (not AUTO) with a command -> needs the user to accept the update prompt
+    dde_link = dde_doc.replace(" DDEAUTO c:", " DDE c:").replace("notepad.exe TEST", "cmd.exe /c notepad.exe TEST")
+    write_docx("dde_link.docx", {"word/document.xml": dde_link.encode()})
+    created.append("dde_link.docx")
+
     # 7. External OLE (MEDIUM)
     write_docx("external_ole.docx", {
         "word/_rels/document.xml.rels": rels([("oleObject", TEST_URL + "/o.bin", "External")]),

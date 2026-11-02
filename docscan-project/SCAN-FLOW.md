@@ -157,7 +157,7 @@ docscan-project/
     samples/generated/              локальний дубль test-samples/generated (не в git)
   test-samples/                     ОРИГІНАЛИ тест-набору (не лікувати напряму!)
     provided/  (7)                  реальні семпли замовника (живий C2) — НЕ в git
-    generated/ (12)                 безпечний полігон, по файлу на вектор
+    generated/ (13)                 безпечний полігон, по файлу на вектор
   reference/                        першоджерела (PS-скрипт, Mandiant, стаття, повний vendor-корпус)
 ```
 
@@ -216,7 +216,7 @@ docscan-project/
 | | `macro_present` | MEDIUM | є `vbaProject.bin` / VBA-модуль |
 | | `external_ole` | MEDIUM | external `oleObject` relationship |
 | | `external_frame` | MEDIUM | external `frame` relationship |
-| | `dde_link` | MEDIUM | `DDE ` + cmd/powershell/mshta/rundll32 (не AUTO) |
+| | `dde_link` | HIGH | `DDE ` + cmd/powershell/mshta/rundll32 (не AUTO) |
 | LNK | `lnk_url_args` | HIGH | URL/UNC в аргументах |
 | | `lnk_obfuscated` | HIGH | `-enc`, `iex`, `-w hidden`, `downloadstring`… в аргументах |
 | | `lnk_lolbin` | MEDIUM* | ціль — LOLBin (cmd/powershell/mshta/rundll32/…) |
@@ -293,7 +293,7 @@ OOXML (docx/xlsx/pptx) — ZIP із DEFLATE, тому сирий пошук не
 | `docscan_inspect_ooxml(data, size, r)` | Відкриває ZIP; кожну частину записує у факти `entries[]`; за іменем кожного запису: `*.rels` → `docscan_scan_rels`; `*vbaProject.bin` → `macro_present=1` + `docscan_scan_vba_container`; тіло документа → `scan_dde`; `embeddings/oleObject*.bin` → `scan_embedded_ole`. |
 | `is_body_xml(name)` | `word/document.xml`, `word/header*.xml`, `word/footer*.xml`, `xl/worksheets/sheet*.xml`, `xl/workbook.xml`. |
 | `is_embedded_ole(name)` | `embeddings/oleObject*.bin`. |
-| `record_dde(xml, n, r)` | Факт: кожна інструкція `DDEAUTO…` або `DDE …` (без регістру) до `<`/`"` → `dde[]` (≤ 32). |
+| `record_dde(xml, n, r)` | Факт: кожна інструкція `DDEAUTO…` або `DDE …` (без регістру) → `dde[]` (≤ 32). Кінець: в атрибуті `w:instr="…"` — до `"`, у тексті `<w:instrText>` — до `<` (лапки всередині команди зберігаються). Перша інструкція → доказ `dde_command`. |
 | `scan_dde(xml, n, r)` | Викликає `record_dde`; далі прапорці: `DDEAUTO` (без регістру) → `dde_auto` + `dde_command` (фрагмент від `DDEAUTO` до `<`). Інакше `DDE ` + cmd/powershell/mshta/rundll32 → `dde_link`. |
 | `scan_embedded_ole(d, n, e, r)` | Кожен об'єкт записується у `embedded[]` (ім'я, розмір, `is_pe`, `is_lnk`). 20-байтова сигнатура LNK (header + CLSID) → `embedded_lnk` і розбір цього LNK (`docscan_inspect_lnk` → target/args); `MZ` з `e_lfanew` < 0x1000, що вказує на `PE\0\0` → `embedded_pe`. |
 | `ends_with(s, suffix)` | Допоміжна. |
@@ -362,7 +362,7 @@ MS-OVBA. Ланцюжок: **CFB → потоки → пошук контейн�
 | `cure_ooxml(path, info, action, sz)` | Перепаковує ZIP через miniz у `<file>.docscan-tmp`: **не копіює** `vbaProject.bin`/`vbaData.xml` (макрос) і `embeddings/oleObject*.bin`; у `*.rels` видаляє `<Relationship>` з маркерами `vbaProject` / `oleObject` / `attachedTemplate` / усі обробники протоколів (`ms-msdt:`, `search-ms:`, `search:`, `ms-officecmd:`, `mhtml:`, `ms-word:`, `ms-excel:`, `ms-powerpoint:`, `!x-usc:`); у `[Content_Types].xml` — `<Override>` з `vbaProject`; у `word/document.xml`/header/footer `DDEAUTO` → `REMOVED`. Потім підміняє оригінал. Якщо будь-яку частину не вдалося прочитати (чи вона > 64 МБ) — лікування скасовується, оригінал не змінюється, дія `failed:unreadable-part`. Дії: `removed:vbaProject.bin`, `removed:embeddings`, `removed:remote-template`, `removed:protocol-rel`, `stripped:dde`. |
 | `cure_rtf(path, action, sz)` | `\objupdate` → `\objupdatX` (керуюче слово зламане, довжина та сама) → `stripped:objupdate`. |
 | `remove_elements(in, len, markers, n, &out_len)` | Копіює XML, викидаючи елементи `<Relationship …>` / `<Override …>`, що містять будь-який маркер. |
-| `strip_dde(buf, len)` | `DDEAUTO` → `REMOVED` на місці (7 символів, без «DDE», щоб не лишався `dde_link`). |
+| `strip_dde(buf, len)` | На місці, тієї ж довжини: `DDEAUTO` → `REMOVED`, `DDE ` → `REM `. Без урахування регістру (як детекція) і лише на початку інструкції поля (після `>` або `"` і пробілів) — звичайний текст зі словом «DDE» не чіпається. |
 | `backup(path)` | Копія в `<path>.docscan-bak`. |
 | `read_file` / `write_file` / `append` / `name_is` | Файл у пам'ять / запис; дописати дію через кому; перевірка суфікса імені. |
 
@@ -437,7 +437,7 @@ MS-OVBA. Ланцюжок: **CFB → потоки → пошук контейн�
    | `macro` | OOXML | вирізати `vbaProject.bin`/`vbaData.xml` + rels/content-type | `removed:vbaProject.bin` |
    | `remote_template` | OOXML | прибрати external `attachedTemplate` rel | `removed:remote-template` |
    | `protocol_handler` | OOXML | прибрати rel з обробником протоколу | `removed:protocol-rel` |
-   | `dde` | OOXML | `DDEAUTO` → `REMOVED` | `stripped:dde` |
+   | `dde` | OOXML | `DDEAUTO` → `REMOVED`, `DDE` → `REM` | `stripped:dde` |
    | `embedded` | OOXML | вирізати `embeddings/oleObject*.bin` | `removed:embeddings` |
    | `rtf_objupdate` | RTF | `\objupdate` → `\objupdatX` | `stripped:objupdate` |
    | `lnk_delete` | LNK | видалити файл (бекап є) | `deleted:lnk` |
@@ -469,7 +469,7 @@ MS-OVBA. Ланцюжок: **CFB → потоки → пошук контейн�
 | `DS_REMOTE_TEMPLATE` | external `attachedTemplate` на http(s)/ftp/UNC/`file://host` (не `file:///C:`) | HIGH | `remote_template` |
 | `DS_PROTOCOL_HANDLER` | external target `ms-msdt:`, `search-ms:`, `search:`, `ms-officecmd:`, `mhtml:`, `ms-word:`… | HIGH | `protocol_handler` |
 | `DS_DDE_AUTO` | `dde[]` починається з `DDEAUTO` | HIGH | `dde` |
-| `DS_DDE_LINK` | `DDE ` + cmd/powershell/mshta/rundll32 | MEDIUM | — |
+| `DS_DDE_LINK` | `DDE ` (не AUTO) + cmd/powershell/mshta/rundll32 — потрібна згода користувача на оновлення, але легітимного застосування немає | HIGH | `dde` |
 | `DS_EMBEDDED_PE` / `DS_EMBEDDED_LNK` | `embedded[].is_pe` / `.is_lnk` | HIGH | `embedded` |
 | `DS_EXTERNAL_OLE` / `DS_EXTERNAL_FRAME` | external `oleObject` (не Follina) / `frame` | MEDIUM | — |
 | `DS_MACRO_PRESENT` | є VBA | MEDIUM | — |
@@ -671,7 +671,7 @@ make -j8 yara.exe      # PE32+ x64, залежить лише від UCRT (є у
 
 ## 10. Тестування
 
-### Тест-набір `docscan-project/test-samples/` (19 файлів, оригінали)
+### Тест-набір `docscan-project/test-samples/` (20 файлів, оригінали)
 
 `provided/` — реальні семпли замовника (усі ведуть на один внутрішній C2; у git не входять):
 
@@ -692,6 +692,7 @@ make -j8 yara.exe      # PE32+ x64, залежить лише від UCRT (є у
 | `remote_template.docx` | REMOTE_TEMPLATE, HIGH |
 | `protocol_handler.docx` | PROTOCOL_HANDLER, HIGH |
 | `dde_auto.docx` | DDE_AUTO, HIGH |
+| `dde_link.docx` | DDE_LINK (`DDE cmd.exe /c …`, не AUTO), HIGH |
 | `external_ole.docx` | EXTERNAL_OLE, **MEDIUM** |
 | `embedded_pe.docx` | EMBEDDED_PE, HIGH |
 | `embedded_lnk.docx` | EMBEDDED_LNK, HIGH |
@@ -708,7 +709,7 @@ make -j8 yara.exe      # PE32+ x64, залежить лише від UCRT (є у
 наприкінці SHA256 оригінали до/після. Параметри: `-Yara`, `-Rules`, `-Samples`, `-WorkDir`.
 Файл має бути **UTF-8 з BOM** (інакше PowerShell 5.1 ламає кирилицю).
 
-**Еталонний результат (19 файлів):** детект HIGH 18 / MEDIUM 1; після лікування INFO 13 /
+**Еталонний результат (20 файлів):** детект HIGH 19 / MEDIUM 1; після лікування INFO 14 /
 DELETED 2 (LNK) / HIGH 3 (PDF) / MEDIUM 1 (`external_ole`); оригінали не змінені; з
 `docscan-index.yar` — `vendor_shellexec.docm` → `yara_matches:["gen_macro_ShellExecute_action"]`.
 
@@ -761,7 +762,7 @@ cd /tmp/docscan-fuzz
 - macOS: усі вектори.
 - Windows 10 (MSVC): 12 полігон + 7 реальних, детект + лікування, Шар 2 — 2026-10-30.
 - Чиста VM Windows 11 (MSVC v143, свіжа збірка): `run_tests.ps1` з обома index — 2026-11-02.
-- Політика в правилах (2026-11-02, macOS): 19/19 вердиктів і дій лікування як в еталоні; тест на хибні спрацювання — див. §6.1.
+- Політика в правилах (2026-11-02, macOS): 19/19 вердиктів (з `dde_link.docx` — 20/20) і дій лікування як в еталоні; тест на хибні спрацювання — див. §6.1.
 - Watcher на VM: 23 файли в `inbox`/`Downloads` + ручні документи на робочому столі (2 чисті
   робочі звіти → INFO, 3 семпли → HIGH) — 2026-11-02. Хибних спрацювань не було.
 

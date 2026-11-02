@@ -47,8 +47,10 @@ static int lower(uint8_t c)
   return (c >= 'A' && c <= 'Z') ? c + 32 : c;
 }
 
-// Raw fact: every "DDE..." field instruction (DDEAUTO or "DDE "), captured up
-// to the next '<' or '"', so rules can decide which commands are dangerous.
+// Raw fact: every "DDE..." field instruction (DDEAUTO or "DDE "), so rules can
+// decide which commands are dangerous. The end depends on where it sits:
+//   <w:fldSimple w:instr=" DDE ... "/>   attribute -> ends at '"'
+//   <w:instrText> DDE "a" "b" </w:instrText>  text -> ends at '<' (quotes allowed)
 static void record_dde(const uint8_t* xml, size_t n, docscan_result_t* r)
 {
   for (size_t i = 0; i + 4 <= n && r->n_dde < DOCSCAN_MAX_DDE; i++)
@@ -58,11 +60,20 @@ static void record_dde(const uint8_t* xml, size_t n, docscan_result_t* r)
         (lower(xml[i + 3]) != 'a' && xml[i + 3] != ' '))
       continue;
 
+    size_t p = i;
+    while (p > 0 && xml[p - 1] == ' ')
+      p--;
+    int in_attr = (p > 0 && xml[p - 1] == '"');
+
     char* out = r->dde[r->n_dde++];
     size_t k = 0;
-    while (i < n && xml[i] != '<' && xml[i] != '"' && k + 1 < 512)
+    while (i < n && xml[i] != '<' && !(in_attr && xml[i] == '"') && k + 1 < 512)
       out[k++] = (char) xml[i++];
     out[k] = '\0';
+
+    // evidence: the first DDE instruction of any kind (DDEAUTO or plain DDE)
+    if (r->dde_command[0] == '\0')
+      snprintf(r->dde_command, sizeof(r->dde_command), "%s", out);
   }
 }
 

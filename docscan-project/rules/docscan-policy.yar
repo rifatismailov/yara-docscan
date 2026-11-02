@@ -61,11 +61,15 @@ rule DS_DDE_AUTO
     for any d in docscan.dde : ( d matches /^ddeauto/i )
 }
 
+// Plain DDE needs the user to accept Word's link-update prompt, but a DDE field
+// that starts cmd/powershell/mshta/rundll32 has no legitimate use.
 rule DS_DDE_LINK
 {
   meta:
-    severity = "MEDIUM"
+    severity = "HIGH"
     finding  = "DDE_LINK"
+    disarm   = "dde"
+    mitre    = "T1559.002"
   condition:
     for any d in docscan.dde : (
       d matches /^dde /i and d matches /(cmd|powershell|mshta|rundll32)/i

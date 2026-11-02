@@ -87,13 +87,36 @@ static int cure_rtf(const char* path, char* action, size_t asz)
 }
 
 // ---- OOXML string edits ----
-// Replace every case-sensitive "DDEAUTO" with "DDE_OFF" (same length) in place.
+static int lower_c(unsigned char c)
+{
+  return (c >= 'A' && c <= 'Z') ? c + 32 : c;
+}
+
+// Neutralise DDE field instructions in place (same length, XML stays valid):
+//   DDEAUTO ... -> REMOVED ...      DDE ... -> REM ...
+// Case-insensitive, like detection, and only at the start of a field
+// instruction (after '>' or '"' plus spaces), so ordinary text that merely
+// contains the letters "DDE" is left alone.
 static void strip_dde(unsigned char* buf, size_t len)
 {
-  // Replace with a 7-char token that contains no "DDE" (else DDE_LINK lingers).
-  for (size_t i = 0; i + 7 <= len; i++)
-    if (memcmp(buf + i, "DDEAUTO", 7) == 0)
+  for (size_t i = 0; i + 4 <= len; i++)
+  {
+    if (lower_c(buf[i]) != 'd' || lower_c(buf[i + 1]) != 'd' ||
+        lower_c(buf[i + 2]) != 'e')
+      continue;
+
+    size_t k = i;
+    while (k > 0 && buf[k - 1] == ' ')
+      k--;
+    if (k == 0 || (buf[k - 1] != '>' && buf[k - 1] != '"'))
+      continue;
+
+    if (i + 7 <= len && lower_c(buf[i + 3]) == 'a' && lower_c(buf[i + 4]) == 'u' &&
+        lower_c(buf[i + 5]) == 't' && lower_c(buf[i + 6]) == 'o')
       memcpy(buf + i, "REMOVED", 7);
+    else if (buf[i + 3] == ' ')
+      memcpy(buf + i, "REM", 3);
+  }
 }
 
 // Remove every <Relationship ...> / <Override ...> element whose text contains

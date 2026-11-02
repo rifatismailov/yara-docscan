@@ -1,4 +1,4 @@
-$ErrorActionPreference='Stop'
+﻿$ErrorActionPreference='Stop'
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 $R = "C:\docscan-build\range"
 Remove-Item $R -Recurse -Force -ErrorAction SilentlyContinue
@@ -84,6 +84,14 @@ New-Injected "$R\dde_auto.docx" {
   param($zip)
   $doc = Get-EntryText $zip "word/document.xml"
   $fld = '<w:p><w:fldSimple w:instr=" DDEAUTO c:\\Windows\\System32\\notepad.exe TEST "/></w:p>'
+  $doc = $doc -replace '</w:body>', ($fld + '</w:body>')
+  Add-TextEntry $zip "word/document.xml" $doc
+}
+# DDE (not AUTO): runs a command once the user accepts the link-update prompt
+New-Injected "$R\dde_link.docx" {
+  param($zip)
+  $doc = Get-EntryText $zip "word/document.xml"
+  $fld = '<w:p><w:fldSimple w:instr=" DDE c:\\Windows\\System32\\cmd.exe /c notepad.exe TEST "/></w:p>'
   $doc = $doc -replace '</w:body>', ($fld + '</w:body>')
   Add-TextEntry $zip "word/document.xml" $doc
 }
