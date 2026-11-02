@@ -98,6 +98,22 @@ MODULES += libyara/modules/console/console.c
 
 MODULES += libyara/modules/string/string.c
 
+MODULES += libyara/modules/docscan/docscan.c
+MODULES += libyara/modules/docscan/magic.c
+MODULES += libyara/modules/docscan/search.c
+MODULES += libyara/modules/docscan/inspect_rtf.c
+MODULES += libyara/modules/docscan/inspect_pdf.c
+MODULES += libyara/modules/docscan/miniz.c
+MODULES += libyara/modules/docscan/zip.c
+MODULES += libyara/modules/docscan/rels.c
+MODULES += libyara/modules/docscan/inspect_ooxml.c
+MODULES += libyara/modules/docscan/cfb.c
+MODULES += libyara/modules/docscan/msovba.c
+MODULES += libyara/modules/docscan/vba.c
+MODULES += libyara/modules/docscan/inspect_ole.c
+MODULES += libyara/modules/docscan/lnk.c
+MODULES += libyara/modules/docscan/disarm.c
+
 if CUCKOO_MODULE
 MODULES += libyara/modules/cuckoo/cuckoo.c
 endif

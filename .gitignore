@@ -91,3 +91,17 @@ windows/*/packages/
 .vscode/
 
 tests/mapper
+
+# DocScan: never publish
+/.claude/
+/attack-vectors
+/docscan-project/reference/
+/docscan-project/test-samples/provided/
+/docscan-project/test-range/samples/
+*.docscan-bak
+*.docscan-tmp
+# upstream rule "test-*[^.c]" hides these dirs; re-include, then re-exclude live samples
+!/docscan-project/test-range/
+!/docscan-project/test-samples/
+/docscan-project/test-samples/provided/
+/docscan-project/test-range/samples/
