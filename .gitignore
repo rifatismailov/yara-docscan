@@ -106,3 +106,4 @@ tests/mapper
 /docscan-project/test-samples/provided/
 /docscan-project/test-range/samples/
 /docscan-project/fuzz/external/
+/docscan-project/dist/
