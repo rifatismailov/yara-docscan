@@ -429,7 +429,7 @@ the JSON is printed at `SCAN_FINISHED`, when everything is known.
 {"ftype":"ooxml","findings":["MACRO_PRESENT","MACRO_SUSPICIOUS","MACRO_AUTOEXEC"],"verdict":"HIGH",
  "evidence":{"vba_evidence":"powershell | DownloadFile | AutoOpen"},
  "yara_matches":["powershell","VBA_AutoExec_DownloadCradle"],
- "yara_file_matches":["Contains_VBA_macro_code","office_document_vba"],
+ "yara_file_matches":[],"yara_info_matches":["Contains_VBA_macro_code","office_document_vba"],
  "details":[{"rule":"DS_MACRO_SUSPICIOUS","finding":"MACRO_SUSPICIOUS","severity":"HIGH","disarm":"macro","mitre":"T1204.002"}, …]}
 ```
 `verdict` — the highest `meta.severity` among matching policy rules (`INFO` if none). `evidence` —
@@ -444,7 +444,7 @@ or `detect-only`.
 2. **Rule compilation.** `docscan-index.yar` = `docscan-policy.yar` + `file-index.yar` → `g_rules`.
 3. **Module.** `module_load`: magic → inspector → facts and flags (see §4). The facts are copied in the CLI.
 4. **Rules on the file.** Policy rules (`meta.severity`) → findings, verdict, disarm actions; other
-   rules → `yara_file_matches`.
+   rules → `yara_file_matches`, rules tagged `docscan_info` → `yara_info_matches`.
 5. **LAYER 2.** The decompressed VBA is re-scanned with the same rules → `yara_matches`. Ordinary
    `$string` rules only see the input buffer, and VBA inside a document is compressed — without
    Layer 2 vendor rules never see the macro.
@@ -502,7 +502,8 @@ A policy rule must not be `private` (YARA never reports private rules).
 | `DS_RTF_OBJUPDATE` | RTF and `\objupdate` | HIGH | `rtf_objupdate` |
 | `DS_PDF_LAUNCH` | `/Launch` | HIGH | `quarantine` |
 | `DS_PDF_JS_AUTO` / `DS_PDF_JS` | `/JavaScript`/`/JS` with / without a dangerous API | HIGH (`quarantine`) / MEDIUM | |
-| `DS_PDF_OPENACTION` / `DS_PDF_EMBEDDED` | `/OpenAction`/`/AA` without JS / `/EmbeddedFile` | MEDIUM | — |
+| `DS_PDF_OPENACTION` | `/OpenAction`/`/AA` without JS (usually start page/zoom) | INFO | — |
+| `DS_PDF_EMBEDDED` | `/EmbeddedFile` | MEDIUM | — |
 | `DS_LNK_URL_ARGS` | URL/UNC in the arguments | HIGH | `lnk_delete` |
 | `DS_LNK_OBFUSCATED` | `-enc`, `iex`, `-w hidden`, `downloadstring`… | HIGH | `lnk_delete` |
 | `DS_LNK_REMOTE_EXEC` | the target is an executable on a network share (`\\server\…\x.exe`, `.ps1`, `.vbs`, `.hta`…) | HIGH | `lnk_delete` |
@@ -536,17 +537,33 @@ PDF: 2 HIGHs on pdf.js test files made exactly for `/Launch` and `launchURL` —
 | `rules/docscan-policy.yar` | policy | `import "docscan"` + the `DS_*` rules |
 | `rules/docscan.yar` | our detection only | `include "docscan-policy.yar"` |
 | `rules/docscan-index.yar` | **full scan** (watcher, run_tests) | `include "docscan-policy.yar"` + `include "file-index.yar"` |
-| `rules/file-index.yar` | vendor rules | 165 × `general/` + 33 × `maldoc/` (198 includes) |
-| `rules/general/` | general YARA scan | signature-base subset from `index_strict.yar` (score ≥ 75), 1022 rules |
-| `rules/maldoc/` | document rules | `signature-base/` 15 + `community/` 20 + `vba_plaintext.yar` |
-| `reference/vendor-rules-full-later/` | full corpus (85 MB, not in git) | `gen_index.py` → `dist/index_strict.yar` (compiles), `index_advisory.yar` (needs external variables — not used) |
+| `rules/file-index.yar` | vendor rules (**generated**) | 147 × `general/` + 14 × `maldoc/signature-base/` + 20 × `maldoc/community/` + `maldoc/vba_plaintext.yar` |
+| `rules/general/`, `rules/maldoc/signature-base/`, `rules/maldoc/community/` | vendor rules (**generated**, do not edit) | signature-base + Yara-Rules, filtered per rule |
+| `rules/maldoc/vba_plaintext.yar` | our rules for decompressed VBA | edited by hand |
+| `rules/tools/build_vendor_rules.py` | generator | pinned sources, filter, renames, tags, compile check |
+| `rules/tools/vendor-selection.txt` | which source files are used | `<dir> <source> <path>` |
+| `rules/tools/vendor-report.md` | build report | what was dropped and why, renamed, tagged `docscan_info` |
+
+**How the vendor set is built** (`python3 rules/tools/build_vendor_rules.py [--fetch]`):
+1. Sources live in `reference/vendor-rules-full-later/vendor/` (not in git), commits pinned in `SOURCES`;
+   `--fetch` clones/checks them out.
+2. Files from `vendor-selection.txt` are taken; every rule is checked on its own:
+   - **dropped** if it cannot fire on a Windows workstation: the condition requires ELF / Mach-O /
+     Java `.class`, Android, a rule named `LNX_`/`ESXi`/`_SH_`/`_PY_` without a file-type check, PHP/JSP/ASPX
+     webshell source (such files are not scanned). A condition that accepts PE or ZIP/JAR keeps the rule
+     (e.g. "PE or ELF", compiled webshell DLLs). The file name alone decides nothing;
+   - **renamed** on identifier clashes (`RENAME`) instead of excluding a whole file;
+   - **tagged `docscan_info`** (`INFO`) when it is an indicator rather than a detection: "a macro exists",
+     the word `powershell`, PDF structure/metadata anomalies, PDF features the policy grades itself.
+3. `file-index.yar` is generated and compiled with `yarac`; any error or duplicate name fails the build.
+
+**Tags in JSON:** a vendor match → `yara_file_matches` (detection: document → at least MEDIUM,
+general → HIGH); a `docscan_info` match → `yara_info_matches` (for the analyst only, does **not** raise
+the verdict, ignored in Layer 2).
 
 Rules for index files:
 - `include` paths **use `/`**, relative to the index file or absolute (YARA treats `\` as an escape).
 - Only rules that compile on their own. One broken rule breaks the whole index.
-- Rule identifiers must be unique. `file-index.yar` excludes these duplicates:
-  `maldoc/signature-base/exploit_rtf_ole2link.yar`, `…/susp_office_template_injection.yar`,
-  `…/general_officemacros.yar` (loses `Office_as_MHTML`, `Docm_in_PDF`).
 - Vendor rules must **not** have `meta.severity` — otherwise the CLI treats them as policy.
 
 ## 7. Watcher — auto-scan of new files
@@ -624,8 +641,8 @@ Start-ScheduledTask docscan-watcher          # Stop-ScheduledTask docscan-watche
    "docscan":{"ftype":"ooxml","findings":["MACRO_PRESENT","MACRO_SUSPICIOUS","MACRO_AUTOEXEC","MACRO_NETWORK"],
               "verdict":"HIGH","evidence":{"vba_evidence":"powershell | WScript.Shell | …"},
               "yara_matches":["powershell","VBA_AutoExec_DownloadCradle"],
-              "yara_file_matches":["Contains_VBA_macro_code","office_document_vba"],"details":[…]},
-   "yara_file_matches":["Contains_VBA_macro_code","office_document_vba"],"disarm":null,"errors":[]}
+              "yara_file_matches":[],"yara_info_matches":["Contains_VBA_macro_code","office_document_vba"],"details":[…]},
+   "yara_file_matches":[],"disarm":null,"errors":[]}
   ```
 - `results\watcher.log` — human-readable log. Follow it live:
   `Get-Content C:\docscan-build\results\watcher.log -Encoding UTF8 -Wait` (without `-Encoding UTF8`
@@ -972,7 +989,7 @@ agent's `ossec.log` (`localfile` not picked up).
 
 **Watcher**
 - Defender in ordinary folders may remove a malicious file first → the log says the file vanished before the scan, and there is no JSON record.
-- `invalid_trailer_structure` / `invalid_xref_numbers` (maldoc/PDF) are noisy: a damaged but clean PDF → `yara_file_matches` → MEDIUM.
+- Noisy indicators (`invalid_trailer_structure`, `invalid_xref_numbers`, `powershell`, `Contains_VBA_macro_code`, …) are tagged `docscan_info` → `yara_info_matches`, no verdict change (on 476 benign local documents: 25 false MEDIUM → 0). `DS_PDF_OPENACTION` without JS is INFO (35 of them were benign).
 - Archives are scanned as-is, not unpacked.
 - FileSystemWatcher buffer overflow (thousands of files at once) → some events are lost (logged).
 - The quarantine folder (`-BackupDir`) grows without limit — clean it manually or with a retention job.

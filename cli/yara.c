@@ -107,6 +107,7 @@ typedef struct _DOCSCAN_STATE
   char findings[2048];       // JSON tokens: "A","B"
   char details[8192];        // JSON objects, one per matching policy rule
   char file_matches[4096];   // JSON tokens: vendor rules matching the raw file
+  char info_matches[4096];   // JSON tokens: vendor rules tagged docscan_info (indicators)
   docscan_disarm_info ds;    // what --docscan-disarm should remove
 } DOCSCAN_STATE;
 
@@ -1389,6 +1390,19 @@ static const char* docscan_meta(YR_RULE* rule, const char* name)
   return NULL;
 }
 
+// Vendor rules tagged "docscan_info" are indicators, not detections: they are
+// reported in "yara_info_matches" and never counted as a vendor detection.
+static int docscan_is_info(YR_RULE* rule)
+{
+  const char* tag;
+  yr_rule_tags_foreach(rule, tag)
+  {
+    if (strcmp(tag, "docscan_info") == 0)
+      return 1;
+  }
+  return 0;
+}
+
 // CALLBACK_MSG_RULE_MATCHING: a rule with meta.severity is a policy rule
 // (finding + severity + disarm action); any other rule is a vendor match.
 static void docscan_on_match(YR_RULE* rule, DOCSCAN_STATE* st)
@@ -1397,7 +1411,10 @@ static void docscan_on_match(YR_RULE* rule, DOCSCAN_STATE* st)
 
   if (sev == NULL)
   {
-    docscan_list_add(st->file_matches, sizeof(st->file_matches), rule->identifier);
+    if (docscan_is_info(rule))
+      docscan_list_add(st->info_matches, sizeof(st->info_matches), rule->identifier);
+    else
+      docscan_list_add(st->file_matches, sizeof(st->file_matches), rule->identifier);
     return;
   }
 
@@ -1474,8 +1491,9 @@ static int vendor_match_cb(
   if (message == CALLBACK_MSG_RULE_MATCHING)
   {
     YR_RULE* r = (YR_RULE*) message_data;
-    // policy rules (meta.severity) describe documents, not VBA text
-    if (r->identifier && docscan_meta(r, "severity") == NULL)
+    // policy rules (meta.severity) describe documents, not VBA text;
+    // indicator rules (docscan_info) are not detections
+    if (r->identifier && docscan_meta(r, "severity") == NULL && !docscan_is_info(r))
     {
       vmatch_collect* v = (vmatch_collect*) user_data;
       docscan_list_add(v->buf, v->sz, r->identifier);
@@ -1518,6 +1536,7 @@ static void print_docscan_json(DOCSCAN_STATE* st)
 
   printf(",\"yara_matches\":[%s]", vmatches);
   printf(",\"yara_file_matches\":[%s]", st->file_matches);
+  printf(",\"yara_info_matches\":[%s]", st->info_matches);
   printf(",\"details\":[%s]", st->details);
   printf("}\n");  // close root object
   fflush(stdout);

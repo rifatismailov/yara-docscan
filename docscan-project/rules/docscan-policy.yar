@@ -246,10 +246,13 @@ rule DS_PDF_JS
     docscan.is_pdf == 1 and any of them and not DS_PDF_JS_AUTO
 }
 
+// /OpenAction or /AA without JavaScript usually just sets the start page/zoom (very common in
+// legitimate PDFs: 35 of ~150 benign PDFs in a test sweep). Dangerous combinations are graded
+// separately: JS + OpenAction/AA -> DS_PDF_JS_AUTO (HIGH), /Launch -> DS_PDF_LAUNCH (HIGH).
 rule DS_PDF_OPENACTION
 {
   meta:
-    severity = "MEDIUM"
+    severity = "INFO"
     finding  = "PDF_OPENACTION"
   strings:
     $oa  = "/OpenAction"

@@ -1,0 +1,286 @@
+#!/usr/bin/env python3
+"""Build DocScan's vendor rule set (rules/general, rules/maldoc/<source>, rules/file-index.yar).
+
+Source files come from upstream repositories pinned in SOURCES; which files are used is listed
+in tools/vendor-selection.txt. Each selected file is then filtered PER RULE:
+
+  * dropped  - rules that can never fire on a Windows workstation (ELF/Linux, Mach-O/macOS,
+               Android, PHP/JSP/ASPX webshells) and rules listed in DROP;
+  * renamed  - RENAME resolves identifier clashes between files, so nothing has to be excluded;
+  * info     - rules listed in INFO get the tag `docscan_info`: yara64 reports them in
+               "yara_info_matches" and they do NOT raise the verdict (indicators, not detections).
+
+Private/global rules are always kept (other rules may depend on them); a dropped rule that a kept
+rule references is kept too. The result is compiled with yarac; the build fails on any error.
+
+  python3 build_vendor_rules.py [--vendor DIR] [--fetch] [--yarac PATH] [--check]
+
+--check: build into a temp dir and only report whether rules/ is up to date.
+"""
+import argparse, os, re, shutil, subprocess, sys, tempfile
+from collections import OrderedDict
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+RULES = HERE.parent
+DEFAULT_VENDOR = RULES.parent / "reference" / "vendor-rules-full-later" / "vendor"
+
+SOURCES = {
+    "signature-base": ("https://github.com/Neo23x0/signature-base.git",
+                       "94a1c48d7ab499879287ff611dfe7f9c56376030"),
+    "yara-rules-community": ("https://github.com/Yara-Rules/rules.git",
+                             "0f93570194a80d2f2032869055808b0ddcdfb360"),
+    "protections-artifacts": ("https://github.com/elastic/protections-artifacts.git",
+                              "ce99f77ba7cc2e442589d49e01b9db262d31ae91"),
+}
+
+# identifier clashes: (source path, rule) -> new name
+RENAME = {
+    ("yara/general_officemacros.yar", "Office_AutoOpen_Macro"): "Office_AutoOpen_Macro_SB",
+}
+
+# rules removed on purpose (besides the automatic platform filter): name -> reason
+DROP = {}
+
+# indicators, not detections: reported in yara_info_matches, never raise the verdict.
+# Most duplicate what the docscan policy already decides with proper severity.
+INFO = {
+    # PDF structure / metadata oddities (common in legitimate generator/scanner output)
+    "suspicious_version", "suspicious_creation", "multiple_filtering", "suspicious_title",
+    "suspicious_author", "suspicious_producer", "suspicious_creator", "multiple_versions",
+    "js_wrong_version", "JBIG2_wrong_version", "FlateDecode_wrong_version", "embed_wrong_version",
+    "invalid_xref_numbers", "invalid_trailer_structure", "header_evasion",
+    # PDF features the policy grades itself (PDF_JS*, PDF_LAUNCH, PDF_EMBEDDED, PDF_OPENACTION)
+    "suspicious_js", "suspicious_launch_action", "suspicious_embed", "suspicious_obfuscation",
+    # "a macro exists" / generic macro strings (policy: MACRO_PRESENT / MACRO_AUTOEXEC / MACRO_SUSPICIOUS)
+    "Contains_VBA_macro_code", "office_document_vba", "macrocheck", "Office_AutoOpen_Macro",
+    "Office_AutoOpen_Macro_SB", "Contains_UserForm_Object", "SUSP_WordDoc_VBA_Macro_Strings",
+    "SUSP_VBA_FileSystem_Access", "maldoc_suspicious_strings",
+    # bare keyword / container format
+    "powershell", "Word_2007_XML_Flat_OPC",
+}
+INFO_TAG = "docscan_info"
+
+HEADER = re.compile(r'(?m)^[ \t]*((?:private|global)[ \t]+)*rule[ \t]+([A-Za-z0-9_]+)[ \t\r\n]*(:[^{]*)?\{')
+
+
+def mask(text):
+    """Same-length copy with comments and string literals blanked (keeps offsets)."""
+    out = list(text); i = 0; n = len(text)
+    while i < n:
+        c = text[i]
+        if c == '"':
+            j = i + 1
+            while j < n and text[j] != '"' and text[j] != '\n':
+                j += 2 if text[j] == '\\' else 1
+            for k in range(i + 1, min(j, n)):
+                out[k] = ' '
+            i = j + 1; continue
+        if text.startswith('//', i):
+            j = text.find('\n', i); j = n if j < 0 else j
+            for k in range(i, j): out[k] = ' '
+            i = j; continue
+        if text.startswith('/*', i):
+            j = text.find('*/', i + 2); j = n if j < 0 else j + 2
+            for k in range(i, j):
+                if out[k] != '\n': out[k] = ' '
+            i = j; continue
+        i += 1
+    return ''.join(out)
+
+
+def split_rules(text):
+    """-> preamble, [ {name, private, start, end, text, cond} ] ; rule text includes its leading comments."""
+    m = mask(text)
+    hs = list(HEADER.finditer(m))
+    if not hs:
+        return text, [], ""
+    rules = []
+    for k, h in enumerate(hs):
+        nxt = hs[k + 1].start() if k + 1 < len(hs) else len(m)
+        end = m.rfind('}', h.end() - 1, nxt) + 1
+        rules.append(dict(name=h.group(2), private=bool(h.group(1)), hstart=h.start(), hend=h.end(), end=end))
+    pre = text[:rules[0]['hstart']]
+    prev = rules[0]['hstart']
+    for r in rules:
+        r['text'] = text[prev:r['end']]          # leading comments + rule
+        r['hoff'] = r['hstart'] - prev
+        body = m[r['hend']:r['end']]
+        cm = re.search(r'\bcondition\s*:(.*)$', body, re.S)
+        r['cond'] = cm.group(1) if cm else ''
+        sm = re.search(r'\bstrings\s*:(.*?)\bcondition\s*:', text[r['hend']:r['end']], re.S)
+        r['strings'] = sm.group(1) if sm else ''
+        prev = r['end']
+    tail = text[prev:]
+    return pre, rules, tail
+
+
+def platform_reason(fname, r):
+    """Why a rule cannot fire on a Windows workstation (None = keep)."""
+    # Decided by the CONDITION; the file name alone never drops a rule.
+    c = re.sub(r'\s+', '', r['cond'].lower()); s = r['strings'].lower(); n = r['name'].lower()
+    # a condition that can accept a PE or a ZIP/JAR/Office container can fire here -> keep
+    pe_ok = re.search(r'uint16\(0\)==0x5a4d|uint16be\(0\)==0x4d5a|\bpe\.', c)
+    zip_ok = re.search(r'uint16\(0\)==0x4b50|uint32\(0\)==0x04034b50|uint32be\(0\)==0x504b0304', c) or 'jar' in n
+    if pe_ok or zip_ok:
+        return None
+    elf = re.search(r'==0x464c457f|==0x7f454c46|\belf\.', c)
+    macho = re.search(r'==0xfeedfac[ef]|==0xcffaedfe|==0xcefaedfe|uint16\(0\)==0xfacf|\bmacho\.', c)
+    cafebabe = re.search(r'==0xbebafeca|==0xcafebabe|uint16\(0\)==0xfeca', c)   # Mach-O fat OR Java .class — neither is scanned
+    if cafebabe and not elf and not macho:
+        return "Java .class / Mach-O fat only (not scanned)"
+    if elf and macho:
+        return "ELF/Mach-O only"
+    if elf:
+        return "ELF only"
+    if macho:
+        return "Mach-O only"
+    if re.search(r'\bdex\.', c) or 'android' in n:
+        return "Android"
+    # no file-type check: the rule NAME says it is for Linux/ESXi/macOS scripts or files
+    if re.search(r'(^|_)(lnx|linux|elf|esxi|esxiargs|macos|osx|sh|py)(_|$)', n):
+        return "Linux/ESXi/macOS (by rule name)"
+    if ('webshell' in n or re.search(r'<\?php|<%@|<%=|runat=|\$_(post|get|request)\[', s)) and 'compiled' not in n:
+        return "webshell source (PHP/JSP/ASPX; not scanned on workstations)"
+    return None
+
+
+def add_tag(rule_text, hoff, tag):
+    """Insert `tag` into the rule header (rule X : a b {  /  rule X {)."""
+    m = HEADER.match(mask(rule_text), hoff)
+    head = rule_text[hoff:m.end()]
+    if m.group(3):  # existing tags
+        new = head[:-1].rstrip() + " " + tag + " {"
+    else:
+        new = re.sub(r'([A-Za-z0-9_]+)[ \t\r\n]*\{$', lambda x: x.group(1) + " : " + tag + " {", head)
+    return rule_text[:hoff] + new + rule_text[m.end():]
+
+
+def rename(rule_text, hoff, old, new):
+    m = HEADER.match(mask(rule_text), hoff)
+    head = rule_text[hoff:m.end()]
+    return rule_text[:hoff] + re.sub(r'\brule([ \t]+)' + old + r'\b', 'rule\\g<1>' + new, head, count=1) + rule_text[m.end():]
+
+
+def ensure_sources(vendor, fetch):
+    for name, (url, commit) in SOURCES.items():
+        d = vendor / name
+        if not d.exists():
+            if not fetch:
+                sys.exit(f"missing {d} (run with --fetch to clone {url})")
+            subprocess.run(["git", "clone", "-q", url, str(d)], check=True)
+        if fetch:
+            subprocess.run(["git", "-C", str(d), "fetch", "-q", "origin", commit], check=False)
+            subprocess.run(["git", "-C", str(d), "checkout", "-q", commit], check=True)
+        head = subprocess.run(["git", "-C", str(d), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+        if head != commit:
+            sys.exit(f"{name}: HEAD {head[:12]} != pinned {commit[:12]} (use --fetch)")
+
+
+def build(vendor, out, yarac):
+    sel = []
+    for line in (HERE / "vendor-selection.txt").read_text().splitlines():
+        line = line.split('#', 1)[0].strip()
+        if line:
+            od, src, rel = line.split()
+            sel.append((od, src, rel))
+    report = OrderedDict(dropped=[], renamed=[], info=[], files_skipped=[])
+    seen = {}
+    index = []
+    for od, src, rel in sel:
+        text = (vendor / src / rel).read_text(encoding="utf-8", errors="replace")
+        pre, rules, tail = split_rules(text)
+        fname = os.path.basename(rel)
+        keep = []
+        for r in rules:
+            why = None
+            if not r['private']:
+                why = DROP.get(r['name']) or platform_reason(fname, r)
+            r['drop'] = why
+        kept_conds = " ".join(r['cond'] for r in rules if not r['drop'])
+        for r in rules:
+            if r['drop'] and re.search(r'\b%s\b' % r['name'], kept_conds):
+                r['drop'] = None  # referenced by a kept rule
+        for r in rules:
+            if r['drop']:
+                report['dropped'].append(f"{src}/{rel}: {r['name']} — {r['drop']}")
+                continue
+            t, name = r['text'], r['name']
+            if (rel, name) in RENAME:
+                new = RENAME[(rel, name)]
+                t = rename(t, r['hoff'], name, new); name = new
+                report['renamed'].append(f"{src}/{rel}: {r['name']} -> {new}")
+            if name in INFO:
+                t = add_tag(t, r['hoff'], INFO_TAG)
+                report['info'].append(f"{src}/{rel}: {name}")
+            if name in seen and not r['private']:
+                sys.exit(f"duplicate rule {name}: {seen[name]} and {src}/{rel} — add a RENAME or drop one")
+            seen[name] = f"{src}/{rel}"
+            keep.append(t)
+        if not any(not r['drop'] and not r['private'] for r in rules):
+            report['files_skipped'].append(f"{src}/{rel} — no rule left")
+            continue
+        dst = out / od / fname
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        hdr = (f"// GENERATED by rules/tools/build_vendor_rules.py — do not edit.\n"
+               f"// source: {SOURCES[src][0]} @ {SOURCES[src][1][:12]} : {rel}\n")
+        dst.write_text(hdr + pre + "".join(keep) + tail, encoding="utf-8")
+        index.append(f"{od}/{fname}")
+    # licenses of the sources
+    for src, lic in (("signature-base", "LICENSE"), ("yara-rules-community", "LICENSE"), ("protections-artifacts", "LICENSE.txt")):
+        p = vendor / src / lic
+        if p.exists():
+            shutil.copy(p, out / f"LICENSE-{src}")
+    idx = ["// GENERATED by rules/tools/build_vendor_rules.py from tools/vendor-selection.txt — do not edit.",
+           "// Vendor rules (no meta.severity) for docscan: applied to the raw file -> yara_file_matches,",
+           "// and to decompressed VBA -> yara_matches. Rules tagged docscan_info -> yara_info_matches",
+           "// (indicators: reported, never raise the verdict). See tools/vendor-report.md.", ""]
+    idx += [f'include "{p}"' for p in index]
+    idx += ["", "// DocScan's own rules", 'include "maldoc/vba_plaintext.yar"', ""]
+    (out / "file-index.yar").write_text("\n".join(idx), encoding="utf-8")
+    shutil.copy(RULES / "maldoc" / "vba_plaintext.yar", out / "maldoc" / "vba_plaintext.yar") if out != RULES else None
+    # compile check
+    r = subprocess.run([yarac, "-w", str(out / "file-index.yar"), os.devnull], capture_output=True, text=True)
+    if r.returncode != 0:
+        sys.exit("COMPILE FAILED:\n" + (r.stderr or r.stdout)[:3000])
+    nrules = len(seen)
+    lines = ["# Vendor rules — build report", "",
+             "Generated by `rules/tools/build_vendor_rules.py`. Sources:", ""]
+    lines += [f"- {k}: {u} @ `{c[:12]}`" for k, (u, c) in SOURCES.items()]
+    lines += ["", f"Files: {len(index)}, rules kept: {nrules}, dropped: {len(report['dropped'])}, "
+              f"renamed: {len(report['renamed'])}, info: {len(report['info'])}", ""]
+    for k, title in (("dropped", "Dropped (cannot fire on a Windows workstation / DROP list)"),
+                     ("files_skipped", "Files with no rule left"),
+                     ("renamed", "Renamed (identifier clashes)"),
+                     ("info", f"Tagged `{INFO_TAG}` (indicators, do not raise the verdict)")):
+        lines += [f"## {title} ({len(report[k])})", ""] + [f"- {x}" for x in report[k]] + [""]
+    (out / "tools").mkdir(exist_ok=True)
+    (out / "tools" / "vendor-report.md").write_text("\n".join(lines), encoding="utf-8")
+    return len(index), nrules, report
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--vendor", type=Path, default=DEFAULT_VENDOR)
+    ap.add_argument("--fetch", action="store_true")
+    ap.add_argument("--yarac", default=str(RULES.parents[1] / "yarac"))
+    ap.add_argument("--check", action="store_true")
+    a = ap.parse_args()
+    ensure_sources(a.vendor, a.fetch)
+    if a.check:
+        with tempfile.TemporaryDirectory() as t:
+            t = Path(t); (t / "maldoc").mkdir()
+            build(a.vendor, t, a.yarac)
+            r = subprocess.run(["diff", "-rq", "-x", "tools", "-x", "docscan*", "-x", ".DS_Store", str(t), str(RULES)], capture_output=True, text=True)
+            print(r.stdout or "rules/ is up to date"); sys.exit(1 if r.stdout else 0)
+    # rebuild in place: wipe generated dirs first
+    for d in ("general", "maldoc/signature-base", "maldoc/community"):
+        shutil.rmtree(RULES / d, ignore_errors=True)
+    for f in RULES.glob("LICENSE-*"):
+        f.unlink()
+    n, nr, rep = build(a.vendor, RULES, a.yarac)
+    print(f"files {n}, rules {nr}, dropped {len(rep['dropped'])}, renamed {len(rep['renamed'])}, info {len(rep['info'])}")
+
+
+if __name__ == "__main__":
+    main()

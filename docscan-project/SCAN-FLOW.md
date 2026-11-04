@@ -427,7 +427,7 @@ MS-OVBA. Ланцюжок: **CFB → потоки → пошук контейн�
 {"ftype":"ooxml","findings":["MACRO_PRESENT","MACRO_SUSPICIOUS","MACRO_AUTOEXEC"],"verdict":"HIGH",
  "evidence":{"vba_evidence":"powershell | DownloadFile | AutoOpen"},
  "yara_matches":["powershell","VBA_AutoExec_DownloadCradle"],
- "yara_file_matches":["Contains_VBA_macro_code","office_document_vba"],
+ "yara_file_matches":[],"yara_info_matches":["Contains_VBA_macro_code","office_document_vba"],
  "details":[{"rule":"DS_MACRO_SUSPICIOUS","finding":"MACRO_SUSPICIOUS","severity":"HIGH","disarm":"macro","mitre":"T1204.002"}, …]}
 ```
 `verdict` — найвищий `meta.severity` серед правил політики, що спрацювали (`INFO`, якщо жодне).
@@ -442,7 +442,7 @@ MS-OVBA. Ланцюжок: **CFB → потоки → пошук контейн�
 2. **Компіляція правил.** `docscan-index.yar` = `docscan-policy.yar` + `file-index.yar` → `g_rules`.
 3. **Модуль.** `module_load`: magic → інспектор → факти й прапорці (див. §4). Факти копіюються в CLI.
 4. **Правила на файлі.** Правила політики (`meta.severity`) → знахідки, вердикт, дії лікування;
-   решта правил → `yara_file_matches`.
+   решта правил → `yara_file_matches`, правила з тегом `docscan_info` → `yara_info_matches`.
 5. **ШАР 2.** Розпакований VBA пересканується тими ж правилами → `yara_matches`. Звичайні
    `$string`-правила бачать тільки вхідний буфер, а VBA в документі стиснутий — без Шару 2
    vendor-правила макросу не бачать.
@@ -500,7 +500,8 @@ MS-OVBA. Ланцюжок: **CFB → потоки → пошук контейн�
 | `DS_RTF_OBJUPDATE` | RTF і `\objupdate` | HIGH | `rtf_objupdate` |
 | `DS_PDF_LAUNCH` | `/Launch` | HIGH | `quarantine` |
 | `DS_PDF_JS_AUTO` / `DS_PDF_JS` | `/JavaScript`/`/JS` з небезпечним API / без | HIGH (`quarantine`) / MEDIUM | |
-| `DS_PDF_OPENACTION` / `DS_PDF_EMBEDDED` | `/OpenAction`/`/AA` без JS / `/EmbeddedFile` | MEDIUM | — |
+| `DS_PDF_OPENACTION` | `/OpenAction`/`/AA` без JS (звичайно — стартова сторінка/масштаб) | INFO | — |
+| `DS_PDF_EMBEDDED` | `/EmbeddedFile` | MEDIUM | — |
 | `DS_LNK_URL_ARGS` | URL/UNC в аргументах | HIGH | `lnk_delete` |
 | `DS_LNK_OBFUSCATED` | `-enc`, `iex`, `-w hidden`, `downloadstring`… | HIGH | `lnk_delete` |
 | `DS_LNK_REMOTE_EXEC` | ціль — виконуваний файл на мережевій шарі (`\\сервер\…\x.exe`, `.ps1`, `.vbs`, `.hta`…) | HIGH | `lnk_delete` |
@@ -534,17 +535,33 @@ rule ORG_HUGE_PART { meta: severity = "MEDIUM" finding = "HUGE_PART"
 | `rules/docscan-policy.yar` | політика | `import "docscan"` + правила `DS_*` |
 | `rules/docscan.yar` | тільки наш детект | `include "docscan-policy.yar"` |
 | `rules/docscan-index.yar` | **повний скан** (watcher, run_tests) | `include "docscan-policy.yar"` + `include "file-index.yar"` |
-| `rules/file-index.yar` | vendor-правила | 165 × `general/` + 33 × `maldoc/` (198 include) |
-| `rules/general/` | загальний YARA-скан | підмножина signature-base з `index_strict.yar` (score ≥ 75), 1022 правила |
-| `rules/maldoc/` | документні правила | `signature-base/` 15 + `community/` 20 + `vba_plaintext.yar` |
-| `reference/vendor-rules-full-later/` | повний корпус (85 МБ, не в git) | `gen_index.py` → `dist/index_strict.yar` (компілюється), `index_advisory.yar` (потребує зовнішніх змінних — не використовуємо) |
+| `rules/file-index.yar` | vendor-правила (**генерується**) | 147 × `general/` + 14 × `maldoc/signature-base/` + 20 × `maldoc/community/` + `maldoc/vba_plaintext.yar` |
+| `rules/general/`, `rules/maldoc/signature-base/`, `rules/maldoc/community/` | vendor-правила (**генеруються**, не правити руками) | signature-base + Yara-Rules, відфільтровано по кожному правилу |
+| `rules/maldoc/vba_plaintext.yar` | наші правила на розпакований VBA | правиться руками |
+| `rules/tools/build_vendor_rules.py` | генератор | джерела на зафіксованих комітах, фільтр, перейменування, теги, перевірка компіляції |
+| `rules/tools/vendor-selection.txt` | які файли джерел беремо | `<тека> <джерело> <шлях>` |
+| `rules/tools/vendor-report.md` | звіт збірки | що відкинуто й чому, що перейменовано, що позначено `docscan_info` |
+
+**Як збирається vendor-набір** (`python3 rules/tools/build_vendor_rules.py [--fetch]`):
+1. Джерела — `reference/vendor-rules-full-later/vendor/` (не в git), коміти зафіксовані в `SOURCES`;
+   `--fetch` клонує/перемикає на них.
+2. Беруться файли з `vendor-selection.txt`; кожне правило перевіряється окремо:
+   - **відкидається**, якщо не може спрацювати на робочій станції Windows: умова вимагає ELF / Mach-O /
+     Java `.class`, Android, назва правила `LNX_`/`ESXi`/`_SH_`/`_PY_` без перевірки типу, вихідний код
+     вебшела PHP/JSP/ASPX (такі файли не скануються). Якщо умова допускає PE або ZIP/JAR — правило
+     лишається (наприклад, «PE або ELF», скомпільовані вебшели-DLL). Назва файлу сама нічого не вирішує;
+   - **перейменовується** при збігу ідентифікаторів (`RENAME`) — замість виключення цілого файлу;
+   - **позначається тегом `docscan_info`** (`INFO`), якщо це індикатор, а не детект: «є макрос»,
+     слово `powershell`, аномалії структури/метаданих PDF, функції PDF, які політика оцінює сама.
+3. Генерується `file-index.yar`, усе компілюється `yarac`; будь-яка помилка або дубль імені — збірка падає.
+
+**Теги в JSON:** збіг vendor-правила → `yara_file_matches` (детект: document → щонайменше MEDIUM,
+general → HIGH); збіг правила з тегом `docscan_info` → `yara_info_matches` (лише для аналітика,
+вердикт **не** підвищує, у Шарі 2 не враховується).
 
 Правила для index-файлів:
 - Шляхи в `include` — **через `/`**, відносні до index-файлу або абсолютні (`\` YARA сприймає як escape).
 - Лише правила, що компілюються самостійно. Одне зламане правило ламає весь index.
-- Ідентифікатори правил унікальні. У `file-index.yar` через дублікати виключено:
-  `maldoc/signature-base/exploit_rtf_ole2link.yar`, `…/susp_office_template_injection.yar`,
-  `…/general_officemacros.yar` (втрачено `Office_as_MHTML`, `Docm_in_PDF`).
 - У vendor-правил **немає** `meta.severity` — інакше CLI вважатиме їх політикою.
 
 ## 7. Watcher — авто-скан нових файлів
@@ -621,8 +638,8 @@ Start-ScheduledTask docscan-watcher          # Stop-ScheduledTask docscan-watche
    "docscan":{"ftype":"ooxml","findings":["MACRO_PRESENT","MACRO_SUSPICIOUS","MACRO_AUTOEXEC","MACRO_NETWORK"],
               "verdict":"HIGH","evidence":{"vba_evidence":"powershell | WScript.Shell | …"},
               "yara_matches":["powershell","VBA_AutoExec_DownloadCradle"],
-              "yara_file_matches":["Contains_VBA_macro_code","office_document_vba"],"details":[…]},
-   "yara_file_matches":["Contains_VBA_macro_code","office_document_vba"],"disarm":null,"errors":[]}
+              "yara_file_matches":[],"yara_info_matches":["Contains_VBA_macro_code","office_document_vba"],"details":[…]},
+   "yara_file_matches":[],"disarm":null,"errors":[]}
   ```
 - `results\watcher.log` — людський лог. Дивитись наживо:
   `Get-Content C:\docscan-build\results\watcher.log -Encoding UTF8 -Wait` (без `-Encoding UTF8`
@@ -971,7 +988,7 @@ lnk_target, lnk_args}, yara_matches[], details[]}`. В індексі все ц�
 
 **Watcher**
 - Defender у звичайних теках може забрати шкідливий файл раніше → у лозі `зник до скану`, у JSON запису немає.
-- `invalid_trailer_structure` / `invalid_xref_numbers` (maldoc/PDF) шумні: зіпсований чистий PDF → `yara_file_matches` → MEDIUM.
+- Шумні індикатори (`invalid_trailer_structure`, `invalid_xref_numbers`, `powershell`, `Contains_VBA_macro_code`, …) мають тег `docscan_info` → `yara_info_matches`, вердикт не змінюють (на 476 легітимних локальних документах: 25 хибних MEDIUM → 0). `DS_PDF_OPENACTION` без JS — INFO (усі 35 таких були легітимні).
 - Архіви скануються як є, без розпакування.
 - Переповнення буфера FileSystemWatcher (тисячі файлів разом) → частина подій втрачається (пишеться в лог).
 - Тека карантину (`-BackupDir`) росте без обмежень — чистити вручну або політикою зберігання.
