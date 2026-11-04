@@ -638,8 +638,8 @@ Start-ScheduledTask docscan-watcher          # Stop-ScheduledTask docscan-watche
 | File | What it does |
 |---|---|
 | `build_package.ps1` | on the build machine: `DocScan-<version>.zip` = `bin\yara64.exe` + `vcruntime140*.dll` (yara64 is built with `/MD`; the UCRT ships with Windows 10/11) + `rules\` + `watcher\` + scripts + `VERSION.txt` + `SHA256SUMS.txt` |
-| `install.ps1` | on the target as administrator: verifies SHA256 → copies to `C:\Program Files\DocScan` → `C:\ProgramData\DocScan\{results,quarantine}` accessible only to SYSTEM + Administrators → self-test (yara64, rule compilation, a test JSON) → task **"DocScan Watcher"**: at Windows startup, as SYSTEM, no time limit, restart on failure (999 × 1 min) → starts it and checks the watcher came up. Re-running = upgrade (previous rules → `rules.prev\`). Parameters: `-WatchPath`, `-InstallDir`, `-DataDir`, `-QuarantineGeneral`, `-NoStart` |
-| `uninstall.ps1` | removes the task and the watcher process, deletes the program; `-Purge` also removes results and quarantine |
+| `install.ps1` | on the target as administrator: verifies SHA256 → copies to `C:\Program Files\DocScan` → `C:\ProgramData\DocScan\{results,quarantine}` accessible only to SYSTEM + Administrators → **removes the old implementation completely** (Wazuh active-response: `doc-scan.ps1`, `doc-scan.cmd`, `tmp\docscan`, the old YARA `active-response\bin\yara` + `yara-scan.*`; the old quarantine is moved to `quarantine\legacy\`; other ARs are left alone; `-KeepLegacy`/`-KeepLegacyYara` to keep them) → self-test (yara64, rule compilation, a test JSON) → task **"DocScan Watcher"**: at Windows startup, as SYSTEM, no time limit, restart on failure (999 × 1 min) → starts it and checks the watcher came up. Re-running = upgrade (previous rules → `rules.prev\`). Parameters: `-WatchPath`, `-InstallDir`, `-DataDir`, `-QuarantineGeneral`, `-NoStart` |
+| `uninstall.ps1` | removes the task and the watcher process, deletes the program; `-Purge` also removes results and quarantine. Does not bring the old implementation back |
 | `README.txt` | administrator instructions (shipped in the package) |
 
 ```powershell
@@ -650,7 +650,9 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1                     # wat
 powershell -ExecutionPolicy Bypass -File .\install.ps1 -WatchPath 'C:\Users','D:\Shares'
 ```
 Verified on Windows 10 (2026-11-04): install, disarm right after start, upgrade, refusal of a tampered package,
-uninstall with `-Purge`. The startup trigger is registered (`MSFT_TaskBootTrigger`); a reboot was not tested separately.
+uninstall with `-Purge`; complete removal of the old implementation on a mock Wazuh agent (all traces removed,
+old quarantine moved, an unrelated AR left intact).
+After rollout remove the `<command>`/`<active-response>` for `doc-scan` and `yara-scan` on the Wazuh manager. The startup trigger is registered (`MSFT_TaskBootTrigger`); a reboot was not tested separately.
 
 ## 8. Running — cheat sheet
 

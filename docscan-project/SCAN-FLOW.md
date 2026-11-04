@@ -635,8 +635,8 @@ Start-ScheduledTask docscan-watcher          # Stop-ScheduledTask docscan-watche
 | Файл | Що робить |
 |---|---|
 | `build_package.ps1` | на машині збірки: `DocScan-<версія>.zip` = `bin\yara64.exe` + `vcruntime140*.dll` (yara64 зібраний з `/MD`; UCRT є у Windows 10/11) + `rules\` + `watcher\` + скрипти + `VERSION.txt` + `SHA256SUMS.txt` |
-| `install.ps1` | на цільовій машині від адміністратора: перевіряє SHA256 → копіює в `C:\Program Files\DocScan` → `C:\ProgramData\DocScan\{results,quarantine}` з доступом лише SYSTEM + Administrators → самоперевірка (yara64, компіляція правил, тестовий JSON) → завдання **«DocScan Watcher»**: при старті Windows, від SYSTEM, без ліміту часу, перезапуск при збої (999 × 1 хв) → запуск і перевірка, що watcher стартував. Повторний запуск = оновлення (попередні правила → `rules.prev\`). Параметри: `-WatchPath`, `-InstallDir`, `-DataDir`, `-QuarantineGeneral`, `-NoStart` |
-| `uninstall.ps1` | знімає завдання й процес watcher, видаляє програму; `-Purge` — ще й результати та карантин |
+| `install.ps1` | на цільовій машині від адміністратора: перевіряє SHA256 → копіює в `C:\Program Files\DocScan` → `C:\ProgramData\DocScan\{results,quarantine}` з доступом лише SYSTEM + Administrators → **повністю прибирає стару реалізацію** (Wazuh active-response: `doc-scan.ps1`, `doc-scan.cmd`, `tmp\docscan`, старий YARA `active-response\bin\yara` + `yara-scan.*`; старий карантин переноситься в `quarantine\legacy\`; інші AR не чіпаються; `-KeepLegacy`/`-KeepLegacyYara` — залишити) → самоперевірка (yara64, компіляція правил, тестовий JSON) → завдання **«DocScan Watcher»**: при старті Windows, від SYSTEM, без ліміту часу, перезапуск при збої (999 × 1 хв) → запуск і перевірка, що watcher стартував. Повторний запуск = оновлення (попередні правила → `rules.prev\`). Параметри: `-WatchPath`, `-InstallDir`, `-DataDir`, `-QuarantineGeneral`, `-NoStart` |
+| `uninstall.ps1` | знімає завдання й процес watcher, видаляє програму; `-Purge` — ще й результати та карантин. Стару реалізацію не повертає |
 | `README.txt` | інструкція для адміністратора (кладеться в пакет) |
 
 ```powershell
@@ -647,7 +647,9 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1                     # с�
 powershell -ExecutionPolicy Bypass -File .\install.ps1 -WatchPath 'C:\Users','D:\Shares'
 ```
 Перевірено на Windows 10 (2026-11-04): встановлення, лікування одразу після старту, оновлення, відмова на зміненому
-пакеті, видалення з `-Purge`. Тригер «при завантаженні» зареєстровано (`MSFT_TaskBootTrigger`); перезавантаження
+пакеті, видалення з `-Purge`; повне прибирання старої реалізації на імітації агента Wazuh (усі сліди видалено,
+старий карантин перенесено, сторонній AR лишився).
+На менеджері Wazuh після розгортання приберіть `<command>`/`<active-response>` для `doc-scan` і `yara-scan`. Тригер «при завантаженні» зареєстровано (`MSFT_TaskBootTrigger`); перезавантаження
 окремо не перевірялось.
 
 ## 8. Запуск — шпаргалка

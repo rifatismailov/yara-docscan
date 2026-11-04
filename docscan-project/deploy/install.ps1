@@ -9,7 +9,12 @@
 #   2) копіює bin\, rules\, watcher\ у -InstallDir (за замовч. C:\Program Files\DocScan);
 #   3) створює -DataDir (C:\ProgramData\DocScan): results\ і quarantine\ — доступ лише SYSTEM + Administrators;
 #   4) самоперевірка: yara64 запускається, правила компілюються, тестовий скан дає JSON;
-#   5) реєструє завдання планувальника "DocScan Watcher": при старті Windows, від SYSTEM,
+#   5) ПОВНІСТЮ прибирає старий DocScan (Wazuh active-response): doc-scan.ps1, doc-scan.cmd,
+#      <ossec-agent>\tmp\docscan; старий карантин <ossec-agent>\quarantine переноситься в
+#      <DataDir>\quarantine\legacy\ (докази не губляться); і старий YARA для active-response
+#      (active-response\bin\yara, yara-scan.*) — його замінює yara64 DocScan. На менеджері Wazuh
+#      приберіть <command>/<active-response> для doc-scan і yara-scan;
+#   6) реєструє завдання планувальника "DocScan Watcher": при старті Windows, від SYSTEM,
 #      перезапуск при збої; і запускає його.
 # Повторний запуск = оновлення (попередні правила зберігаються в rules.prev\).
 
@@ -18,7 +23,10 @@ param(
   [string]  $DataDir    = "$env:ProgramData\DocScan",
   [string[]]$WatchPath  = @("C:\Users"),
   [switch]  $QuarantineGeneral,   # exe/скрипти/архіви зі збігом vendor-правил -> карантин
-  [switch]  $NoStart              # зареєструвати, але не запускати зараз
+  [switch]  $NoStart,             # зареєструвати, але не запускати зараз
+  [string]  $OssecDir = "${env:ProgramFiles(x86)}\ossec-agent",
+  [switch]  $KeepLegacy,          # не прибирати старий DocScan (active-response)
+  [switch]  $KeepLegacyYara       # НЕ видаляти старий YARA active-response (yara-scan + yara\)
 )
 
 $ErrorActionPreference = "Stop"
@@ -83,6 +91,44 @@ foreach ($sid in "S-1-5-18", "S-1-5-32-544") {  # SYSTEM, Administrators
 }
 Set-Acl -Path $DataDir -AclObject $acl   # results\ і quarantine\ успадковують ці права
 
+# --- 4b. старий DocScan (Wazuh active-response) -> повне видалення ---
+$legacyRemoved = @()
+if ((Test-Path $OssecDir) -and -not $KeepLegacy) {
+  $arBin = Join-Path $OssecDir "active-response\bin"
+  Step "прибираю старий DocScan (Wazuh active-response) з $OssecDir"
+  foreach ($n in "doc-scan.ps1", "doc-scan.cmd") {
+    $f = Join-Path $arBin $n
+    if (Test-Path -LiteralPath $f) { Remove-Item -LiteralPath $f -Force; $legacyRemoved += $f }
+  }
+  $work = Join-Path $OssecDir "tmp\docscan"
+  if (Test-Path -LiteralPath $work) { Remove-Item -LiteralPath $work -Recurse -Force; $legacyRemoved += $work }
+  # старий карантин: оригінали заражених файлів — переносимо, не стираємо
+  $oldQ = Join-Path $OssecDir "quarantine"
+  if (Test-Path -LiteralPath $oldQ) {
+    $items = @(Get-ChildItem -LiteralPath $oldQ -Force)
+    if ($items.Count) {
+      $dst = "$DataDir\quarantine\legacy"
+      New-Item -ItemType Directory -Force $dst | Out-Null
+      foreach ($i in $items) { Move-Item -LiteralPath $i.FullName (Join-Path $dst $i.Name) -Force }
+      Write-Host ("  старий карантин ({0} об'єктів) -> {1}" -f $items.Count, $dst)
+    }
+    Remove-Item -LiteralPath $oldQ -Recurse -Force -EA SilentlyContinue
+    $legacyRemoved += $oldQ
+  }
+  if (-not $KeepLegacyYara) {
+    foreach ($n in "yara-scan.ps1", "yara-scan.cmd", "yara") {
+      $f = Join-Path $arBin $n
+      if (Test-Path -LiteralPath $f) { Remove-Item -LiteralPath $f -Recurse -Force; $legacyRemoved += $f }
+    }
+  }
+  if ($legacyRemoved.Count) {
+    $legacyRemoved | % { Write-Host "  видалено: $_" }
+    Write-Host "  На менеджері Wazuh приберіть <command>/<active-response> для doc-scan і yara-scan." -ForegroundColor Yellow
+  } else {
+    Write-Host "  (слідів старого DocScan немає)"
+  }
+}
+
 # --- 5. самоперевірка ---
 Step "самоперевірка"
 $yara  = "$InstallDir\bin\yara64.exe"
@@ -128,5 +174,6 @@ Write-Host "  програма:   $InstallDir"
 Write-Host "  стежить за: $($WatchPath -join ', ')   (лікування увімкнене)"
 Write-Host "  результати: $DataDir\results\docscan-results.json  (лог: watcher.log)"
 Write-Host "  карантин:   $DataDir\quarantine"
+if ($legacyRemoved.Count) { Write-Host "  старий DocScan (Wazuh active-response) прибрано повністю" }
 Write-Host "  політика:   $InstallDir\rules\docscan-policy.yar  (після зміни: Restart-ScheduledTask '$TaskName')"
 Write-Host "  видалення:  powershell -ExecutionPolicy Bypass -File '$InstallDir\uninstall.ps1'"
