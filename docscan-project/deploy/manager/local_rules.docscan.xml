@@ -1,0 +1,107 @@
+<!-- DocScan — правила менеджера Wazuh (копія блоку з /var/ossec/etc/rules/local_rules.xml).
+     Вставити в /var/ossec/etc/rules/local_rules.xml (або окремим файлом у /var/ossec/etc/rules/),
+     потім: /var/ossec/bin/wazuh-analysisd -t && systemctl restart wazuh-manager
+     Події: JSON Lines з C:\ProgramData\DocScan\results\docscan-results.json (агент, <localfile> json),
+     декодер — вбудований json, окремий декодер НЕ потрібен.
+     ID: 101090 база (рівень 0), 101091 HIGH, 101092 MEDIUM, 101097 помилка скану, 101101–101108 вектори HIGH. -->
+<group name="docscan,">
+
+  <rule id="101090" level="0">
+    <decoded_as>json</decoded_as>
+    <field name="source">^docscan$</field>
+    <description>DocScan: $(verdict) $(docfile.path)</description>
+    <group>docscan,</group>
+  </rule>
+
+  <!-- HIGH → алерт рівня 12 -->
+  <rule id="101091" level="12">
+    <if_sid>101090</if_sid>
+    <field name="verdict">^HIGH$</field>
+    <description>DocScan HIGH — $(docscan.findings) $(yara_file_matches) | $(docfile.path) | лікування: $(disarm) | SHA256 $(docfile.sha256)</description>
+    <mitre><id>T1204.002</id></mitre>
+    <group>docscan_high,</group>
+  </rule>
+
+  <!-- MEDIUM → алерт рівня 7 -->
+  <rule id="101092" level="7">
+    <if_sid>101090</if_sid>
+    <field name="verdict">^MEDIUM$</field>
+    <description>DocScan MEDIUM — $(docscan.findings) $(yara_file_matches) | $(docfile.path) | SHA256 $(docfile.sha256)</description>
+    <mitre><id>T1204.002</id></mitre>
+    <group>docscan_medium,</group>
+  </rule>
+
+  <!-- watcher не зміг просканувати файл (зайнятий/пошкоджений) — тільки в індекс -->
+  <rule id="101097" level="3">
+    <if_sid>101090</if_sid>
+    <field name="verdict">^ERROR$</field>
+    <description>DocScan: помилка сканування $(docfile.path): $(errors)</description>
+    <group>docscan_error,</group>
+  </rule>
+
+  <!-- Точні вектори HIGH. findings — масив рядків. -->
+  <rule id="101101" level="12">
+    <if_sid>101091</if_sid>
+    <field name="docscan.findings" type="pcre2">REMOTE_TEMPLATE</field>
+    <description>DocScan HIGH — Віддалений шаблон: $(docscan.evidence.template_url) | $(docfile.path) | лікування: $(disarm)</description>
+    <mitre><id>T1221</id></mitre>
+    <group>docscan_high,</group>
+  </rule>
+
+  <rule id="101102" level="12">
+    <if_sid>101091</if_sid>
+    <field name="docscan.findings" type="pcre2">PROTOCOL_HANDLER</field>
+    <description>DocScan HIGH — Обробник протоколу / ms-msdt: $(docscan.evidence.template_url) | $(docfile.path) | лікування: $(disarm)</description>
+    <mitre><id>T1203</id></mitre>
+    <group>docscan_high,</group>
+  </rule>
+
+  <rule id="101103" level="12">
+    <if_sid>101091</if_sid>
+    <field name="docscan.findings" type="pcre2">DDE_AUTO|DDE_LINK</field>
+    <description>DocScan HIGH — Команда DDE/DDEAUTO: $(docscan.evidence.dde_command) | $(docfile.path) | лікування: $(disarm)</description>
+    <mitre><id>T1559.002</id></mitre>
+    <group>docscan_high,</group>
+  </rule>
+
+  <rule id="101104" level="12">
+    <if_sid>101091</if_sid>
+    <field name="docscan.findings" type="pcre2">RTF_OBJUPDATE</field>
+    <description>DocScan HIGH — Автооновлення RTF OLE (objupdate) | $(docfile.path) | лікування: $(disarm)</description>
+    <mitre><id>T1203</id></mitre>
+    <group>docscan_high,</group>
+  </rule>
+
+  <rule id="101105" level="12">
+    <if_sid>101091</if_sid>
+    <field name="docscan.findings" type="pcre2">LNK_LOLBIN|LNK_URL_ARGS|LNK_OBFUSCATED|LNK_REMOTE_EXEC|EMBEDDED_LNK</field>
+    <description>DocScan HIGH — Шкідливий ярлик LNK: $(docscan.evidence.lnk_target) $(docscan.evidence.lnk_args) | $(docfile.path) | лікування: $(disarm)</description>
+    <mitre><id>T1204.001</id><id>T1059.001</id></mitre>
+    <group>docscan_high,</group>
+  </rule>
+
+  <rule id="101106" level="12">
+    <if_sid>101091</if_sid>
+    <field name="docscan.findings" type="pcre2">PDF_JS_AUTO|PDF_LAUNCH</field>
+    <description>DocScan HIGH — Шкідливий PDF ($(docscan.findings)) | $(docfile.path) | лікування: $(disarm)</description>
+    <mitre><id>T1204.002</id><id>T1203</id></mitre>
+    <group>docscan_high,</group>
+  </rule>
+
+  <rule id="101107" level="12">
+    <if_sid>101091</if_sid>
+    <field name="docscan.findings" type="pcre2">EMBEDDED_PE</field>
+    <description>DocScan HIGH — Вкладений виконуваний файл PE | $(docfile.path) | лікування: $(disarm)</description>
+    <mitre><id>T1204.002</id></mitre>
+    <group>docscan_high,</group>
+  </rule>
+
+  <rule id="101108" level="12">
+    <if_sid>101091</if_sid>
+    <field name="docscan.findings" type="pcre2">MACRO_SUSPICIOUS|YARA_STRICT|MACRO_PRESENT</field>
+    <description>DocScan HIGH — Підозрілий VBA/YARA: $(docscan.evidence.vba_evidence) | $(docfile.path) | лікування: $(disarm)</description>
+    <mitre><id>T1204.002</id><id>T1059.005</id></mitre>
+    <group>docscan_high,</group>
+  </rule>
+
+</group>

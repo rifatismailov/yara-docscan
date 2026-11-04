@@ -641,7 +641,7 @@ Start-ScheduledTask docscan-watcher          # Stop-ScheduledTask docscan-watche
 | `install.ps1` | on the target as administrator: verifies SHA256 → copies to `C:\Program Files\DocScan` → `C:\ProgramData\DocScan\{results,quarantine}` accessible only to SYSTEM + Administrators → **removes the old implementation completely** (Wazuh active-response: `doc-scan.ps1`, `doc-scan.cmd`, `tmp\docscan`, the old YARA `active-response\bin\yara` + `yara-scan.*`; the old quarantine is moved to `quarantine\legacy\`; other ARs are left alone; `-KeepLegacy`/`-KeepLegacyYara` to keep them) → **Wazuh agent**: `ossec.conf` (backed up) — removes doc-scan/yara-scan `<command>`/`<active-response>`, adds a json `<localfile>` for `results\docscan-results.json`, restarts `WazuhSvc`; rolled back if the agent rejects it → self-test (yara64, rule compilation, a test JSON) → task **"DocScan Watcher"**: at Windows startup, as SYSTEM, no time limit, restart on failure (999 × 1 min) → starts it and checks the watcher came up. Re-running = upgrade (previous rules → `rules.prev\`). Parameters: `-WatchPath`, `-InstallDir`, `-DataDir`, `-QuarantineGeneral`, `-NoStart` |
 | `uninstall.ps1` | removes the task and the watcher process, deletes the program; `-Purge` also removes results and quarantine. Does not bring the old implementation back |
 | `README.txt` | administrator instructions (shipped in the package) |
-| `manager/cleanup_manager.sh` | **on the Wazuh manager** (root): backs up `ossec.conf`, removes doc-scan/yara-scan `<active-response>`/`<command>`, rules for DocScan events are the `docscan` group (101090–101108) in the manager's `local_rules.xml`; the script does not install them, `wazuh-analysisd -t`, restarts only then; `--dry-run` shows the changes |
+| `manager/cleanup_manager.sh` | **on the Wazuh manager** (root): backs up `ossec.conf`, removes doc-scan/yara-scan `<active-response>`/`<command>`, rules separately: the `manager/local_rules.docscan.xml` block into `local_rules.xml` (section 12.2), `wazuh-analysisd -t`, restarts only then; `--dry-run` shows the changes |
 
 ```powershell
 # build the package (after building yara64.exe with MSBuild):
@@ -853,20 +853,98 @@ router's address rather than the Mac's IP — hence the rule allows `192.168.0.0
 
 ## 12. Wazuh integration
 
-`yara64.exe` knows nothing about Wazuh. The data path:
+`yara64.exe` and the watcher know nothing about Wazuh — they only write JSON to a file. Stock Wazuh does
+the rest: the agent reads the file, the manager applies rules, Filebeat ships alerts to the indexer.
+
 ```
-watcher → results\docscan-results.json (JSON Lines) → Wazuh agent (localfile json) → manager
+watcher → C:\ProgramData\DocScan\results\docscan-results.json (JSON Lines)
+        → Wazuh agent (<localfile> json) → manager (json decoder + docscan rules)
+        → alerts.json → Filebeat → indexer (wazuh-alerts-*) → Discover / dashboard
 ```
-Agent config (ossec.conf), when the time comes:
-```xml
-<localfile>
-  <log_format>json</log_format>
-  <location>C:\docscan-build\results\docscan-results.json</location>
-</localfile>
-```
-On the manager — rules on `source:"docscan"`, `verdict`, `docscan.findings`, `yara_file_matches`.
-(The older approach via an AR script and `active-responses.log` with the `wazuh-docscan:` prefix is
-described in `reference/doc-scan.ps1`.)
+
+### 12.1 Agent (workstation) — done by `install.ps1`
+
+Nothing manual. `install.ps1` edits the agent's `ossec.conf` (backup in `C:\ProgramData\DocScan\legacy\`):
+- removes the old `<command>` and `<active-response>` blocks for `doc-scan` / `yara-scan`;
+- adds (once, marked `DocScan: managed`):
+  ```xml
+  <localfile>
+    <log_format>json</log_format>
+    <location>C:\ProgramData\DocScan\results\docscan-results.json</location>
+  </localfile>
+  ```
+- pre-creates the empty results file (otherwise the agent logs `ERROR (1103) could not open file`);
+- restarts `WazuhSvc`; if `ossec.log` reports a configuration error, restores the backup.
+
+With centrally managed agents (`agent.conf` in a manager group) the same `<localfile>` can go there instead.
+
+### 12.2 Manager — once, as root
+
+1. **Remove the old implementation** (the AR script is already gone from agents; the manager trigger is obsolete):
+   ```bash
+   sh manager/cleanup_manager.sh --dry-run   # show what would change
+   sh manager/cleanup_manager.sh             # backup ossec.conf → remove → wazuh-analysisd -t → restart
+   ```
+2. **Rules.** Put the `deploy/manager/local_rules.docscan.xml` block (group `docscan`) into
+   `/var/ossec/etc/rules/local_rules.xml`. **No custom decoder**: each line is plain JSON, handled by the
+   built-in `json` decoder; fields are used as is (`verdict`, `docfile.path`, `docscan.findings`…).
+
+   | ID | Level | Condition | Meaning |
+   |---|---|---|---|
+   | 101090 | 0 | `source = docscan` | base for every DocScan event (INFO — no alert) |
+   | 101091 | 12 | `verdict = HIGH` | generic HIGH (incl. vendor YARA hits on exe/dll) |
+   | 101092 | 7 | `verdict = MEDIUM` | MEDIUM |
+   | 101097 | 3 | `verdict = ERROR` | file could not be scanned — indexed only |
+   | 101101 | 12 | `REMOTE_TEMPLATE` | remote template (T1221) |
+   | 101102 | 12 | `PROTOCOL_HANDLER` | ms-msdt / protocol handler (T1203) |
+   | 101103 | 12 | `DDE_AUTO`, `DDE_LINK` | DDE (T1559.002) |
+   | 101104 | 12 | `RTF_OBJUPDATE` | RTF objupdate (T1203) |
+   | 101105 | 12 | `LNK_*`, `EMBEDDED_LNK` | malicious shortcut (T1204.001, T1059.001) |
+   | 101106 | 12 | `PDF_JS_AUTO`, `PDF_LAUNCH` | malicious PDF |
+   | 101107 | 12 | `EMBEDDED_PE` | embedded executable |
+   | 101108 | 12 | `MACRO_SUSPICIOUS`, `MACRO_PRESENT` | VBA macro (T1059.005) |
+
+   101101–101108 are children of 101091, i.e. HIGH only; the description carries the evidence (URL, DDE
+   command, LNK target, VBA strings) and the disarm result `$(disarm)`.
+3. **Check and apply:**
+   ```bash
+   /var/ossec/bin/wazuh-analysisd -t && systemctl restart wazuh-manager
+   ```
+4. **Test a rule without an agent:** `/var/ossec/bin/wazuh-logtest`, paste:
+   ```json
+   {"source":"docscan","category":"document","docfile":{"path":"C:\\Users\\u\\Desktop\\a.docx","sha256":"00"},"verdict":"HIGH","docscan":{"findings":["DDE_AUTO"],"evidence":{"dde_command":"DDEAUTO cmd.exe"}},"yara_file_matches":[],"disarm":"stripped:dde","errors":[]}
+   ```
+   expected `id: '101103'`, `level: '12'`.
+
+`logall` / `logall_json` in the manager's `ossec.conf` are **not needed** for alerts — they write every
+event to `archives.*` (debugging only; fills the disk quickly).
+
+### 12.3 Event fields
+
+Top level: `timestamp`, `source` (= `docscan`), `host`, `event`, `category` (`document`/`general`),
+`docfile.{path,name,ext,size,sha256}`, `verdict` (`HIGH`/`MEDIUM`/`INFO`/`ERROR`/`SKIPPED`),
+`yara_file_matches[]`, `disarm` (`removed:…`, `stripped:…`, `deleted:lnk`, `quarantined`, `failed:…`), `errors[]`.
+Document analysis: `docscan.{ftype, findings[], verdict, evidence.{template_url, dde_command, vba_evidence,
+lnk_target, lnk_args}, yara_matches[], details[]}`. In the index all of it sits under `data.`.
+
+> **Do not rename `docfile` to `file`.** In `wazuh-alerts-*` indices `data.file` is already a `keyword`
+> (other sources write it); an object there makes the indexer drop the whole event
+> (`mapper_parsing_exception … [data.file] of type [keyword]` in the Filebeat log) — the alert is in
+> `alerts.json` but not in Discover. Check any new field: `GET wazuh-alerts-*/_mapping/field/data.<field>`.
+
+### 12.4 Checking the chain
+
+| Where | What | Expected |
+|---|---|---|
+| agent | `C:\ProgramData\DocScan\results\watcher.log` | `[HIT] HIGH document … disarm:…` |
+| agent | agent `ossec.log` | no `ERROR`; with logcollector debug — `Read N lines from …docscan-results.json` |
+| manager | `/var/ossec/logs/alerts/alerts.json` | `jq -c 'select(.rule.groups[]?=="docscan") \| {timestamp,agent:.agent.name,id:.rule.id,d:.rule.description}'` |
+| manager | `/var/log/filebeat/filebeat*` | no `Cannot index event` mentioning `docscan` |
+| dashboard | Discover, `wazuh-alerts-*` | `rule.groups:docscan` |
+
+Typical problems: alert in `alerts.json` but not in Discover → field type conflict (see above, Filebeat log);
+nothing in `alerts.json` → `wazuh-logtest` with a line from `docscan-results.json` (rule/decoder) and the
+agent's `ossec.log` (`localfile` not picked up).
 
 ---
 

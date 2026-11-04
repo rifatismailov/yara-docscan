@@ -35,6 +35,8 @@ Copy-Item $crt.FullName, (Join-Path $crt.DirectoryName "vcruntime140_1.dll") "$s
 Copy-Item "$Repo\docscan-project\rules" "$stage\rules" -Recurse
 Copy-Item "$Repo\docscan-project\watcher\docscan-watcher.ps1" "$stage\watcher\"
 foreach ($f in "install.ps1", "uninstall.ps1", "README.txt") { Copy-Item "$Repo\docscan-project\deploy\$f" $stage }
+# для адміністратора Wazuh: скрипт прибирання менеджера + блок правил (на робочих машинах не використовуються)
+Copy-Item "$Repo\docscan-project\deploy\manager" "$stage\manager" -Recurse
 "DocScan $ver`r`nyara64 $(& $exe --version)`r`nbuilt $(Get-Date -Format s) on $env:COMPUTERNAME" | Set-Content "$stage\VERSION.txt"
 
 # checksums of every file (install.ps1 verifies them)
