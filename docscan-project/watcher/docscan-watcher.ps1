@@ -136,7 +136,8 @@ function Scan-File([string]$path, [string]$evt) {
     host      = $env:COMPUTERNAME
     event     = $evt
     category  = $cat
-    file      = [ordered]@{ path = $path; name = [IO.Path]::GetFileName($path);
+    # НЕ 'file': у індексах Wazuh data.file — keyword, об'єкт там індексатор відкидає (mapper_parsing_exception)
+    docfile   = [ordered]@{ path = $path; name = [IO.Path]::GetFileName($path);
                             ext = [IO.Path]::GetExtension($path).ToLower(); size = $null; sha256 = $null }
     verdict   = "INFO"
     docscan   = $null
@@ -148,11 +149,11 @@ function Scan-File([string]$path, [string]$evt) {
 
   try {
     $fi = Get-Item -LiteralPath $path
-    $rec.file.size = $fi.Length
+    $rec.docfile.size = $fi.Length
     if ($fi.Length -gt $MaxSizeMB * 1MB) {
       $rec.verdict = "SKIPPED"; $rec.errors += "size > ${MaxSizeMB}MB"
     } else {
-      $rec.file.sha256 = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLower()
+      $rec.docfile.sha256 = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLower()
 
       # vendor-правила бачать байти ДО лікування: yara збирає збіги до --docscan-disarm
       $ds = Invoke-Scan $path ((-not $NoDisarm) -and $cat -eq "document")

@@ -619,7 +619,7 @@ Start-ScheduledTask docscan-watcher          # Stop-ScheduledTask docscan-watche
 - `results\docscan-results.json` — UTF-8, one JSON object per line:
   ```json
   {"timestamp":"2026-11-02T13:24:36.205+02:00","source":"docscan","host":"WIN-TEST","event":"Created",
-   "category":"document","file":{"path":"C:\\...\\Rakhunok_2026_315368.docm","name":"Rakhunok_2026_315368.docm",
+   "category":"document","docfile":{"path":"C:\\...\\Rakhunok_2026_315368.docm","name":"Rakhunok_2026_315368.docm",
    "ext":".docm","size":1924,"sha256":"822f99e6…"},"verdict":"HIGH",
    "docscan":{"ftype":"ooxml","findings":["MACRO_PRESENT","MACRO_SUSPICIOUS","MACRO_AUTOEXEC","MACRO_NETWORK"],
               "verdict":"HIGH","evidence":{"vba_evidence":"powershell | WScript.Shell | …"},
