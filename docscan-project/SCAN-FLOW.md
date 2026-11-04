@@ -149,6 +149,7 @@ docscan-project/
     general/                        165 правил signature-base "strict" (копія з reference)
     maldoc/                         36 документних правил (signature-base + community) + vba_plaintext.yar
   watcher/docscan-watcher.ps1       авто-скан нових файлів → results\docscan-results.json
+  deploy/                           пакет розгортання: build_package.ps1, install.ps1, uninstall.ps1, README.txt
   fuzz/                             libFuzzer: 2 фазери, словник, корпус, build.sh, regressions/
   test-range/
     run_tests.ps1                   регресійний тест (копія → детект+лікування → повторний скан)
@@ -626,6 +627,28 @@ Start-ScheduledTask docscan-watcher          # Stop-ScheduledTask docscan-watche
 - `results\watcher.log` — людський лог. Дивитись наживо:
   `Get-Content C:\docscan-build\results\watcher.log -Encoding UTF8 -Wait` (без `-Encoding UTF8`
   PowerShell 5.1 ламає кирилицю).
+
+### Розгортання на робочі машини (пакет)
+
+`docscan-project/deploy/`:
+
+| Файл | Що робить |
+|---|---|
+| `build_package.ps1` | на машині збірки: `DocScan-<версія>.zip` = `bin\yara64.exe` + `vcruntime140*.dll` (yara64 зібраний з `/MD`; UCRT є у Windows 10/11) + `rules\` + `watcher\` + скрипти + `VERSION.txt` + `SHA256SUMS.txt` |
+| `install.ps1` | на цільовій машині від адміністратора: перевіряє SHA256 → копіює в `C:\Program Files\DocScan` → `C:\ProgramData\DocScan\{results,quarantine}` з доступом лише SYSTEM + Administrators → самоперевірка (yara64, компіляція правил, тестовий JSON) → завдання **«DocScan Watcher»**: при старті Windows, від SYSTEM, без ліміту часу, перезапуск при збої (999 × 1 хв) → запуск і перевірка, що watcher стартував. Повторний запуск = оновлення (попередні правила → `rules.prev\`). Параметри: `-WatchPath`, `-InstallDir`, `-DataDir`, `-QuarantineGeneral`, `-NoStart` |
+| `uninstall.ps1` | знімає завдання й процес watcher, видаляє програму; `-Purge` — ще й результати та карантин |
+| `README.txt` | інструкція для адміністратора (кладеться в пакет) |
+
+```powershell
+# збірка пакета (після MSBuild yara64.exe):
+powershell -ExecutionPolicy Bypass -File docscan-project\deploy\build_package.ps1
+# на кожній машині (розпакувати zip, PowerShell від адміністратора):
+powershell -ExecutionPolicy Bypass -File .\install.ps1                     # стежить за C:\Users
+powershell -ExecutionPolicy Bypass -File .\install.ps1 -WatchPath 'C:\Users','D:\Shares'
+```
+Перевірено на Windows 10 (2026-11-04): встановлення, лікування одразу після старту, оновлення, відмова на зміненому
+пакеті, видалення з `-Purge`. Тригер «при завантаженні» зареєстровано (`MSFT_TaskBootTrigger`); перезавантаження
+окремо не перевірялось.
 
 ## 8. Запуск — шпаргалка
 

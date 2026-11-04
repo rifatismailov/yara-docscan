@@ -151,6 +151,7 @@ docscan-project/
     general/                        165 signature-base "strict" rule files (copied from reference)
     maldoc/                         36 document rule files (signature-base + community) + vba_plaintext.yar
   watcher/docscan-watcher.ps1       auto-scan of new files → results\docscan-results.json
+  deploy/                           deployment package: build_package.ps1, install.ps1, uninstall.ps1, README.txt
   fuzz/                             libFuzzer: 2 fuzzers, dictionary, corpus, build.sh, regressions/
   test-range/
     run_tests.ps1                   regression test (copy → detect+disarm → re-scan)
@@ -629,6 +630,27 @@ Start-ScheduledTask docscan-watcher          # Stop-ScheduledTask docscan-watche
 - `results\watcher.log` — human-readable log. Follow it live:
   `Get-Content C:\docscan-build\results\watcher.log -Encoding UTF8 -Wait` (without `-Encoding UTF8`
   PowerShell 5.1 garbles Cyrillic).
+
+### Deploying to workstations (package)
+
+`docscan-project/deploy/`:
+
+| File | What it does |
+|---|---|
+| `build_package.ps1` | on the build machine: `DocScan-<version>.zip` = `bin\yara64.exe` + `vcruntime140*.dll` (yara64 is built with `/MD`; the UCRT ships with Windows 10/11) + `rules\` + `watcher\` + scripts + `VERSION.txt` + `SHA256SUMS.txt` |
+| `install.ps1` | on the target as administrator: verifies SHA256 → copies to `C:\Program Files\DocScan` → `C:\ProgramData\DocScan\{results,quarantine}` accessible only to SYSTEM + Administrators → self-test (yara64, rule compilation, a test JSON) → task **"DocScan Watcher"**: at Windows startup, as SYSTEM, no time limit, restart on failure (999 × 1 min) → starts it and checks the watcher came up. Re-running = upgrade (previous rules → `rules.prev\`). Parameters: `-WatchPath`, `-InstallDir`, `-DataDir`, `-QuarantineGeneral`, `-NoStart` |
+| `uninstall.ps1` | removes the task and the watcher process, deletes the program; `-Purge` also removes results and quarantine |
+| `README.txt` | administrator instructions (shipped in the package) |
+
+```powershell
+# build the package (after building yara64.exe with MSBuild):
+powershell -ExecutionPolicy Bypass -File docscan-project\deploy\build_package.ps1
+# on every machine (unzip, PowerShell as administrator):
+powershell -ExecutionPolicy Bypass -File .\install.ps1                     # watches C:\Users
+powershell -ExecutionPolicy Bypass -File .\install.ps1 -WatchPath 'C:\Users','D:\Shares'
+```
+Verified on Windows 10 (2026-11-04): install, disarm right after start, upgrade, refusal of a tampered package,
+uninstall with `-Purge`. The startup trigger is registered (`MSFT_TaskBootTrigger`); a reboot was not tested separately.
 
 ## 8. Running — cheat sheet
 
