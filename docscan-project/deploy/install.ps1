@@ -161,6 +161,8 @@ if ((Test-Path $ossecConf) -and -not $NoWazuhConfig) {
   $orig = Read-Text $ossecConf
   $new = Remove-LegacyArBlocks (Remove-DocScanBlock $orig)
   $results = "$DataDir\results\docscan-results.json"
+  # створити заздалегідь: інакше після рестарту агент пише ERROR (1103) "could not open file"
+  if (-not (Test-Path -LiteralPath $results)) { [IO.File]::WriteAllText($results, "") }
   $block = "  $DsBegin`r`n  <localfile>`r`n    <log_format>json</log_format>`r`n    <location>$results</location>`r`n  </localfile>`r`n  $DsEnd`r`n"
   $i = $new.LastIndexOf("</ossec_config>")
   if ($i -lt 0) { Fail "ossec.conf без </ossec_config> — не чіпаю (бекап: $bak)" }
