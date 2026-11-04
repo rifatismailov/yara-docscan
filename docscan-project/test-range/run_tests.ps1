@@ -9,12 +9,13 @@
 #
 # Запуск:
 #   powershell -ExecutionPolicy Bypass -File C:\docscan-build\run_tests.ps1
-#   (параметри можна перевизначити: -Samples D:\x -Rules C:\docscan-build\docscan.yar)
+#   (параметри можна перевизначити: -Samples D:\x -Rules D:\rules\docscan-index.yar)
 
 param(
   [string]$Yara    = "C:\docscan-build\yara\windows\vs2019\Release\yara64.exe",
-  [string]$Rules   = "C:\docscan-build\docscan.yar",
-  [string]$Samples = "C:\docscan-build\test-samples",
+  # за замовчуванням — правила й зразки з цього ж репо (повний набір: політика + vendor)
+  [string]$Rules   = (Join-Path $PSScriptRoot "..\rules\docscan-index.yar"),
+  [string]$Samples = (Join-Path $PSScriptRoot "..\test-samples"),
   [string]$WorkDir = "C:\docscan-build"
 )
 
