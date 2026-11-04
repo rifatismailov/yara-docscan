@@ -14,7 +14,10 @@
 #      <DataDir>\quarantine\legacy\ (докази не губляться); і старий YARA для active-response
 #      (active-response\bin\yara, yara-scan.*) — його замінює yara64 DocScan. На менеджері Wazuh
 #      приберіть <command>/<active-response> для doc-scan і yara-scan;
-#   6) реєструє завдання планувальника "DocScan Watcher": при старті Windows, від SYSTEM,
+#   6) агент Wazuh: ossec.conf (бекап) — прибирає <command>/<active-response> doc-scan/yara-scan,
+#      додає <localfile> (json) на results\docscan-results.json; перезапускає WazuhSvc, при помилці
+#      конфігурації повертає старий ossec.conf;
+#   7) реєструє завдання планувальника "DocScan Watcher": при старті Windows, від SYSTEM,
 #      перезапуск при збої; і запускає його.
 # Повторний запуск = оновлення (попередні правила зберігаються в rules.prev\).
 
@@ -26,7 +29,8 @@ param(
   [switch]  $NoStart,             # зареєструвати, але не запускати зараз
   [string]  $OssecDir = "${env:ProgramFiles(x86)}\ossec-agent",
   [switch]  $KeepLegacy,          # не прибирати старий DocScan (active-response)
-  [switch]  $KeepLegacyYara       # НЕ видаляти старий YARA active-response (yara-scan + yara\)
+  [switch]  $KeepLegacyYara,      # НЕ видаляти старий YARA active-response (yara-scan + yara\)
+  [switch]  $NoWazuhConfig        # не чіпати ossec.conf агента і не перезапускати WazuhSvc
 )
 
 $ErrorActionPreference = "Stop"
@@ -35,6 +39,23 @@ $Pkg = $PSScriptRoot
 
 function Step($m) { Write-Host "==> $m" -ForegroundColor Cyan }
 function Fail($m) { Write-Host "ПОМИЛКА: $m" -ForegroundColor Red; exit 1 }
+
+# ---- ossec.conf агента (текстові правки: файл має кілька <ossec_config>, це не один XML) ----
+$DsBegin = "<!-- DocScan: managed by DocScan install.ps1 -->"
+$DsEnd   = "<!-- /DocScan -->"
+function Remove-DocScanBlock([string]$c) {
+  return [regex]::Replace($c, "(?s)[ \t]*" + [regex]::Escape($DsBegin) + ".*?" + [regex]::Escape($DsEnd) + "\r?\n?", "")
+}
+function Remove-LegacyArBlocks([string]$c) {
+  # лише блоки старого DocScan/YARA; загальний <active-response><disabled>..</active-response> лишається
+  # спершу <active-response> (усередині є вкладений <command>ім'я</command>), потім визначення <command> з <name>
+  $c = [regex]::Replace($c, "(?s)[ \t]*<active-response>(?:(?!</active-response>).)*?(doc-scan|yara-scan)(?:(?!</active-response>).)*?</active-response>\r?\n?", "")
+  $c = [regex]::Replace($c, "(?s)[ \t]*<command>(?:(?!</command>).)*?<name>\s*(doc-scan|yara-scan)\s*</name>(?:(?!</command>).)*?</command>\r?\n?", "")
+  return $c
+}
+function Read-Text([string]$p) { return [IO.File]::ReadAllText($p, (New-Object Text.UTF8Encoding($false))) }
+function Write-Text([string]$p, [string]$t) { [IO.File]::WriteAllText($p, $t, (New-Object Text.UTF8Encoding($false))) }
+
 
 # --- 0. права адміністратора ---
 $admin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
@@ -129,6 +150,51 @@ if ((Test-Path $OssecDir) -and -not $KeepLegacy) {
   }
 }
 
+# --- 4c. агент Wazuh: ossec.conf + перезапуск ---
+$wazuhDone = $false
+$ossecConf = Join-Path $OssecDir "ossec.conf"
+if ((Test-Path $ossecConf) -and -not $NoWazuhConfig) {
+  Step "агент Wazuh: $ossecConf"
+  New-Item -ItemType Directory -Force "$DataDir\legacy" | Out-Null
+  $bak = "$DataDir\legacy\ossec.conf.{0}.bak" -f (Get-Date -Format "yyyyMMdd-HHmmss")
+  Copy-Item -LiteralPath $ossecConf $bak
+  $orig = Read-Text $ossecConf
+  $new = Remove-LegacyArBlocks (Remove-DocScanBlock $orig)
+  $results = "$DataDir\results\docscan-results.json"
+  $block = "  $DsBegin`r`n  <localfile>`r`n    <log_format>json</log_format>`r`n    <location>$results</location>`r`n  </localfile>`r`n  $DsEnd`r`n"
+  $i = $new.LastIndexOf("</ossec_config>")
+  if ($i -lt 0) { Fail "ossec.conf без </ossec_config> — не чіпаю (бекап: $bak)" }
+  $new = $new.Substring(0, $i) + $block + $new.Substring($i)
+  Write-Text $ossecConf $new
+  Write-Host "  бекап: $bak"
+  Write-Host "  <localfile> json -> $results"
+
+  $svc = Get-Service WazuhSvc -EA SilentlyContinue
+  if ($svc) {
+    $log = Join-Path $OssecDir "ossec.log"
+    $mark = if (Test-Path $log) { (Get-Item $log).Length } else { 0 }
+    Restart-Service WazuhSvc -Force
+    Start-Sleep 10
+    $errs = @()
+    if (Test-Path $log) {
+      $fs = [IO.File]::Open($log, 'Open', 'Read', 'ReadWrite'); [void]$fs.Seek($mark, 'Begin')
+      $tail = (New-Object IO.StreamReader($fs)).ReadToEnd(); $fs.Close()
+      $errs = @($tail -split "`n" | ? { $_ -match "(ERROR|CRITICAL).*(config|xml|localfile|ossec\.conf)" })
+    }
+    if ((Get-Service WazuhSvc).Status -ne "Running" -or $errs.Count) {
+      Write-Host "  агент не прийняв конфігурацію — повертаю старий ossec.conf" -ForegroundColor Yellow
+      $errs | % { Write-Host "    $_" }
+      Copy-Item -LiteralPath $bak $ossecConf -Force
+      Restart-Service WazuhSvc -Force
+      Fail "ossec.conf відкочено (агент працює на старій конфігурації)"
+    }
+    Write-Host "  WazuhSvc перезапущено, конфігурацію прийнято"
+  } else {
+    Write-Host "  (службу WazuhSvc не знайдено — перезапустіть агент вручну)"
+  }
+  $wazuhDone = $true
+}
+
 # --- 5. самоперевірка ---
 Step "самоперевірка"
 $yara  = "$InstallDir\bin\yara64.exe"
@@ -175,5 +241,6 @@ Write-Host "  стежить за: $($WatchPath -join ', ')   (лікуванн�
 Write-Host "  результати: $DataDir\results\docscan-results.json  (лог: watcher.log)"
 Write-Host "  карантин:   $DataDir\quarantine"
 if ($legacyRemoved.Count) { Write-Host "  старий DocScan (Wazuh active-response) прибрано повністю" }
+if ($wazuhDone) { Write-Host "  Wazuh:      агент читає results\docscan-results.json (json); на менеджері — deploy\manager\cleanup_manager.sh" }
 Write-Host "  політика:   $InstallDir\rules\docscan-policy.yar  (після зміни: Restart-ScheduledTask '$TaskName')"
 Write-Host "  видалення:  powershell -ExecutionPolicy Bypass -File '$InstallDir\uninstall.ps1'"

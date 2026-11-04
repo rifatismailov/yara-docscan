@@ -13,7 +13,8 @@
 Стара реалізація (Wazuh active-response) прибирається автоматично і повністю:
   doc-scan.ps1, doc-scan.cmd, ossec-agent\tmp\docscan, старий YARA (active-response\bin\yara, yara-scan.*).
   Старий карантин (ossec-agent\quarantine) переноситься в C:\ProgramData\DocScan\quarantine\legacy.
-  На менеджері Wazuh приберіть <command>/<active-response> для doc-scan і yara-scan.
+  ossec.conf агента: додається <localfile> (json) на results\docscan-results.json, WazuhSvc перезапускається.
+  На МЕНЕДЖЕРІ Wazuh (root): sh manager/cleanup_manager.sh — прибирає AR doc-scan/yara-scan і ставить правила DocScan.
 
 Після встановлення:
   - програма:   C:\Program Files\DocScan  (bin\yara64.exe, rules\, watcher\)

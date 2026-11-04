@@ -17,6 +17,19 @@ Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" |
 Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -EA SilentlyContinue
 Write-Host "завдання '$TaskName' видалено"
 
+# прибрати наш <localfile> з ossec.conf агента
+$ossecConf = "${env:ProgramFiles(x86)}\ossec-agent\ossec.conf"
+if (Test-Path $ossecConf) {
+  $enc = New-Object Text.UTF8Encoding($false)
+  $c = [IO.File]::ReadAllText($ossecConf, $enc)
+  $n = [regex]::Replace($c, "(?s)[ \t]*<!-- DocScan: managed by DocScan install.ps1 -->.*?<!-- /DocScan -->\r?\n?", "")
+  if ($n -ne $c) {
+    [IO.File]::WriteAllText($ossecConf, $n, $enc)
+    Restart-Service WazuhSvc -Force -EA SilentlyContinue
+    Write-Host "ossec.conf: блок DocScan <localfile> прибрано, WazuhSvc перезапущено"
+  }
+}
+
 # uninstall.ps1 лежить у $InstallDir: видаляємо все, крім себе, а себе — відкладено
 Get-ChildItem $InstallDir -Force -EA SilentlyContinue | ? { $_.FullName -ne $PSCommandPath } |
   Remove-Item -Recurse -Force -EA SilentlyContinue
