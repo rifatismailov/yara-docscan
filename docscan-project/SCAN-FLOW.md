@@ -756,6 +756,7 @@ make -j8 yara.exe      # PE32+ x64, залежить лише від UCRT (є у
 | `docscan.dict` | словник токенів (`DDEAUTO`, `<Relationship`, `/JavaScript`, magic-байти…) |
 | `make_corpus.py` | початковий корпус із `test-samples/` (+ витягнуті `vbaProject.bin`, `.rels`, embedded OLE, MS-OVBA-контейнери) |
 | `build.sh` | збирає libyara з санітайзерами в окремій теці, компонує фазери, **проганяє `regressions/`** (падає, якщо хоч один вхід знову ламає код) |
+| `build_windows.ps1` | Windows: фазер парсерів через clang-cl + libFuzzer + ASan (`choco install llvm` + VS Build Tools). Тимчасовий файл лікування має кириличне ім'я — перевіряє гілку `_wfopen`/`_wrename`. Фазер усього модуля — лише `build.sh` (macOS/Linux) |
 | `regressions/` | входи, що колись ламали код (див. таблицю нижче) |
 
 ```sh

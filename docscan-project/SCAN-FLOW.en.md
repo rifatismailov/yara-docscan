@@ -759,6 +759,7 @@ Identical on macOS and Windows (MSVC).
 | `docscan.dict` | token dictionary (`DDEAUTO`, `<Relationship`, `/JavaScript`, magic bytes…) |
 | `make_corpus.py` | seed corpus from `test-samples/` (+ extracted `vbaProject.bin`, `.rels`, embedded OLE, MS-OVBA containers) |
 | `build.sh` | builds libyara with sanitizers in a separate tree, links the fuzzers, **replays `regressions/`** (fails if any input breaks the code again) |
+| `build_windows.ps1` | Windows: the parser fuzzer via clang-cl + libFuzzer + ASan (`choco install llvm` + VS Build Tools). The disarm temp file has a Cyrillic name — exercises the `_wfopen`/`_wrename` path. The whole-module fuzzer is `build.sh` only (macOS/Linux) |
 | `regressions/` | inputs that once broke the code (see the table below) |
 
 ```sh

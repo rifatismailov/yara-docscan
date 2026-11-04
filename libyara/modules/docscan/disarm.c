@@ -16,6 +16,8 @@
 // with Cyrillic (or any non-ANSI) characters work; plain fopen() would read
 // the UTF-8 bytes as the ANSI code page.
 #if defined(_WIN32)
+#include <io.h>     // _wrename (MSVC accepted it implicitly; clang does not)
+#include <wchar.h>  // _wfopen, _wremove
 #include <windows.h>
 
 static int to_wide(const char* s, wchar_t* w, int wn)

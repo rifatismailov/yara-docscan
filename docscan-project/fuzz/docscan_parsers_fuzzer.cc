@@ -12,7 +12,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#if defined(_WIN32)
+#include <process.h>
+#define getpid _getpid
+#else
 #include <unistd.h>
+#endif
 
 extern "C" {
 #include <yara/docscan_disarm.h>
@@ -23,15 +28,43 @@ extern "C" {
 
 static char tmp_path[256];
 
+// The harness must create/delete the temp file the same way disarm.c opens it
+// (UTF-8 path -> wide CRT on Windows), otherwise the Cyrillic name differs.
+#if defined(_WIN32)
+#include <windows.h>
+static FILE* h_fopen(const char* p, const wchar_t* mode)
+{
+  wchar_t w[512];
+  MultiByteToWideChar(CP_UTF8, 0, p, -1, w, 512);
+  return _wfopen(w, mode);
+}
+static void h_remove(const char* p)
+{
+  wchar_t w[512];
+  MultiByteToWideChar(CP_UTF8, 0, p, -1, w, 512);
+  _wremove(w);
+}
+#else
+#define h_fopen(p, m) fopen(p, "wb")
+#define h_remove(p) remove(p)
+#endif
+
 extern "C" int LLVMFuzzerInitialize(int* argc, char*** argv)
 {
+#if defined(_WIN32)
+  // %TEMP% + a Cyrillic name: exercises the wide-char (_wfopen) disarm path.
+  const char* t = getenv("TEMP");
+  snprintf(tmp_path, sizeof(tmp_path), "%s\\docscan-fuzz-%d-\xd0\xa0\xd0\xb0\xd1\x85.bin",
+           t ? t : "C:\\Windows\\Temp", (int) getpid());
+#else
   snprintf(tmp_path, sizeof(tmp_path), "/tmp/docscan-fuzz-%d.bin", (int) getpid());
+#endif
   return 0;
 }
 
 static void fuzz_disarm(const uint8_t* d, size_t n)
 {
-  FILE* f = fopen(tmp_path, "wb");
+  FILE* f = h_fopen(tmp_path, L"wb");
   if (f == NULL)
     return;
   fwrite(d, 1, n, f);
@@ -50,8 +83,8 @@ static void fuzz_disarm(const uint8_t* d, size_t n)
 
   char bak[300];
   snprintf(bak, sizeof(bak), "%s.docscan-bak", tmp_path);
-  remove(bak);
-  remove(tmp_path);
+  h_remove(bak);
+  h_remove(tmp_path);
 }
 
 extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size)
