@@ -2348,7 +2348,14 @@ int _tmain(int argc, const char_t** argv)
     }
 
     THREAD thread[YR_MAX_THREADS];
-    THREAD_ARGS thread_args[YR_MAX_THREADS];
+    // On the heap: every THREAD_ARGS carries a DOCSCAN_STATE (tens of KB);
+    // YR_MAX_THREADS of them overflow the 1 MB main-thread stack on Windows.
+    THREAD_ARGS* thread_args = (THREAD_ARGS*) calloc(YR_MAX_THREADS, sizeof(THREAD_ARGS));
+    if (thread_args == NULL)
+    {
+      print_error(ERROR_INSUFFICIENT_MEMORY);
+      exit_with_code(EXIT_FAILURE);
+    }
 
     for (int i = 0; i < threads; i++)
     {
@@ -2394,6 +2401,7 @@ int _tmain(int argc, const char_t** argv)
     for (int i = 0; i < threads; i++)
       yr_scanner_destroy(thread_args[i].scanner);
 
+    free(thread_args);
     file_queue_destroy();
 
     if (result != ERROR_SUCCESS)
