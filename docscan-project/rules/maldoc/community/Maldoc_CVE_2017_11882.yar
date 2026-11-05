@@ -4,7 +4,7 @@
     This Yara ruleset is under the GNU-GPLv2 license (http://www.gnu.org/licenses/gpl-2.0.html) and open to any user or organization, as long as you use it under this license.
 */
 
-rule Maldoc_CVE_2017_11882 : Exploit {
+rule Maldoc_CVE_2017_11882 : Exploit docscan_doc {
     meta:
         description = "Detects maldoc With exploit for CVE_2017_11882"
         author = "Marc Salinas (@Bondey_m)"

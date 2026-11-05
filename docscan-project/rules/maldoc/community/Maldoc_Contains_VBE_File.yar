@@ -17,8 +17,7 @@
     2016/03/21: start
 */
 
-rule Contains_VBE_File : maldoc
-{
+rule Contains_VBE_File : maldoc docscan_doc {
     meta:
         author = "Didier Stevens (https://DidierStevens.com)"
         description = "Detect a VBE file inside a byte sequence"

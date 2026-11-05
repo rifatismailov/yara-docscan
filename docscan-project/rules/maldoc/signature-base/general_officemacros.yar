@@ -27,7 +27,7 @@ rule Office_AutoOpen_Macro_SB : docscan_info {
 		and all of ($s*) and filesize < 300000
 }
 
-rule Office_as_MHTML {
+rule Office_as_MHTML : docscan_doc {
 	meta:
 		description = "Detects an Microsoft Office saved as a MHTML file (false positives are possible but rare; many matches on CVE-2012-0158)"
 		license = "Detection Rule License 1.1 https://github.com/Neo23x0/signature-base/blob/master/LICENSE"
@@ -51,7 +51,7 @@ rule Office_as_MHTML {
 		and all of ($s*) and 1 of ($x*)
 }
 
-rule Docm_in_PDF {
+rule Docm_in_PDF : docscan_doc {
    meta:
       description = "Detects an embedded DOCM in PDF combined with OpenAction"
       license = "Detection Rule License 1.1 https://github.com/Neo23x0/signature-base/blob/master/LICENSE"

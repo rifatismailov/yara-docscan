@@ -33,7 +33,7 @@ rule Office_DDE_field {
 }
 */
 
-rule Office_OLE_DDEAUTO {
+rule Office_OLE_DDEAUTO : docscan_doc {
    meta:
       description = "Detects DDE in MS Office documents"
       author = "NVISO Labs"
@@ -47,7 +47,7 @@ rule Office_OLE_DDEAUTO {
       uint32be(0) == 0xD0CF11E0 and $a
 }
 
-rule Office_OLE_DDE {
+rule Office_OLE_DDE : docscan_doc {
    meta:
       description = "Detects DDE in MS Office documents"
       author = "NVISO Labs"

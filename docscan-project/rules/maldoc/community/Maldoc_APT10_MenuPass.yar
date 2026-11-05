@@ -12,7 +12,7 @@
 
 import "hash"
 
-rule Maldoc_APT10_MenuPass {
+rule Maldoc_APT10_MenuPass : docscan_doc {
    meta:
       description = "Detects APT10 MenuPass Phishing"
       author = "Colin Cowie"

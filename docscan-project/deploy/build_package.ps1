@@ -26,6 +26,10 @@ New-Item -ItemType Directory -Force "$stage\bin", "$stage\watcher" | Out-Null
 # yara64.exe + VC++ runtime (yara64 is built with /MD and needs VCRUNTIME140.dll;
 # the CRT itself is the Universal CRT that ships with Windows 10/11)
 Copy-Item $exe "$stage\bin\"
+# yarac64.exe: вотчер компілює ним правила раз на старті (без нього скан кожного файлу компілює їх заново)
+$yarac = Join-Path (Split-Path $exe) "yarac64.exe"
+if (-not (Test-Path $yarac)) { throw "немає $yarac — зберіть і його (MSBuild /t:yara;yarac)" }
+Copy-Item $yarac "$stage\bin\"
 $crt = Get-ChildItem "${env:ProgramFiles(x86)}\Microsoft Visual Studio\2022\BuildTools\VC\Redist\MSVC" -Recurse -Filter vcruntime140.dll |
        ? { $_.FullName -match '\\x64\\Microsoft\.VC\d+\.CRT\\' -and $_.FullName -notmatch 'onecore|debug' } | Select -First 1
 if (-not $crt) { throw "не знайдено vcruntime140.dll у VC\Redist" }

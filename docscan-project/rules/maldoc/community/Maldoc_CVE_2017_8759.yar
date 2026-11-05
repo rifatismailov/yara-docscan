@@ -21,7 +21,7 @@ private rule RTFFILE {
 
 /* Rule Set ----------------------------------------------------------------- */
 
-rule CVE_2017_8759_Mal_HTA {
+rule CVE_2017_8759_Mal_HTA : docscan_doc {
    meta:
       description = "Detects malicious files related to CVE-2017-8759 - file cmd.hta"
       author = "Florian Roth"
@@ -34,23 +34,7 @@ rule CVE_2017_8759_Mal_HTA {
       ( uint16(0) == 0x683c and filesize < 1KB and all of them )
 }
 
-rule CVE_2017_8759_Mal_Doc {
-   meta:
-      description = "Detects malicious files related to CVE-2017-8759 - file Doc1.doc"
-      author = "Florian Roth"
-      reference = "https://github.com/Voulnet/CVE-2017-8759-Exploit-sample"
-      date = "2017-09-14"
-      hash1 = "6314c5696af4c4b24c3a92b0e92a064aaf04fd56673e830f4d339b8805cc9635"
-   strings:
-      $s1 = "soap:wsdl=http://" ascii wide nocase
-      $s2 = "soap:wsdl=https://" ascii wide nocase
-
-      $c1 = "Project.ThisDocument.AutoOpen" fullword wide
-   condition:
-      ( uint16(0) == 0xcfd0 and filesize < 500KB and 2 of them )
-}
-
-rule CVE_2017_8759_SOAP_via_JS {
+rule CVE_2017_8759_SOAP_via_JS : docscan_doc {
    meta:
       description = "Detects SOAP WDSL Download via JavaScript"
       author = "Florian Roth"
@@ -64,7 +48,7 @@ rule CVE_2017_8759_SOAP_via_JS {
       ( filesize < 3KB and 1 of them )
 }
 
-rule CVE_2017_8759_SOAP_Excel {
+rule CVE_2017_8759_SOAP_Excel : docscan_doc {
    meta:
       description = "Detects malicious files related to CVE-2017-8759"
       author = "Florian Roth"
@@ -76,7 +60,7 @@ rule CVE_2017_8759_SOAP_Excel {
       ( filesize < 300KB and 1 of them )
 }
 
-rule CVE_2017_8759_SOAP_txt {
+rule CVE_2017_8759_SOAP_txt : docscan_doc {
    meta:
       description = "Detects malicious file in releation with CVE-2017-8759 - file exploit.txt"
       author = "Florian Roth"
@@ -88,21 +72,4 @@ rule CVE_2017_8759_SOAP_txt {
       $s2 = /<soap:address location="http[s]?:\/\/[^"]{8,140}mshta.exe"/ ascii wide
    condition:
       ( filesize < 200KB and 1 of them )
-}
-
-rule CVE_2017_8759_WSDL_in_RTF {
-   meta:
-      description = "Detects malicious RTF file related CVE-2017-8759"
-      author = "Security Doggo @xdxdxdxdoa"
-      reference = "https://twitter.com/xdxdxdxdoa/status/908665278199996416"
-      date = "2017-09-15"
-   strings:
-      $doc = "d0cf11e0a1b11ae1"
-      $obj = "\\objupdate"
-      $wsdl = "7700730064006c003d00" nocase
-      $http1 = "68007400740070003a002f002f00" nocase
-      $http2 = "680074007400700073003a002f002f00" nocase
-      $http3 = "6600740070003a002f002f00" nocase
-   condition:
-      RTFFILE and $obj and $doc and $wsdl and 1 of ($http*)
 }

@@ -39,8 +39,19 @@ RENAME = {
     ("yara/general_officemacros.yar", "Office_AutoOpen_Macro"): "Office_AutoOpen_Macro_SB",
 }
 
-# rules removed on purpose (besides the automatic platform filter): name -> reason
-DROP = {}
+# rules removed on purpose (besides the automatic platform filter): name or (source path, name) -> reason
+_OLD = "older copy of the signature-base rule of the same name (kept there, maintained)"
+DROP = {
+    ("maldocs/Maldoc_APT19_CVE-2017-0199.yar", "FE_LEGALSTRIKE_MACRO"): _OLD,
+    ("maldocs/Maldoc_APT19_CVE-2017-0199.yar", "FE_LEGALSTRIKE_RTF"): _OLD,
+    ("maldocs/Maldoc_CVE_2017_8759.yar", "CVE_2017_8759_Mal_Doc"): _OLD,
+    ("maldocs/Maldoc_CVE_2017_8759.yar", "CVE_2017_8759_WSDL_in_RTF"): _OLD,
+    ("maldocs/Maldoc_malrtf_ole2link.yar", "malrtf_ole2link"): _OLD,
+    # FP on a clean Windows Server 2022: inbox Microsoft drivers (csc.sys, SmSerl64.sys)
+    "Windows_VulnDriver_Csc_856c8393": "FP: matches the inbox Microsoft driver csc.sys",
+    "Windows_VulnDriver_SmSerl64_00319890": "FP: matches the inbox Microsoft driver SmSerl64.sys",
+    "Windows_VulnDriver_Ksld_c608656e": "FP: matches KslD.sys of Microsoft Defender (found on a clean workstation)",
+}
 
 # indicators, not detections: reported in yara_info_matches, never raise the verdict.
 # Most duplicate what the docscan policy already decides with proper severity.
@@ -60,6 +71,10 @@ INFO = {
     "powershell", "Word_2007_XML_Flat_OPC",
 }
 INFO_TAG = "docscan_info"
+# every rule under maldoc/ is a document rule: on a file the docscan module does not recognise as a
+# document (exe, dll, scripts...) yara64 reports it as an indicator only. Shellcode patterns such as
+# getEIP / PEB access are strong in a document but ordinary machine code in any binary.
+DOC_TAG = "docscan_doc"
 
 HEADER = re.compile(r'(?m)^[ \t]*((?:private|global)[ \t]+)*rule[ \t]+([A-Za-z0-9_]+)[ \t\r\n]*(:[^{]*)?\{')
 
@@ -184,8 +199,8 @@ def build(vendor, out, yarac):
         if line:
             od, src, rel = line.split()
             sel.append((od, src, rel))
-    report = OrderedDict(dropped=[], renamed=[], info=[], files_skipped=[])
-    seen = {}
+    report = OrderedDict(dropped=[], duplicates=[], renamed=[], info=[], doc=[], files_skipped=[])
+    seen = {}; bodies = {}; clashes = []
     index = []
     for od, src, rel in sel:
         text = (vendor / src / rel).read_text(encoding="utf-8", errors="replace")
@@ -195,7 +210,7 @@ def build(vendor, out, yarac):
         for r in rules:
             why = None
             if not r['private']:
-                why = DROP.get(r['name']) or platform_reason(fname, r)
+                why = DROP.get(r['name']) or DROP.get((rel, r['name'])) or platform_reason(fname, r)
             r['drop'] = why
         kept_conds = " ".join(r['cond'] for r in rules if not r['drop'])
         for r in rules:
@@ -213,9 +228,17 @@ def build(vendor, out, yarac):
             if name in INFO:
                 t = add_tag(t, r['hoff'], INFO_TAG)
                 report['info'].append(f"{src}/{rel}: {name}")
+            elif od.startswith("maldoc") and not r['private']:
+                t = add_tag(t, r['hoff'], DOC_TAG)
+                report['doc'].append(f"{src}/{rel}: {name}")
+            body = re.sub(r'\s+', ' ', (r['strings'] + ' ' + r['cond'])).strip()
             if name in seen and not r['private']:
-                sys.exit(f"duplicate rule {name}: {seen[name]} and {src}/{rel} — add a RENAME or drop one")
-            seen[name] = f"{src}/{rel}"
+                if bodies[name] == body:   # same rule shipped twice (another repo / file): keep the first
+                    report['duplicates'].append(f"{src}/{rel}: {name} — same as {seen[name]}")
+                    continue
+                clashes.append(f"{name}: {seen[name]} vs {src}/{rel}")
+                continue
+            seen[name] = f"{src}/{rel}"; bodies[name] = body
             keep.append(t)
         if not any(not r['drop'] and not r['private'] for r in rules):
             report['files_skipped'].append(f"{src}/{rel} — no rule left")
@@ -226,6 +249,8 @@ def build(vendor, out, yarac):
                f"// source: {SOURCES[src][0]} @ {SOURCES[src][1][:12]} : {rel}\n")
         dst.write_text(hdr + pre + "".join(keep) + tail, encoding="utf-8")
         index.append(f"{od}/{fname}")
+    if clashes:
+        sys.exit("rule name clashes (different rules, same name) — add RENAME entries:\n  " + "\n  ".join(clashes))
     # licenses of the sources
     for src, lic in (("signature-base", "LICENSE"), ("yara-rules-community", "LICENSE"), ("protections-artifacts", "LICENSE.txt")):
         p = vendor / src / lic
@@ -240,7 +265,9 @@ def build(vendor, out, yarac):
     (out / "file-index.yar").write_text("\n".join(idx), encoding="utf-8")
     shutil.copy(RULES / "maldoc" / "vba_plaintext.yar", out / "maldoc" / "vba_plaintext.yar") if out != RULES else None
     # compile check
-    r = subprocess.run([yarac, "-w", str(out / "file-index.yar"), os.devnull], capture_output=True, text=True)
+    # THOR/LOKI externals: yara64 declares and sets them per file (--file-vars, implied by --docscan-json)
+    ext = sum((["-d", v + "="] for v in ("filename", "filepath", "extension", "filetype", "owner")), [])
+    r = subprocess.run([yarac, "-w", *ext, str(out / "file-index.yar"), os.devnull], capture_output=True, text=True)
     if r.returncode != 0:
         sys.exit("COMPILE FAILED:\n" + (r.stderr or r.stdout)[:3000])
     nrules = len(seen)
@@ -248,11 +275,13 @@ def build(vendor, out, yarac):
              "Generated by `rules/tools/build_vendor_rules.py`. Sources:", ""]
     lines += [f"- {k}: {u} @ `{c[:12]}`" for k, (u, c) in SOURCES.items()]
     lines += ["", f"Files: {len(index)}, rules kept: {nrules}, dropped: {len(report['dropped'])}, "
-              f"renamed: {len(report['renamed'])}, info: {len(report['info'])}", ""]
+              f"duplicates skipped: {len(report['duplicates'])}, renamed: {len(report['renamed'])}, info: {len(report['info'])}, doc: {len(report['doc'])}", ""]
     for k, title in (("dropped", "Dropped (cannot fire on a Windows workstation / DROP list)"),
+                     ("duplicates", "Duplicates skipped (identical rule already taken from another file)"),
                      ("files_skipped", "Files with no rule left"),
                      ("renamed", "Renamed (identifier clashes)"),
-                     ("info", f"Tagged `{INFO_TAG}` (indicators, do not raise the verdict)")):
+                     ("info", f"Tagged `{INFO_TAG}` (indicators, do not raise the verdict)"),
+                     ("doc", f"Tagged `{DOC_TAG}` (document rules: indicators only on non-documents)")):
         lines += [f"## {title} ({len(report[k])})", ""] + [f"- {x}" for x in report[k]] + [""]
     (out / "tools").mkdir(exist_ok=True)
     (out / "tools" / "vendor-report.md").write_text("\n".join(lines), encoding="utf-8")

@@ -98,7 +98,7 @@ flowchart TD
 ### The same as text
 
 ```
- new file ──► watcher ──► yara64 -w --docscan-json [--docscan-disarm] docscan-index.yar <file>
+ new file ──► watcher ──► yara64 -w --docscan-json [--docscan-disarm] -C rules.yarc <file>
                              │
      ┌───────────────────────▼─────────────────────────────────┐
      │ docscan MODULE — FACTS only (read-only)                  │
@@ -395,6 +395,7 @@ memory (`mz_zip_writer_init_heap`) and written by our `write_file` — miniz's f
 | `--docscan-extract=FILE` | `docscan_extract` | writes `vba_code` to FILE (manual Layer 2) |
 | `--docscan-disarm` | `docscan_disarm_flag` | after the scan, disarms the file according to `meta.disarm` of the matching rules; HIGH without actions → `detect-only` |
 | `--docscan-backup-dir=DIR` | `docscan_backup_dir_utf8` | backups and quarantine go to DIR (must exist). On Windows the value is taken from the original Unicode arguments (YARA's parser hands string options over as ANSI — Cyrillic would be lost) |
+| `--file-vars` (also implied by `--docscan-json`) | `file_vars` | THOR/LOKI external variables: `filename` (name), `filepath` (absolute directory), `extension` (`.exe`, lower case), `filetype` (`EXE`/`ELF`/`MACH-O`/`MDMP`/`ZIP`/`RAR`/`7Z`/`RTF`/`PDF`/`OLE` by magic; `VBS`/`BATCH`/`PowerShell`/`Python`/`PHP`/`JSP`/`ASP`/`JS`/`HTA` by extension), `owner` (empty). Declared empty at compile time and set per file (`file_vars_set` in `scan_file`), so signature-base rules such as `EXE_cloaked_as_TXT` work as in THOR. For `-C`: compile with `-d filename= -d filepath= -d extension= -d filetype= -d owner=` |
 
 **Per-file state** — `DOCSCAN_STATE` in `CALLBACK_ARGS` (`dsc`): `ftype`, evidence copies, a copy of
 `vba_code`, `max_severity`, `findings`, `details`, `file_matches`, `docscan_disarm_info ds`. Global:
@@ -537,12 +538,14 @@ PDF: 2 HIGHs on pdf.js test files made exactly for `/Launch` and `launchURL` —
 | `rules/docscan-policy.yar` | policy | `import "docscan"` + the `DS_*` rules |
 | `rules/docscan.yar` | our detection only | `include "docscan-policy.yar"` |
 | `rules/docscan-index.yar` | **full scan** (watcher, run_tests) | `include "docscan-policy.yar"` + `include "file-index.yar"` |
-| `rules/file-index.yar` | vendor rules (**generated**) | 147 × `general/` + 14 × `maldoc/signature-base/` + 20 × `maldoc/community/` + `maldoc/vba_plaintext.yar` |
-| `rules/general/`, `rules/maldoc/signature-base/`, `rules/maldoc/community/` | vendor rules (**generated**, do not edit) | signature-base + Yara-Rules, filtered per rule |
+| `rules/file-index.yar` | vendor rules (**generated**) | 1460 files, 7176 rules: `general/` (signature-base), `general/elastic/` (Elastic protections-artifacts, Windows/Multi), `maldoc/signature-base/`, `maldoc/community/` + `maldoc/vba_plaintext.yar` |
+| `rules/general/`, `rules/general/elastic/`, `rules/maldoc/signature-base/`, `rules/maldoc/community/` | vendor rules (**generated**, do not edit) | signature-base + Elastic + Yara-Rules, filtered per rule |
 | `rules/maldoc/vba_plaintext.yar` | our rules for decompressed VBA | edited by hand |
 | `rules/tools/build_vendor_rules.py` | generator | pinned sources, filter, renames, tags, compile check |
 | `rules/tools/vendor-selection.txt` | which source files are used | `<dir> <source> <path>` |
-| `rules/tools/vendor-report.md` | build report | what was dropped and why, renamed, tagged `docscan_info` |
+| `rules/tools/vendor-report.md` | build report | what was dropped and why, duplicates skipped, renamed, tagged `docscan_info` |
+| `rules/tools/make_candidates.py` | candidates to add | every not-yet-selected signature-base file and Elastic Windows/Multi file, same filter; each file compiled alone; all of them → `cand.yarc` (namespace = file) |
+| `rules/tools/fp_scan.ps1` | false-positive check | `cand.yarc` over a clean Windows (`C:\Windows`, `Program Files`, `ProgramData`) with `--file-vars` → `hits.txt`, `summary.txt` |
 
 **How the vendor set is built** (`python3 rules/tools/build_vendor_rules.py [--fetch]`):
 1. Sources live in `reference/vendor-rules-full-later/vendor/` (not in git), commits pinned in `SOURCES`;
@@ -552,14 +555,40 @@ PDF: 2 HIGHs on pdf.js test files made exactly for `/Launch` and `launchURL` —
      Java `.class`, Android, a rule named `LNX_`/`ESXi`/`_SH_`/`_PY_` without a file-type check, PHP/JSP/ASPX
      webshell source (such files are not scanned). A condition that accepts PE or ZIP/JAR keeps the rule
      (e.g. "PE or ELF", compiled webshell DLLs). The file name alone decides nothing;
-   - **renamed** on identifier clashes (`RENAME`) instead of excluding a whole file;
+   - **dropped by hand** (`DROP`: name or `(file, name)` + reason) — false positives, outdated copies;
+   - **skipped as a duplicate** when a rule with the same name and the same strings/condition was already
+     taken from another file ("Duplicates skipped" in the report);
+   - **renamed** on identifier clashes between different rules (`RENAME`) instead of excluding a whole file;
    - **tagged `docscan_info`** (`INFO`) when it is an indicator rather than a detection: "a macro exists",
      the word `powershell`, PDF structure/metadata anomalies, PDF features the policy grades itself.
-3. `file-index.yar` is generated and compiled with `yarac`; any error or duplicate name fails the build.
+3. `file-index.yar` is generated and compiled with `yarac` (with the THOR variables); any error or a name
+   clash between different rules fails the build. `--check` tells whether `rules/` matches the generator.
+
+**How new rules are added** (this is how the 2026-11-04 set was built):
+1. `python3 rules/tools/make_candidates.py DIR` → candidates and `DIR/cand.yarc`. On Windows compile them
+   there with its own `yarac` (a `.yarc` from another build may not load: different `pe` module fields).
+2. `fp_scan.ps1 -Rules cand.yarc` on a **clean** Windows; plus a scan of benign documents.
+3. Review every rule with a hit by hand: a false positive → `DROP` with a reason; files the watcher never
+   scans (`.evtx` logs, the Defender cache) are not a reason to drop.
+4. Files without false positives go into `vendor-selection.txt`; rebuild with the generator; `run_tests.ps1`.
+
+Check of 2026-11-04: Windows Server 2022, 129,564 files, 4 rules with hits — 2 dropped
+(`Windows_VulnDriver_Csc`, `Windows_VulnDriver_SmSerl64`: inbox Microsoft drivers), 2 kept
+(`SUSP_PS1_JAB_Pattern_Jun22_1` — PowerShell event logs, `SUSP_XORed_MSDOS_Stub_Message` — Defender cache);
+476 benign documents — 0. Then a Windows 10 workstation with Office/Adobe/Acronis (`yara64` with
+OpenSSL): the 14 files using `pe.number_of_signatures` — 0 hits; the full set — the new rules are clean
+(`Windows_VulnDriver_Ksld` dropped: a Defender driver); false HIGHs came only from the old `maldoc_*`/
+`ppaction`/`possible_exploit`/`Contains_VBE_File` rules on binaries → the `docscan_doc` tag. Hits in
+PowerShell logs/transcripts, `.xml`, `.lua` and the rule files themselves are not counted (the watcher
+does not scan such files).
 
 **Tags in JSON:** a vendor match → `yara_file_matches` (detection: document → at least MEDIUM,
 general → HIGH); a `docscan_info` match → `yara_info_matches` (for the analyst only, does **not** raise
-the verdict, ignored in Layer 2).
+the verdict, ignored in Layer 2). The `docscan_doc` tag (the generator puts it on every `maldoc/` rule) marks a document rule: on a
+file the module did not recognise as a document (`ftype=unknown`: exe, dll, scripts) its match goes to
+`yara_info_matches`. Shellcode patterns (`getEIP`, PEB access) and words like `ppaction` are strong in a
+document but ordinary code in any binary: without this tag they gave ~2,900 false HIGHs on .NET/Adobe/
+Acronis files of a clean Windows 10.
 
 Rules for index files:
 - `include` paths **use `/`**, relative to the index file or absolute (YARA treats `\` as an escape).
@@ -569,12 +598,15 @@ Rules for index files:
 ## 7. Watcher — auto-scan of new files
 
 `docscan-project/watcher/docscan-watcher.ps1` (PowerShell 5.1, UTF-8 with BOM). **One `yara64` run per file.**
+Rules are compiled **once at start** (`yarac64.exe` next to `yara64.exe` → `<OutDir>\rules.yarc`), then every
+scan is `yara64 -C rules.yarc`: 7000+ rules take ~0.5 s or more to compile, scanning with the compiled set ~0.06 s.
+No `yarac64.exe` or the compile fails — a WARN in the log and scans from the `.yar` sources (slow).
 
 ### What gets scanned
 
 | Category | Extensions | Scan |
 |---|---|---|
-| `document` | doc dot docx docm dotx dotm, xls xlt xlsx xlsm xltx xltm xlsb, ppt pps pot pptx pptm potx potm ppsx ppsm, rtf, pdf, lnk | `yara64 -w --docscan-json [--docscan-disarm] docscan-index.yar` |
+| `document` | doc dot docx docm dotx dotm, xls xlt xlsx xlsm xltx xltm xlsb, ppt pps pot pptx pptm potx potm ppsx ppsm, rtf, pdf, lnk | `yara64 -w --docscan-json [--docscan-disarm] -C rules.yarc` |
 | `general` | exe dll sys scr cpl ocx com msi, ps1 psm1 vbs vbe js jse wsf wsh hta bat cmd jar, zip rar 7z iso img vhd vhdx | the same without `--docscan-disarm` (only vendor rules apply) |
 | other | — | ignored |
 
@@ -607,7 +639,7 @@ On start it checks that `yara64.exe` and `-Rules` exist and compile.
 
 ### Parameters
 
-`-WatchPath` (`C:\Users`), `-Base` (`C:\docscan-build`), `-Yara`, `-Rules` (`<Base>\yara\docscan-project\rules\docscan-index.yar`),
+`-WatchPath` (`C:\Users`), `-Base` (`C:\docscan-build`), `-Yara`, `-Yarac` (`yarac64.exe` next to `-Yara`), `-Rules` (`<Base>\yara\docscan-project\rules\docscan-index.yar`),
 `-OutDir` (`<Base>\results`), `-BackupDir` (`<Base>\quarantine`; not watched),
 **disarm is always on** (`-NoDisarm` — diagnostics only), `-QuarantineGeneral` (off: exe/scripts/archives
 with a vendor-rule match → quarantine), `-MaxSizeMB` (100), `-SettleSeconds` (2), `-ReadyTimeout` (60),
@@ -724,7 +756,8 @@ nuget restore $sln                                   # OpenSSL + Jansson from th
    /p:PlatformToolset=v143 /p:WindowsTargetPlatformVersion=10.0.26100.0 /m /v:minimal
 # → C:\docscan-build\yara\windows\vs2019\Release\yara64.exe  (2,501,632 bytes, 4.6.0)
 ```
-`LNK4006 __NULL_IMPORT_DESCRIPTOR` warnings are harmless. `yarac64.exe` — `/t:yarac`.
+`LNK4006 __NULL_IMPORT_DESCRIPTOR` warnings are harmless. `yarac64.exe` — `/t:yarac`; the package needs both
+(`/t:yara;yarac`), `build_package.ps1` stops without `yarac64.exe`.
 
 ### Windows / MinGW cross-build on macOS (fallback for tests)
 ```sh
@@ -733,7 +766,8 @@ brew install mingw-w64
 ./configure --host=x86_64-w64-mingw32 --without-crypto --disable-shared --enable-static LDFLAGS=-static
 make -j8 yara.exe      # PE32+ x64, depends only on UCRT (present on Win10+/Server 2022)
 ```
-Limitations: no OpenSSL (the `hash` module and PE signature checks are unavailable), not Unicode
+Limitations: no OpenSSL (PE signature checks are unavailable — rules using `pe.number_of_signatures`
+do not compile; the `hash` module works via wincrypt), not Unicode
 (Cyrillic paths may fail to open). Production builds are MSVC only.
 
 ### Adding a new `.c` to the module

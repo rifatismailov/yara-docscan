@@ -7,7 +7,7 @@
 
 import "pe"
 
-rule Dridex_Trojan_XML : maldoc {
+rule Dridex_Trojan_XML : maldoc docscan_doc {
 	meta:
 		description = "Dridex Malware in XML Document"
 		author = "Florian Roth @4nc4p"
@@ -40,7 +40,7 @@ rule Dridex_Trojan_XML : maldoc {
 	Identifier: Phishing Gina Harrowell Dez 2015
 */
 
-rule PHISH_02Dez2015_dropped_p0o6543f {
+rule PHISH_02Dez2015_dropped_p0o6543f : docscan_doc {
 	meta:
 		description = "Phishing Wave - file p0o6543f.exe"
 		author = "Florian Roth"
@@ -61,7 +61,7 @@ rule PHISH_02Dez2015_dropped_p0o6543f {
 		uint16(0) == 0x5a4d and filesize < 250KB and all of them
 }
 
-rule PHISH_02Dez2015_attach_P_ORD_C_10156_124658 {
+rule PHISH_02Dez2015_attach_P_ORD_C_10156_124658 : docscan_doc {
 	meta:
 		description = "Phishing Wave - file P-ORD-C-10156-124658.xls"
 		author = "Florian Roth"

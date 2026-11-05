@@ -183,6 +183,11 @@ static bool fail_on_warnings = false;
 static bool rules_are_compiled = false;
 static bool disable_console_logs = false;
 static bool docscan_json = false;
+// --file-vars (implied by --docscan-json): THOR/LOKI-style external variables
+// filename, filepath, extension, filetype, owner — declared empty at compile
+// time and set per scanned file. signature-base rules that use them compile
+// and evaluate as in THOR.
+static bool file_vars = false;
 static char* docscan_extract = NULL;
 static bool docscan_disarm_flag = false;
 // --docscan-backup-dir. The arg parser hands string options over as ANSI on
@@ -222,6 +227,12 @@ args_option_t options[] = {
         _T("docscan-json"),
         &docscan_json,
         _T("print docscan module findings as JSON")),
+
+    OPT_BOOLEAN(
+        0,
+        _T("file-vars"),
+        &file_vars,
+        _T("set filename/filepath/extension/filetype/owner externals per file")),
 
     OPT_STRING(
         0,
@@ -531,6 +542,91 @@ static char_t* file_queue_get(time_t deadline)
   return result;
 }
 
+// ---- --file-vars: THOR/LOKI external variables ----
+
+static const char* file_vars_names[] = {
+    "filename", "filepath", "extension", "filetype", "owner", NULL};
+
+// THOR-style type name from the first bytes; text types by extension.
+static const char* file_vars_type(const uint8_t* h, size_t n, const char* ext)
+{
+  if (n >= 2 && h[0] == 'M' && h[1] == 'Z') return "EXE";
+  if (n >= 4 && memcmp(h, "\x7f" "ELF", 4) == 0) return "ELF";
+  if (n >= 4 && (memcmp(h, "\xfe\xed\xfa\xce", 4) == 0 ||
+                 memcmp(h, "\xfe\xed\xfa\xcf", 4) == 0 ||
+                 memcmp(h, "\xce\xfa\xed\xfe", 4) == 0 ||
+                 memcmp(h, "\xcf\xfa\xed\xfe", 4) == 0))
+    return "MACH-O";
+  if (n >= 4 && memcmp(h, "MDMP", 4) == 0) return "MDMP";
+  if (n >= 4 && memcmp(h, "PK\x03\x04", 4) == 0) return "ZIP";
+  if (n >= 4 && memcmp(h, "Rar!", 4) == 0) return "RAR";
+  if (n >= 4 && memcmp(h, "7z\xbc\xaf", 4) == 0) return "7Z";
+  if (n >= 5 && memcmp(h, "{\\rtf", 5) == 0) return "RTF";
+  if (n >= 4 && memcmp(h, "%PDF", 4) == 0) return "PDF";
+  if (n >= 8 && memcmp(h, "\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1", 8) == 0)
+    return "OLE";
+  static const char* by_ext[][2] = {
+      {".vbs", "VBS"},     {".vbe", "VBS"},        {".bat", "BATCH"},
+      {".cmd", "BATCH"},   {".ps1", "PowerShell"}, {".psm1", "PowerShell"},
+      {".py", "Python"},   {".php", "PHP"},        {".jsp", "JSP"},
+      {".asp", "ASP"},     {".aspx", "ASP"},       {".js", "JS"},
+      {".hta", "HTA"},     {NULL, NULL}};
+  for (int i = 0; by_ext[i][0] != NULL; i++)
+    if (strcmp(ext, by_ext[i][0]) == 0) return by_ext[i][1];
+  return "";
+}
+
+static void file_vars_set(YR_SCANNER* scanner, const char_t* path)
+{
+  // absolute path, as THOR/LOKI see it
+  char p[4096];
+#if defined(_WIN32) && defined(_UNICODE)
+  wchar_t full[4096];
+  const wchar_t* src = path;
+  DWORD fl = GetFullPathNameW(path, 4096, full, NULL);
+  if (fl > 0 && fl < 4096) src = full;
+  if (WideCharToMultiByte(CP_UTF8, 0, src, -1, p, sizeof(p), NULL, NULL) == 0)
+    p[0] = '\0';
+#elif defined(_WIN32) || defined(__CYGWIN__)
+  if (GetFullPathNameA(path, sizeof(p), p, NULL) == 0)
+    snprintf(p, sizeof(p), "%s", path);
+#else
+  if (realpath(path, p) == NULL)
+    snprintf(p, sizeof(p), "%s", path);
+#endif
+  char* slash = NULL;
+  for (char* c = p; *c; c++)
+    if (*c == '/' || *c == '\\') slash = c;
+  const char* name = slash ? slash + 1 : p;
+  char dir[4096] = "";
+  if (slash)
+  {
+    size_t dl = (size_t) (slash - p);
+    memcpy(dir, p, dl);
+    dir[dl] = '\0';
+  }
+  char ext[64] = "";
+  const char* dot = strrchr(name, '.');
+  if (dot && dot != name && strlen(dot) < sizeof(ext))
+    for (size_t i = 0; (ext[i] = (char) tolower((unsigned char) dot[i])); i++)
+      ;
+  uint8_t h[16];
+  size_t n = 0;
+  FILE* fh = _tfopen(path, _T("rb"));
+  if (fh != NULL)
+  {
+    n = fread(h, 1, sizeof(h), fh);
+    fclose(fh);
+  }
+  // errors ignored: a rule set that does not use a variable does not know it
+  yr_scanner_define_string_variable(scanner, "filename", name);
+  yr_scanner_define_string_variable(scanner, "filepath", dir);
+  yr_scanner_define_string_variable(scanner, "extension", ext);
+  yr_scanner_define_string_variable(
+      scanner, "filetype", file_vars_type(h, n, ext));
+  yr_scanner_define_string_variable(scanner, "owner", "");
+}
+
 #if defined(_WIN32) || defined(__CYGWIN__)
 
 static bool is_directory(const char_t* path)
@@ -620,6 +716,9 @@ static int scan_file(YR_SCANNER* scanner, const char_t* filename)
 
   if (fd == INVALID_HANDLE_VALUE)
     return ERROR_COULD_NOT_OPEN_FILE;
+
+  if (file_vars)
+    file_vars_set(scanner, filename);
 
   int result = yr_scanner_scan_fd(scanner, fd);
 
@@ -814,6 +913,9 @@ static int scan_file(YR_SCANNER* scanner, const char_t* filename)
 
   if (fd == -1)
     return ERROR_COULD_NOT_OPEN_FILE;
+
+  if (file_vars)
+    file_vars_set(scanner, filename);
 
   int result = yr_scanner_scan_fd(scanner, fd);
 
@@ -1392,15 +1494,20 @@ static const char* docscan_meta(YR_RULE* rule, const char* name)
 
 // Vendor rules tagged "docscan_info" are indicators, not detections: they are
 // reported in "yara_info_matches" and never counted as a vendor detection.
-static int docscan_is_info(YR_RULE* rule)
+static int docscan_has_tag(YR_RULE* rule, const char* want)
 {
   const char* tag;
   yr_rule_tags_foreach(rule, tag)
   {
-    if (strcmp(tag, "docscan_info") == 0)
+    if (strcmp(tag, want) == 0)
       return 1;
   }
   return 0;
+}
+
+static int docscan_is_info(YR_RULE* rule)
+{
+  return docscan_has_tag(rule, "docscan_info");
 }
 
 // CALLBACK_MSG_RULE_MATCHING: a rule with meta.severity is a policy rule
@@ -1411,7 +1518,10 @@ static void docscan_on_match(YR_RULE* rule, DOCSCAN_STATE* st)
 
   if (sev == NULL)
   {
-    if (docscan_is_info(rule))
+    // docscan_doc: a document rule (shellcode patterns, PDF/Office keywords) — on a
+    // file the module did not recognise as a document it is only an indicator
+    int not_doc = st->ftype == NULL || strcmp(st->ftype, "unknown") == 0;
+    if (docscan_is_info(rule) || (not_doc && docscan_has_tag(rule, "docscan_doc")))
       docscan_list_add(st->info_matches, sizeof(st->info_matches), rule->identifier);
     else
       docscan_list_add(st->file_matches, sizeof(st->file_matches), rule->identifier);
@@ -1889,6 +1999,9 @@ int _tmain(int argc, const char_t** argv)
 
   argc = args_parse(options, argc, argv);
 
+  if (docscan_json)
+    file_vars = true;
+
 #if !(defined(_WIN32) && defined(_UNICODE))
   if (docscan_backup_dir != NULL)
     snprintf(docscan_backup_dir_utf8, sizeof(docscan_backup_dir_utf8), "%s",
@@ -2036,6 +2149,11 @@ int _tmain(int argc, const char_t** argv)
       print_error(result);
       exit_with_code(EXIT_FAILURE);
     }
+
+    // --file-vars: declare the THOR/LOKI externals (empty) unless -d did
+    if (file_vars)
+      for (int i = 0; file_vars_names[i] != NULL; i++)
+        yr_compiler_define_string_variable(compiler, file_vars_names[i], "");
 
     if (atom_quality_table != NULL)
     {

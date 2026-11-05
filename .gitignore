@@ -107,3 +107,7 @@ tests/mapper
 /docscan-project/test-range/samples/
 /docscan-project/fuzz/external/
 /docscan-project/dist/
+
+# Python bytecode
+__pycache__/
+*.pyc

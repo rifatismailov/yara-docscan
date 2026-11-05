@@ -3,8 +3,7 @@
 /*
     This Yara ruleset is under the GNU-GPLv2 license (http://www.gnu.org/licenses/gpl-2.0.html) and open to any user or organization, as long as you use it under this license.
 */
-rule hancitor_dropper : vb_win32api
-{
+rule hancitor_dropper : vb_win32api docscan_doc {
   meta:
     author = "Jeff White - jwhite@paloaltonetworks @noottrak"
     date   = "18AUG2016"

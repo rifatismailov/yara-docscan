@@ -4,8 +4,7 @@
     This Yara ruleset is under the GNU-GPLv2 license (http://www.gnu.org/licenses/gpl-2.0.html) and open to any user or organization, as long as you use it under this license.
 */
 
-rule Contains_DDE_Protocol
-{
+rule Contains_DDE_Protocol : docscan_doc {
         meta:
                 author = "Nick Beede"
                 description = "Detect Dynamic Data Exchange protocol in doc/docx"

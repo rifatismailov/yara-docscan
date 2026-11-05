@@ -5,8 +5,7 @@
 
 */
 
-rule malicious_author : PDF raw
-{
+rule malicious_author : PDF raw docscan_doc {
 	meta:
 		author = "Glenn Edwards (@hiddenillusion)"
 		version = "0.1"
@@ -134,8 +133,7 @@ rule suspicious_creator : PDF raw docscan_info {
 		$magic in (0..1024) and $header and 1 of ($creator*)
 }
 
-rule possible_exploit : PDF raw
-{
+rule possible_exploit : PDF raw docscan_doc {
 	meta:
 		author = "Glenn Edwards (@hiddenillusion)"
 		version = "0.1"
@@ -159,8 +157,7 @@ rule possible_exploit : PDF raw
 		$magic in (0..1024) and (2 of ($attrib*)) or ($action0 and #shell > 10 and 1 of ($cond*)) or ($action1 and $cond0 and $nop)
 }
 
-rule shellcode_blob_metadata : PDF raw
-{
+rule shellcode_blob_metadata : PDF raw docscan_doc {
         meta:
                 author = "Glenn Edwards (@hiddenillusion)"
                 version = "0.1"
@@ -253,8 +250,7 @@ rule suspicious_obfuscation : PDF raw docscan_info {
 		$magic in (0..1024) and #reg > 5
 }
 
-rule invalid_XObject_js : PDF raw
-{
+rule invalid_XObject_js : PDF raw docscan_doc {
 	meta:
 		author = "Glenn Edwards (@hiddenillusion)"
 		description = "XObject's require v1.4+"
@@ -389,8 +385,7 @@ rule invalid_xref_numbers : PDF raw docscan_info {
                 $magic in (0..1024) and not $reg0 and not $reg1
 }
 
-rule js_splitting : PDF raw
-{
+rule js_splitting : PDF raw docscan_doc {
         meta:
                 author = "Glenn Edwards (@hiddenillusion)"
                 version = "0.1"
@@ -423,8 +418,7 @@ rule header_evasion : PDF raw docscan_info {
                 $magic in (5..1024) and #magic == 1
 }
 
-rule BlackHole_v2 : PDF raw
-{
+rule BlackHole_v2 : PDF raw docscan_doc {
 	meta:
 		author = "Glenn Edwards (@hiddenillusion)"
 		version = "0.1"
@@ -440,8 +434,7 @@ rule BlackHole_v2 : PDF raw
 }
 
 
-rule XDP_embedded_PDF : PDF raw
-{
+rule XDP_embedded_PDF : PDF raw docscan_doc {
 	meta:
 		author = "Glenn Edwards (@hiddenillusion)"
 		version = "0.1"
@@ -459,8 +452,7 @@ rule XDP_embedded_PDF : PDF raw
 		all of ($s*) and 1 of ($header*)
 }
 
-rule PDF_Embedded_Exe : PDF
-{
+rule PDF_Embedded_Exe : PDF docscan_doc {
 	meta:
 		ref = "https://github.com/jacobsoo/Yara-Rules/blob/master/PDF_Embedded_Exe.yar"
 	strings:

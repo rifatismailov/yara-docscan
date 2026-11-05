@@ -96,7 +96,7 @@ flowchart TD
 ### Те саме текстом
 
 ```
- новий файл ──► watcher ──► yara64 -w --docscan-json [--docscan-disarm] docscan-index.yar <файл>
+ новий файл ──► watcher ──► yara64 -w --docscan-json [--docscan-disarm] -C rules.yarc <файл>
                                │
      ┌─────────────────────────▼───────────────────────────────┐
      │ МОДУЛЬ docscan — тільки ФАКТИ (read-only)                │
@@ -393,6 +393,7 @@ MS-OVBA. Ланцюжок: **CFB → потоки → пошук контейн�
 | `--docscan-extract=FILE` | `docscan_extract` | пише `vba_code` у FILE (ручний Шар 2) |
 | `--docscan-disarm` | `docscan_disarm_flag` | після скану лікує файл за `meta.disarm` правил, що спрацювали; HIGH без дій → `detect-only` |
 | `--docscan-backup-dir=DIR` | `docscan_backup_dir_utf8` | бекапи й карантин у DIR (має існувати). На Windows значення береться з оригінальних Unicode-аргументів (парсер YARA віддає рядкові опції в ANSI — кирилиця б загубилась) |
+| `--file-vars` (вмикається й `--docscan-json`) | `file_vars` | зовнішні змінні THOR/LOKI: `filename` (ім'я), `filepath` (абсолютна тека), `extension` (`.exe`, малими), `filetype` (`EXE`/`ELF`/`MACH-O`/`MDMP`/`ZIP`/`RAR`/`7Z`/`RTF`/`PDF`/`OLE` за сигнатурою; `VBS`/`BATCH`/`PowerShell`/`Python`/`PHP`/`JSP`/`ASP`/`JS`/`HTA` за розширенням), `owner` (порожній). Оголошуються порожніми при компіляції й ставляться на кожен файл (`file_vars_set` у `scan_file`) — правила signature-base на кшталт `EXE_cloaked_as_TXT` працюють як у THOR. Для `-C`: компілювати з `-d filename= -d filepath= -d extension= -d filetype= -d owner=` |
 
 **Стан на файл** — `DOCSCAN_STATE` у `CALLBACK_ARGS` (`dsc`): `ftype`, копії доказів, копія `vba_code`,
 `max_severity`, `findings`, `details`, `file_matches`, `docscan_disarm_info ds`. Глобально: `g_rules` —
@@ -535,12 +536,14 @@ rule ORG_HUGE_PART { meta: severity = "MEDIUM" finding = "HUGE_PART"
 | `rules/docscan-policy.yar` | політика | `import "docscan"` + правила `DS_*` |
 | `rules/docscan.yar` | тільки наш детект | `include "docscan-policy.yar"` |
 | `rules/docscan-index.yar` | **повний скан** (watcher, run_tests) | `include "docscan-policy.yar"` + `include "file-index.yar"` |
-| `rules/file-index.yar` | vendor-правила (**генерується**) | 147 × `general/` + 14 × `maldoc/signature-base/` + 20 × `maldoc/community/` + `maldoc/vba_plaintext.yar` |
-| `rules/general/`, `rules/maldoc/signature-base/`, `rules/maldoc/community/` | vendor-правила (**генеруються**, не правити руками) | signature-base + Yara-Rules, відфільтровано по кожному правилу |
+| `rules/file-index.yar` | vendor-правила (**генерується**) | 1460 файлів, 7176 правил: `general/` (signature-base), `general/elastic/` (Elastic protections-artifacts, Windows/Multi), `maldoc/signature-base/`, `maldoc/community/` + `maldoc/vba_plaintext.yar` |
+| `rules/general/`, `rules/general/elastic/`, `rules/maldoc/signature-base/`, `rules/maldoc/community/` | vendor-правила (**генеруються**, не правити руками) | signature-base + Elastic + Yara-Rules, відфільтровано по кожному правилу |
 | `rules/maldoc/vba_plaintext.yar` | наші правила на розпакований VBA | правиться руками |
 | `rules/tools/build_vendor_rules.py` | генератор | джерела на зафіксованих комітах, фільтр, перейменування, теги, перевірка компіляції |
 | `rules/tools/vendor-selection.txt` | які файли джерел беремо | `<тека> <джерело> <шлях>` |
-| `rules/tools/vendor-report.md` | звіт збірки | що відкинуто й чому, що перейменовано, що позначено `docscan_info` |
+| `rules/tools/vendor-report.md` | звіт збірки | що відкинуто й чому, які дублі пропущено, що перейменовано, що позначено `docscan_info` |
+| `rules/tools/make_candidates.py` | кандидати на додавання | усі ще не вибрані файли signature-base і Elastic Windows/Multi, з тим самим фільтром; кожен файл компілюється окремо; усе разом → `cand.yarc` (namespace = файл) |
+| `rules/tools/fp_scan.ps1` | перевірка на хибні спрацювання | `cand.yarc` по чистій Windows (`C:\Windows`, `Program Files`, `ProgramData`) з `--file-vars` → `hits.txt`, `summary.txt` |
 
 **Як збирається vendor-набір** (`python3 rules/tools/build_vendor_rules.py [--fetch]`):
 1. Джерела — `reference/vendor-rules-full-later/vendor/` (не в git), коміти зафіксовані в `SOURCES`;
@@ -550,14 +553,39 @@ rule ORG_HUGE_PART { meta: severity = "MEDIUM" finding = "HUGE_PART"
      Java `.class`, Android, назва правила `LNX_`/`ESXi`/`_SH_`/`_PY_` без перевірки типу, вихідний код
      вебшела PHP/JSP/ASPX (такі файли не скануються). Якщо умова допускає PE або ZIP/JAR — правило
      лишається (наприклад, «PE або ELF», скомпільовані вебшели-DLL). Назва файлу сама нічого не вирішує;
-   - **перейменовується** при збігу ідентифікаторів (`RENAME`) — замість виключення цілого файлу;
+   - **відкидається вручну** (`DROP`: ім'я або `(файл, ім'я)` + причина) — хибні спрацювання, застарілі копії;
+   - **пропускається як дубль**, якщо правило з тим самим ім'ям і тими самими рядками/умовою вже взяте з
+     іншого файлу (у звіті — «Duplicates skipped»);
+   - **перейменовується** при збігу ідентифікаторів різних правил (`RENAME`) — замість виключення цілого файлу;
    - **позначається тегом `docscan_info`** (`INFO`), якщо це індикатор, а не детект: «є макрос»,
      слово `powershell`, аномалії структури/метаданих PDF, функції PDF, які політика оцінює сама.
-3. Генерується `file-index.yar`, усе компілюється `yarac`; будь-яка помилка або дубль імені — збірка падає.
+3. Генерується `file-index.yar`, усе компілюється `yarac` (зі змінними THOR); будь-яка помилка або
+   збіг імен різних правил — збірка падає. `--check` — чи `rules/` збігається з тим, що збирає генератор.
+
+**Як додаються нові правила** (так зібрано набір 2026-11-04):
+1. `python3 rules/tools/make_candidates.py DIR` → кандидати й `DIR/cand.yarc`. На Windows компілювати
+   там же її `yarac` (`.yarc` з іншої збірки може не завантажитись: інший набір полів модуля `pe`).
+2. `fp_scan.ps1 -Rules cand.yarc` на **чистій** Windows; додатково — скан легітимних документів.
+3. Кожне правило зі збігом розібрати вручну: хибне → `DROP` з причиною; файли, яких вотчер не сканує
+   (журнали `.evtx`, кеш Defender), — не привід викидати.
+4. Файли без хибних — у `vendor-selection.txt`, перезібрати генератором, `run_tests.ps1`.
+
+Перевірка 2026-11-04: Windows Server 2022, 129 564 файли, 4 правила зі збігами — 2 викинуто
+(`Windows_VulnDriver_Csc`, `Windows_VulnDriver_SmSerl64`: штатні драйвери Microsoft), 2 лишено
+(`SUSP_PS1_JAB_Pattern_Jun22_1` — журнали PowerShell, `SUSP_XORed_MSDOS_Stub_Message` — кеш Defender);
+476 легітимних документів — 0. Далі робоча станція Windows 10 з Office/Adobe/Acronis (`yara64`
+з OpenSSL): 14 файлів із `pe.number_of_signatures` — 0 збігів; повний набір — нові правила чисті
+(`Windows_VulnDriver_Ksld` викинуто: драйвер Defender), хибні HIGH давали лише старі `maldoc_*`/`ppaction`/
+`possible_exploit`/`Contains_VBE_File` на бінарниках → тег `docscan_doc`. Збіги в журналах/транскриптах
+PowerShell, `.xml`, `.lua`, файлах самих правил — не враховано (вотчер такі файли не сканує).
 
 **Теги в JSON:** збіг vendor-правила → `yara_file_matches` (детект: document → щонайменше MEDIUM,
 general → HIGH); збіг правила з тегом `docscan_info` → `yara_info_matches` (лише для аналітика,
-вердикт **не** підвищує, у Шарі 2 не враховується).
+вердикт **не** підвищує, у Шарі 2 не враховується). Тег `docscan_doc` (генератор ставить його всім
+правилам `maldoc/`) — правило для документів: на файлі, який модуль не визнав документом
+(`ftype=unknown`: exe, dll, скрипти), його збіг іде в `yara_info_matches`. Шаблони шелкоду (`getEIP`,
+доступ до PEB) і слова на кшталт `ppaction` — сильна ознака в документі, але звичайний код у будь-якому
+бінарнику: без цього тегу на чистій Windows 10 вони дали ~2900 хибних HIGH на .NET/Adobe/Acronis.
 
 Правила для index-файлів:
 - Шляхи в `include` — **через `/`**, відносні до index-файлу або абсолютні (`\` YARA сприймає як escape).
@@ -567,12 +595,15 @@ general → HIGH); збіг правила з тегом `docscan_info` → `yar
 ## 7. Watcher — авто-скан нових файлів
 
 `docscan-project/watcher/docscan-watcher.ps1` (PowerShell 5.1, UTF-8 з BOM). **Один запуск `yara64` на файл.**
+Правила компілюються **один раз на старті** (`yarac64.exe` поруч із `yara64.exe` → `<OutDir>\rules.yarc`), далі
+кожен скан — `yara64 -C rules.yarc`: 7000+ правил компілюються ~0.5 с і більше, скан готової бази — ~0.06 с.
+Немає `yarac64.exe` або компіляція не вдалась — WARN у лог і скан з вихідних `.yar` (повільно).
 
 ### Що сканується
 
 | Категорія | Розширення | Скан |
 |---|---|---|
-| `document` | doc dot docx docm dotx dotm, xls xlt xlsx xlsm xltx xltm xlsb, ppt pps pot pptx pptm potx potm ppsx ppsm, rtf, pdf, lnk | `yara64 -w --docscan-json [--docscan-disarm] docscan-index.yar` |
+| `document` | doc dot docx docm dotx dotm, xls xlt xlsx xlsm xltx xltm xlsb, ppt pps pot pptx pptm potx potm ppsx ppsm, rtf, pdf, lnk | `yara64 -w --docscan-json [--docscan-disarm] -C rules.yarc` |
 | `general` | exe dll sys scr cpl ocx com msi, ps1 psm1 vbs vbe js jse wsf wsh hta bat cmd jar, zip rar 7z iso img vhd vhdx | те саме без `--docscan-disarm` (працюють тільки vendor-правила) |
 | інше | — | ігнорується |
 
@@ -604,7 +635,7 @@ general → HIGH); збіг правила з тегом `docscan_info` → `yar
 
 ### Параметри
 
-`-WatchPath` (`C:\Users`), `-Base` (`C:\docscan-build`), `-Yara`, `-Rules` (`<Base>\yara\docscan-project\rules\docscan-index.yar`),
+`-WatchPath` (`C:\Users`), `-Base` (`C:\docscan-build`), `-Yara`, `-Yarac` (`yarac64.exe` поруч із `-Yara`), `-Rules` (`<Base>\yara\docscan-project\rules\docscan-index.yar`),
 `-OutDir` (`<Base>\results`), `-BackupDir` (`<Base>\quarantine`; watcher її не сканує),
 **лікування увімкнене завжди** (`-NoDisarm` — тільки для діагностики), `-QuarantineGeneral` (вимкнено:
 exe/скрипти/архіви зі збігом vendor-правил → у карантин), `-MaxSizeMB` (100), `-SettleSeconds` (2),
@@ -722,7 +753,8 @@ nuget restore $sln                                   # OpenSSL + Jansson з appv
    /p:PlatformToolset=v143 /p:WindowsTargetPlatformVersion=10.0.26100.0 /m /v:minimal
 # → C:\docscan-build\yara\windows\vs2019\Release\yara64.exe  (2 501 632 байти, 4.6.0)
 ```
-`LNK4006 __NULL_IMPORT_DESCRIPTOR` — нешкідливі. `yarac64.exe` — `/t:yarac`.
+`LNK4006 __NULL_IMPORT_DESCRIPTOR` — нешкідливі. `yarac64.exe` — `/t:yarac`; для пакета потрібні обидва
+(`/t:yara;yarac`), `build_package.ps1` без `yarac64.exe` зупиняється.
 
 ### Windows / MinGW крос-збірка на macOS (запасний варіант для тестів)
 ```sh
@@ -731,7 +763,8 @@ brew install mingw-w64
 ./configure --host=x86_64-w64-mingw32 --without-crypto --disable-shared --enable-static LDFLAGS=-static
 make -j8 yara.exe      # PE32+ x64, залежить лише від UCRT (є у Win10+/Server 2022)
 ```
-Обмеження: без OpenSSL (модуль `hash`, перевірка підписів PE недоступні), не-Unicode (кириличні
+Обмеження: без OpenSSL (перевірка підписів PE недоступна — правила з `pe.number_of_signatures`
+не компілюються; модуль `hash` працює через wincrypt), не-Unicode (кириличні
 шляхи можуть не відкритись). Прод — тільки MSVC.
 
 ### Додати новий `.c` у модуль

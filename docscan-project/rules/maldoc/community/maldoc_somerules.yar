@@ -5,8 +5,7 @@
 
 */
 
-rule maldoc_API_hashing : maldoc
-{
+rule maldoc_API_hashing : maldoc docscan_doc {
     meta:
         author = "Didier Stevens (https://DidierStevens.com)"
     strings:
@@ -47,8 +46,7 @@ rule maldoc_structured_exception_handling : maldoc
 }
 */
 
-rule maldoc_indirect_function_call_1 : maldoc
-{
+rule maldoc_indirect_function_call_1 : maldoc docscan_doc {
     meta:
         author = "Didier Stevens (https://DidierStevens.com)"
     strings:
@@ -57,8 +55,7 @@ rule maldoc_indirect_function_call_1 : maldoc
         for any i in (1..#a): (uint8(@a[i] + 2) == uint8(@a[i] + 5))
 }
 
-rule maldoc_indirect_function_call_2 : maldoc
-{
+rule maldoc_indirect_function_call_2 : maldoc docscan_doc {
     meta:
         author = "Didier Stevens (https://DidierStevens.com)"
     strings:
@@ -67,8 +64,7 @@ rule maldoc_indirect_function_call_2 : maldoc
         for any i in (1..#a): ((uint8(@a[i] + 2) == uint8(@a[i] + 8)) and (uint8(@a[i] + 3) == uint8(@a[i] + 9)) and (uint8(@a[i] + 4) == uint8(@a[i] + 10)) and (uint8(@a[i] + 5) == uint8(@a[i] + 11)))
 }
 
-rule maldoc_indirect_function_call_3 : maldoc
-{
+rule maldoc_indirect_function_call_3 : maldoc docscan_doc {
     meta:
         author = "Didier Stevens (https://DidierStevens.com)"
     strings:
@@ -77,8 +73,7 @@ rule maldoc_indirect_function_call_3 : maldoc
         $a
 }
 
-rule maldoc_find_kernel32_base_method_1 : maldoc
-{
+rule maldoc_find_kernel32_base_method_1 : maldoc docscan_doc {
     meta:
         author = "Didier Stevens (https://DidierStevens.com)"
     strings:
@@ -88,8 +83,7 @@ rule maldoc_find_kernel32_base_method_1 : maldoc
         any of them
 }
 
-rule maldoc_find_kernel32_base_method_2 : maldoc
-{
+rule maldoc_find_kernel32_base_method_2 : maldoc docscan_doc {
     meta:
         author = "Didier Stevens (https://DidierStevens.com)"
     strings:
@@ -98,8 +92,7 @@ rule maldoc_find_kernel32_base_method_2 : maldoc
         for any i in (1..#a): ((uint8(@a[i] + 1) >= 0xC0) and (((uint8(@a[i] + 1) & 0x38) >> 3) == (uint8(@a[i] + 1) & 0x07)) and ((uint8(@a[i] + 2) & 0xF8) == 0xA0) and (uint8(@a[i] + 6) <= 0x3F) and (((uint8(@a[i] + 6) & 0x38) >> 3) != (uint8(@a[i] + 6) & 0x07)))
 }
 
-rule maldoc_find_kernel32_base_method_3 : maldoc
-{
+rule maldoc_find_kernel32_base_method_3 : maldoc docscan_doc {
     meta:
         author = "Didier Stevens (https://DidierStevens.com)"
     strings:
@@ -108,8 +101,7 @@ rule maldoc_find_kernel32_base_method_3 : maldoc
         for any i in (1..#a): (((uint8(@a[i] + 5) & 0x07) == (uint8(@a[i] + 8) & 0x07)) and (uint8(@a[i] + 8) <= 0x3F) and (((uint8(@a[i] + 8) & 0x38) >> 3) != (uint8(@a[i] + 8) & 0x07)))
 }
 
-rule maldoc_getEIP_method_1 : maldoc
-{
+rule maldoc_getEIP_method_1 : maldoc docscan_doc {
     meta:
         author = "Didier Stevens (https://DidierStevens.com)"
     strings:
@@ -118,8 +110,7 @@ rule maldoc_getEIP_method_1 : maldoc
         $a
 }
 
-rule maldoc_getEIP_method_4 : maldoc
-{
+rule maldoc_getEIP_method_4 : maldoc docscan_doc {
     meta:
         author = "Didier Stevens (https://DidierStevens.com)"
     strings:
@@ -157,8 +148,7 @@ rule maldoc_suspicious_strings : maldoc
 }
 */
 
-rule mwi_document: exploitdoc maldoc
-{
+rule mwi_document: exploitdoc maldoc docscan_doc {
     meta:
         description = "MWI generated document"
         author = "@Ydklijnsma"
@@ -235,7 +225,7 @@ rule Office_AutoOpen_Macro : maldoc docscan_info {
 		uint32be(0) == 0xd0cf11e0 and all of ($s*) and filesize < 300000
 }
 
-rule Embedded_EXE_Cloaking : maldoc {
+rule Embedded_EXE_Cloaking : maldoc docscan_doc {
     meta:
         description = "Detects an embedded executable in a non-executable file"
         author = "Florian Roth"
@@ -263,8 +253,7 @@ rule Embedded_EXE_Cloaking : maldoc {
 }
 
 // This rule have beed improved by Javier Rascon
-rule RTF_Shellcode : maldoc
-{
+rule RTF_Shellcode : maldoc docscan_doc {
     meta:
 
         author = "RSA-IR – Jared Greenhill"

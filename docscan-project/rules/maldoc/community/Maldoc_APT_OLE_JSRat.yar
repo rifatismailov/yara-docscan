@@ -5,8 +5,7 @@
 
 */
 
-rule APT_OLE_JSRat : maldoc APT
-{
+rule APT_OLE_JSRat : maldoc APT docscan_doc {
 meta:
 	author = "Rahul Mohandas"
 	Date = "2015-06-16"

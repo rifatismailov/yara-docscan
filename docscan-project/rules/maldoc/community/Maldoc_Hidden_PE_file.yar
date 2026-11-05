@@ -5,8 +5,7 @@
 
 */
 
-rule Contains_hidden_PE_File_inside_a_sequence_of_numbers : maldoc
-{
+rule Contains_hidden_PE_File_inside_a_sequence_of_numbers : maldoc docscan_doc {
 	meta:
 		author = "Martin Willing (https://evild3ad.com)"
 		description = "Detect a hidden PE file inside a sequence of numbers (comma separated)"

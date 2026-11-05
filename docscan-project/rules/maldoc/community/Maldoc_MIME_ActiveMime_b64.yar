@@ -5,8 +5,7 @@
 
 */
 
-rule MIME_MSO_ActiveMime_base64 : maldoc
-{
+rule MIME_MSO_ActiveMime_base64 : maldoc docscan_doc {
 	meta:
 		author = "Martin Willing (https://evild3ad.com)"
 		description = "Detect MIME MSO Base64 encoded ActiveMime file"

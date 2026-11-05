@@ -20,6 +20,7 @@ param(
   [string[]]$WatchPath = @("C:\Users"),
   [string]$Base        = "C:\docscan-build",
   [string]$Yara        = "",
+  [string]$Yarac       = "",       # за замовч. yarac64.exe поруч із yara64.exe; ним правила компілюються раз на старті
   [string]$Rules       = "",       # за замовчуванням <Base>\yara\docscan-project\rules\docscan-index.yar
   [string]$OutDir      = "",
   [switch]$NoDisarm,               # НЕ лікувати (діагностика). За замовчуванням документи лікуються за meta.disarm
@@ -49,6 +50,7 @@ param(
 )
 
 if (-not $Yara)      { $Yara      = "$Base\yara\windows\vs2019\Release\yara64.exe" }
+if (-not $Yarac)     { $Yarac     = Join-Path (Split-Path $Yara) "yarac64.exe" }
 if (-not $Rules)     { $Rules     = "$Base\yara\docscan-project\rules\docscan-index.yar" }
 if (-not $OutDir)    { $OutDir    = "$Base\results" }
 if (-not $BackupDir) { $BackupDir = "$Base\quarantine" }
@@ -112,7 +114,7 @@ function Wait-FileReady([string]$path) {
 function Invoke-Scan([string]$path, [bool]$cure) {
   $yargs = @("-w", "--docscan-json")
   if ($cure) { $yargs += @("--docscan-disarm", "--docscan-backup-dir=$BackupDir") }
-  $out = & $Yara @yargs $Rules $path 2>&1 | ForEach-Object { "$_" }
+  $out = & $Yara @yargs @RuleArgs $path 2>&1 | ForEach-Object { "$_" }
   $json = $out | Where-Object { $_ -like '{*' } | Select-Object -First 1
   $act  = $out | Where-Object { $_ -like 'docscan-disarm:*' } | Select-Object -First 1
   $errs = @($out | Where-Object { $_ -match '^error' })
@@ -204,9 +206,23 @@ foreach ($p in $Yara, $Rules) {
 }
 # перевірка, що правила компілюються (інакше кожен скан мовчки падатиме)
 $probe = Join-Path $OutDir "probe.txt"; "probe" | Set-Content $probe
-$e = & $Yara -w $Rules $probe 2>&1 | Where-Object { "$_" -match 'error' }
+$e = & $Yara -w --file-vars $Rules $probe 2>&1 | Where-Object { "$_" -match 'error' }
 Remove-Item $probe
 if ($e) { Write-Host "Правила не компілюються: $Rules`n$e" -ForegroundColor Red; exit 1 }
+
+# Правила компілюються ОДИН раз (yarac64 -> rules.yarc), далі кожен скан іде з -C. Тисячі вендорних
+# правил компілюються ~0.5 с і довше — робити це на кожен файл означало б секунди на скан.
+# Змінні filename/filepath/extension/filetype/owner оголошуються тут, значення yara64 ставить на кожен файл.
+$RuleArgs = @($Rules)
+$Compiled = Join-Path $OutDir "rules.yarc"
+if (Test-Path $Yarac) {
+  Remove-Item $Compiled -ErrorAction SilentlyContinue
+  $ce = & $Yarac -w -d filename= -d filepath= -d extension= -d filetype= -d owner= $Rules $Compiled 2>&1 | ForEach-Object { "$_" }
+  if ($LASTEXITCODE -eq 0 -and (Test-Path $Compiled)) { $RuleArgs = @("-C", $Compiled) }
+  else { Log ("yarac64 не скомпілював правила, скануємо з вихідних .yar (повільніше): " + ($ce -join " ")) "WARN" }
+} else {
+  Log "немає $Yarac — скануємо з вихідних .yar (кожен скан компілює правила заново)" "WARN"
+}
 
 $watchers = @()
 foreach ($wp in $WatchPath) {
