@@ -485,6 +485,7 @@ The main file an engineer tunes. Every rule with `meta.severity` is a policy rul
 |---|---|---|
 | `severity` | yes | `HIGH` / `MEDIUM` / `INFO` — marks the rule as policy |
 | `finding` | no | name in `findings` (default: the rule name) |
+| `text` | no | human-readable explanation → `findings_text` → the watcher's `summary` field → the Wazuh alert description |
 | `disarm` | no | what to disarm: `macro`, `remote_template`, `protocol_handler`, `dde`, `embedded`, `rtf_objupdate`, `lnk_delete`, `quarantine` |
 | `mitre` | no | technique ID, copied into `details` |
 
@@ -1051,9 +1052,13 @@ event to `archives.*` (debugging only; fills the disk quickly).
 
 Top level: `timestamp`, `source` (= `docscan`), `host`, `event`, `category` (`document`/`general`),
 `docfile.{path,name,ext,size,sha256}`, `verdict` (`HIGH`/`MEDIUM`/`INFO`/`ERROR`/`SKIPPED`),
-`yara_file_matches[]`, `disarm` (`removed:…`, `stripped:…`, `deleted:lnk`, `quarantined`, `failed:…`), `errors[]`.
-Document analysis: `docscan.{ftype, findings[], verdict, evidence.{template_url, dde_command, vba_evidence,
-lnk_target, lnk_args}, yara_matches[], details[]}`. In the index all of it sits under `data.`.
+`yara_file_matches[]`, `disarm` (`removed:…`, `stripped:…`, `deleted:lnk`, `quarantined`, `failed:…`), `errors[]`,
+`summary` — **a human-readable description**: the policy rules' `findings_text` + "YARA <rule> — <meta.description>"
+for every counted vendor match + rules on the macro code + "дія: <disarm>" (≤ 600 chars); the manager rules
+101091/101092 show it in their description (`$(summary)`).
+Document analysis: `docscan.{ftype, findings[], findings_text[], verdict, evidence.{template_url, dde_command,
+vba_evidence, lnk_target, lnk_args}, yara_matches[], yara_file_matches[], yara_doc_matches[], yara_info_matches[],
+yara_descriptions{rule: description}, details[]}`. In the index all of it sits under `data.`.
 
 > **Do not rename `docfile` to `file`.** In `wazuh-alerts-*` indices `data.file` is already a `keyword`
 > (other sources write it); an object there makes the indexer drop the whole event

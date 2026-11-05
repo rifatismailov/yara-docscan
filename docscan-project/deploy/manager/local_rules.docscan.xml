@@ -17,7 +17,7 @@
   <rule id="101091" level="12">
     <if_sid>101090</if_sid>
     <field name="verdict">^HIGH$</field>
-    <description>DocScan HIGH — $(docscan.findings) $(yara_file_matches) | $(docfile.path) | лікування: $(disarm) | SHA256 $(docfile.sha256)</description>
+    <description>DocScan HIGH — $(summary) | $(docfile.path) | SHA256 $(docfile.sha256)</description>
     <mitre><id>T1204.002</id></mitre>
     <group>docscan_high,</group>
   </rule>
@@ -26,7 +26,7 @@
   <rule id="101092" level="7">
     <if_sid>101090</if_sid>
     <field name="verdict">^MEDIUM$</field>
-    <description>DocScan MEDIUM — $(docscan.findings) $(yara_file_matches) | $(docfile.path) | SHA256 $(docfile.sha256)</description>
+    <description>DocScan MEDIUM — $(summary) | $(docfile.path) | SHA256 $(docfile.sha256)</description>
     <mitre><id>T1204.002</id></mitre>
     <group>docscan_medium,</group>
   </rule>

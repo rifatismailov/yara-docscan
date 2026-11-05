@@ -109,6 +109,8 @@ typedef struct _DOCSCAN_STATE
   char file_matches[4096];   // JSON tokens: vendor rules matching the raw file
   char info_matches[4096];   // JSON tokens: vendor rules tagged docscan_info (indicators)
   char doc_matches[4096];    // JSON tokens: vendor rules tagged docscan_doc (document rules)
+  char findings_text[4096];  // JSON tokens: meta.text of matching policy rules (human-readable)
+  char descriptions[8192];   // JSON members "rule":"meta.description" of matching vendor rules
   docscan_disarm_info ds;    // what --docscan-disarm should remove
 } DOCSCAN_STATE;
 
@@ -1426,6 +1428,30 @@ static void docscan_list_add(char* list, size_t sz, const char* token)
     snprintf(list + l, sz - l, "%s\"%s\"", l ? "," : "", esc);
 }
 
+// Append "key":"value" to a JSON object body (escaped, silently capped).
+static void docscan_obj_add(char* obj, size_t sz, const char* key, const char* val)
+{
+  char k[256], v[512];
+  size_t a = 0, b = 0;
+  for (const char* p = key; *p && a + 2 < sizeof(k); p++)
+  {
+    if (*p == '"' || *p == '\\') k[a++] = '\\';
+    k[a++] = *p;
+  }
+  k[a] = '\0';
+  for (const char* p = val; *p && b + 2 < sizeof(v); p++)
+  {
+    unsigned char c = (unsigned char) *p;
+    if (c < 0x20) { v[b++] = ' '; continue; }
+    if (c == '"' || c == '\\') v[b++] = '\\';
+    v[b++] = (char) c;
+  }
+  v[b] = '\0';
+  size_t l = strlen(obj);
+  if (l + a + b + 8 < sz)
+    snprintf(obj + l, sz - l, "%s\"%s\":\"%s\"", l ? "," : "", k, v);
+}
+
 static int docscan_list_has(const char* list, const char* token)
 {
   char q[512];
@@ -1523,11 +1549,20 @@ static void docscan_on_match(YR_RULE* rule, DOCSCAN_STATE* st)
     // separately; the caller decides by file category whether it is a detection
     // (watcher: only for documents — in any binary such patterns are ordinary code)
     if (docscan_is_info(rule))
+    {
       docscan_list_add(st->info_matches, sizeof(st->info_matches), rule->identifier);
-    else if (docscan_has_tag(rule, "docscan_doc"))
+      return;
+    }
+    if (docscan_has_tag(rule, "docscan_doc"))
       docscan_list_add(st->doc_matches, sizeof(st->doc_matches), rule->identifier);
     else
       docscan_list_add(st->file_matches, sizeof(st->file_matches), rule->identifier);
+    // human-readable: the vendor rule's own description
+    const char* desc = docscan_meta(rule, "description");
+    if (desc == NULL)
+      desc = docscan_meta(rule, "Description");
+    if (desc != NULL)
+      docscan_obj_add(st->descriptions, sizeof(st->descriptions), rule->identifier, desc);
     return;
   }
 
@@ -1543,7 +1578,12 @@ static void docscan_on_match(YR_RULE* rule, DOCSCAN_STATE* st)
   if (finding == NULL)
     finding = rule->identifier;
   if (!docscan_list_has(st->findings, finding))
+  {
     docscan_list_add(st->findings, sizeof(st->findings), finding);
+    const char* text = docscan_meta(rule, "text");
+    if (text != NULL)
+      docscan_list_add(st->findings_text, sizeof(st->findings_text), text);
+  }
 
   const char* disarm = docscan_meta(rule, "disarm");
   const char* mitre = docscan_meta(rule, "mitre");
@@ -1651,6 +1691,8 @@ static void print_docscan_json(DOCSCAN_STATE* st)
   printf(",\"yara_file_matches\":[%s]", st->file_matches);
   printf(",\"yara_doc_matches\":[%s]", st->doc_matches);
   printf(",\"yara_info_matches\":[%s]", st->info_matches);
+  printf(",\"findings_text\":[%s]", st->findings_text);
+  printf(",\"yara_descriptions\":{%s}", st->descriptions);
   printf(",\"details\":[%s]", st->details);
   printf("}\n");  // close root object
   fflush(stdout);

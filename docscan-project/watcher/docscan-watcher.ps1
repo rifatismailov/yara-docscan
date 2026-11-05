@@ -134,6 +134,25 @@ function Invoke-Scan([string]$path, [bool]$cure) {
   return @{ docscan = $obj; disarm = $act; errors = $errs }
 }
 
+# Опис людською мовою: тексти правил політики (meta.text), опис vendor-правил (meta.description),
+# правила по коду VBA, дія лікування. Обмежено 600 символами (опис алерту Wazuh).
+function Get-Summary($rec) {
+  $p = @()
+  $ds = $rec.docscan
+  if ($ds -and $ds.findings_text) { $p += @($ds.findings_text) }
+  foreach ($m in $rec.yara_file_matches) {
+    $d = $null
+    if ($ds -and $ds.yara_descriptions) { $d = $ds.yara_descriptions.$m }
+    $p += $(if ($d) { "YARA $m — $d" } else { "YARA $m" })
+  }
+  if ($ds -and $ds.yara_matches -and @($ds.yara_matches).Count) { $p += "YARA (код макросу): " + (@($ds.yara_matches) -join ", ") }
+  if ($rec.disarm) { $p += "дія: " + $rec.disarm }
+  if ($rec.verdict -eq "SKIPPED" -or $rec.verdict -eq "ERROR") { $p += ($rec.errors -join "; ") }
+  $t = ($p -join " | ")
+  if ($t.Length -gt 600) { $t = $t.Substring(0, 597) + "..." }
+  return $t
+}
+
 $Rank = @{ INFO = 0; MEDIUM = 1; HIGH = 2 }
 function Max-Verdict($a, $b) { if ($Rank[$b] -gt $Rank[$a]) { $b } else { $a } }
 
@@ -155,6 +174,7 @@ function Scan-File([string]$path, [string]$evt) {
     docscan   = $null
     yara_file_matches = @()
     disarm    = $null
+    summary   = ""     # людською мовою: що знайдено і що зроблено (для опису алерту Wazuh)
     errors    = @()
   }
   if ($state -eq "timeout") { $rec.errors += "file still being written after ${ReadyTimeout}s" }
@@ -197,6 +217,7 @@ function Scan-File([string]$path, [string]$evt) {
   if ($rec.errors.Count -and -not $rec.docscan -and -not $rec.yara_file_matches.Count -and $rec.verdict -eq "INFO") {
     $rec.verdict = "ERROR"
   }
+  $rec.summary = Get-Summary $rec
 
   $json = $rec | ConvertTo-Json -Depth 8 -Compress
   Rotate-IfBig $Result

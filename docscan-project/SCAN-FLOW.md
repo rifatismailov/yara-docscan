@@ -484,6 +484,7 @@ MS-OVBA. Ланцюжок: **CFB → потоки → пошук контейн�
 |---|---|---|
 | `severity` | так | `HIGH` / `MEDIUM` / `INFO` — позначає правило як політику |
 | `finding` | ні | назва в `findings` (за замовчуванням — ім'я правила) |
+| `text` | ні | пояснення людською мовою → `findings_text` → поле `summary` вотчера → опис алерту Wazuh |
 | `disarm` | ні | що лікувати: `macro`, `remote_template`, `protocol_handler`, `dde`, `embedded`, `rtf_objupdate`, `lnk_delete`, `quarantine` |
 | `mitre` | ні | ID техніки, потрапляє в `details` |
 
@@ -1050,9 +1051,13 @@ watcher → C:\ProgramData\DocScan\results\docscan-results.json (JSON Lines)
 
 Верхній рівень: `timestamp`, `source` (= `docscan`), `host`, `event`, `category` (`document`/`general`),
 `docfile.{path,name,ext,size,sha256}`, `verdict` (`HIGH`/`MEDIUM`/`INFO`/`ERROR`/`SKIPPED`),
-`yara_file_matches[]`, `disarm` (`removed:…`, `stripped:…`, `deleted:lnk`, `quarantined`, `failed:…`), `errors[]`.
-Розбір документа: `docscan.{ftype, findings[], verdict, evidence.{template_url, dde_command, vba_evidence,
-lnk_target, lnk_args}, yara_matches[], details[]}`. В індексі все це — під `data.`.
+`yara_file_matches[]`, `disarm` (`removed:…`, `stripped:…`, `deleted:lnk`, `quarantined`, `failed:…`), `errors[]`,
+`summary` — **опис людською мовою**: `findings_text` правил політики + «YARA <правило> — <meta.description>» для
+кожного vendor-збігу, що рахується + правила по коду макросу + «дія: <лікування>» (≤ 600 символів); його
+показують описи правил менеджера 101091/101092 (`$(summary)`).
+Розбір документа: `docscan.{ftype, findings[], findings_text[], verdict, evidence.{template_url, dde_command,
+vba_evidence, lnk_target, lnk_args}, yara_matches[], yara_file_matches[], yara_doc_matches[], yara_info_matches[],
+yara_descriptions{правило: опис}, details[]}`. В індексі все це — під `data.`.
 
 > **Не перейменовувати `docfile` на `file`.** В індексах `wazuh-alerts-*` поле `data.file` уже має тип
 > `keyword` (його пишуть інші джерела); об'єкт там індексатор відкидає цілою подією

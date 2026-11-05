@@ -7,6 +7,7 @@
 //
 //   meta.severity  "HIGH" | "MEDIUM" | "INFO"   required — marks a policy rule
 //   meta.finding   name shown in JSON "findings" (default: rule name)
+//   meta.text      human-readable explanation -> JSON "findings_text" -> Wazuh alert
 //   meta.disarm    what --docscan-disarm removes when this rule matches:
 //                    macro | remote_template | protocol_handler | dde |
 //                    embedded | rtf_objupdate | lnk_delete | quarantine
@@ -28,6 +29,7 @@ rule DS_REMOTE_TEMPLATE
 {
   meta:
     severity = "HIGH"
+    text     = "Віддалений шаблон: документ при відкритті завантажує шаблон з мережі (template injection)"
     finding  = "REMOTE_TEMPLATE"
     disarm   = "remote_template"
     mitre    = "T1221"
@@ -44,6 +46,7 @@ rule DS_PROTOCOL_HANDLER
 {
   meta:
     severity = "HIGH"
+    text     = "Протокол-хендлер (ms-msdt/search-ms/mhtml…): відкриття документа запускає зовнішню обробку (Follina та подібні)"
     finding  = "PROTOCOL_HANDLER"
     disarm   = "protocol_handler"
     mitre    = "T1203"
@@ -57,6 +60,7 @@ rule DS_DDE_AUTO
 {
   meta:
     severity = "HIGH"
+    text     = "Поле DDEAUTO: документ сам запускає команду при відкритті"
     finding  = "DDE_AUTO"
     disarm   = "dde"
     mitre    = "T1559.002"
@@ -70,6 +74,7 @@ rule DS_DDE_LINK
 {
   meta:
     severity = "HIGH"
+    text     = "Поле/формула DDE з командою оболонки (cmd, powershell, mshta…)"
     finding  = "DDE_LINK"
     disarm   = "dde"
     mitre    = "T1559.002"
@@ -84,6 +89,7 @@ rule DS_EMBEDDED_PE
 {
   meta:
     severity = "HIGH"
+    text     = "У документ вкладено виконуваний файл (PE)"
     finding  = "EMBEDDED_PE"
     disarm   = "embedded"
   condition:
@@ -94,6 +100,7 @@ rule DS_EMBEDDED_LNK
 {
   meta:
     severity = "HIGH"
+    text     = "У документ вкладено ярлик (LNK)"
     finding  = "EMBEDDED_LNK"
     disarm   = "embedded"
   condition:
@@ -104,6 +111,7 @@ rule DS_EXTERNAL_OLE
 {
   meta:
     severity = "MEDIUM"
+    text     = "Зовнішній OLE-об'єкт: документ підтягує об'єкт з мережі"
     finding  = "EXTERNAL_OLE"
   condition:
     for any rel in docscan.external_rels : (
@@ -117,6 +125,7 @@ rule DS_EXTERNAL_FRAME
 {
   meta:
     severity = "MEDIUM"
+    text     = "Зовнішній фрейм: документ підтягує вміст з мережі"
     finding  = "EXTERNAL_FRAME"
   condition:
     for any rel in docscan.external_rels : ( rel.type iendswith "/frame" )
@@ -129,6 +138,7 @@ rule DS_MACRO_PRESENT
 {
   meta:
     severity = "MEDIUM"
+    text     = "Документ містить макроси VBA"
     finding  = "MACRO_PRESENT"
   condition:
     docscan.macro_present == 1
@@ -139,6 +149,7 @@ rule DS_MACRO_SUSPICIOUS
 {
   meta:
     severity = "HIGH"
+    text     = "Макрос запускає команди або завантажує файли (Shell, powershell, URLDownloadToFile…)"
     finding  = "MACRO_SUSPICIOUS"
     disarm   = "macro"
     mitre    = "T1204.002"
@@ -154,6 +165,7 @@ rule DS_MACRO_AUTOEXEC
 {
   meta:
     severity = "MEDIUM"
+    text     = "Макрос виконується автоматично при відкритті (AutoOpen, Document_Open…)"
     finding  = "MACRO_AUTOEXEC"
   condition:
     docscan.vba_code matches /\b(AutoOpen|Auto_Open|AutoExec|Auto_Exec|AutoClose|Auto_Close|Document_Open|Document_Close|Workbook_Open|Workbook_BeforeClose)\b/i
@@ -164,6 +176,7 @@ rule DS_MACRO_NETWORK
 {
   meta:
     severity = "MEDIUM"
+    text     = "Макрос звертається до мережі (XMLHTTP, WinHttp, WebClient)"
     finding  = "MACRO_NETWORK"
   condition:
     docscan.vba_code matches /\b(XMLHTTP|ServerXMLHTTP|WinHttp|InternetOpen|Net\.WebClient)\b/i
@@ -175,6 +188,7 @@ rule DS_RTF_OBJUPDATE
 {
   meta:
     severity = "HIGH"
+    text     = "RTF з \\objupdate: вбудований об'єкт оновлюється (запускається) при відкритті"
     finding  = "RTF_OBJUPDATE"
     disarm   = "rtf_objupdate"
     mitre    = "T1203"
@@ -191,6 +205,7 @@ rule DS_PDF_LAUNCH
 {
   meta:
     severity = "HIGH"
+    text     = "PDF з дією /Launch: запуск зовнішньої програми"
     finding  = "PDF_LAUNCH"
     disarm   = "quarantine"   // a PDF cannot be cured in place
   strings:
@@ -203,6 +218,7 @@ rule DS_PDF_JS_AUTO
 {
   meta:
     severity = "HIGH"
+    text     = "PDF з JavaScript, що використовує небезпечні функції"
     finding  = "PDF_JS_AUTO"
     disarm   = "quarantine"
   strings:
@@ -238,6 +254,7 @@ rule DS_PDF_JS
 {
   meta:
     severity = "MEDIUM"
+    text     = "PDF містить JavaScript"
     finding  = "PDF_JS"
   strings:
     $js1 = "/JavaScript"
@@ -253,6 +270,7 @@ rule DS_PDF_OPENACTION
 {
   meta:
     severity = "INFO"
+    text     = "PDF з автоматичною дією при відкритті (без JavaScript)"
     finding  = "PDF_OPENACTION"
   strings:
     $oa  = "/OpenAction"
@@ -267,6 +285,7 @@ rule DS_PDF_EMBEDDED
 {
   meta:
     severity = "MEDIUM"
+    text     = "PDF містить вкладений файл"
     finding  = "PDF_EMBEDDED"
   strings:
     $emb = "/EmbeddedFile"
@@ -283,6 +302,7 @@ rule DS_EQUATION_EDITOR
 {
   meta:
     severity = "HIGH"
+    text     = "Об'єкт Equation Editor 3.0 (прибраний з Office у 2018): експлойт CVE-2017-11882 / CVE-2018-0802"
     finding  = "EQUATION_EDITOR"
     disarm   = "embedded"
     mitre    = "T1203"
@@ -296,6 +316,7 @@ rule DS_PACKAGE_EXECUTABLE
 {
   meta:
     severity = "HIGH"
+    text     = "OLE Package з виконуваним файлом або скриптом: подвійний клік по іконці запускає його"
     finding  = "PACKAGE_EXECUTABLE"
     disarm   = "embedded"
     mitre    = "T1204.002"
@@ -311,6 +332,7 @@ rule DS_ACTIVEX_BROWSER
 {
   meta:
     severity = "HIGH"
+    text     = "ActiveX-браузер (Shell.Explorer / WebBrowser / htmlfile) у документі: показ віддаленого вмісту або запуск ярлика"
     finding  = "ACTIVEX_BROWSER"
     mitre    = "T1203"
   condition:
@@ -324,6 +346,7 @@ rule DS_ACTIVEX
 {
   meta:
     severity = "MEDIUM"
+    text     = "Документ містить ActiveX-елемент керування"
     finding  = "ACTIVEX"
   condition:
     docscan.number_of_activex > 0 and not DS_ACTIVEX_BROWSER
@@ -335,6 +358,7 @@ rule DS_ALTCHUNK
 {
   meta:
     severity = "MEDIUM"
+    text     = "altChunk: docx імпортує інший документ (RTF/HTML) при відкритті (CVE-2023-36884)"
     finding  = "ALTCHUNK"
     mitre    = "T1221"
   condition:
@@ -346,6 +370,7 @@ rule DS_XLM_MACROSHEET
 {
   meta:
     severity = "MEDIUM"
+    text     = "Макроаркуш Excel 4.0 (XLM): макроси без VBA"
     finding  = "XLM_MACROSHEET"
     mitre    = "T1059"
   condition:
@@ -360,6 +385,7 @@ rule DS_LNK_URL_ARGS
 {
   meta:
     severity = "HIGH"
+    text     = "Ярлик передає програмі URL (завантаження з мережі)"
     finding  = "LNK_URL_ARGS"
     disarm   = "lnk_delete"
     mitre    = "T1204.001"
@@ -371,6 +397,7 @@ rule DS_LNK_OBFUSCATED
 {
   meta:
     severity = "HIGH"
+    text     = "Ярлик з обфускованою командою PowerShell (-enc, iex, hidden…)"
     finding  = "LNK_OBFUSCATED"
     disarm   = "lnk_delete"
     mitre    = "T1204.001"
@@ -383,6 +410,7 @@ rule DS_LNK_REMOTE_EXEC
 {
   meta:
     severity = "HIGH"
+    text     = "Ярлик запускає виконуваний файл з мережевої теки"
     finding  = "LNK_REMOTE_EXEC"
     disarm   = "lnk_delete"
     mitre    = "T1204.001"
@@ -395,6 +423,7 @@ rule DS_LNK_REMOTE_TARGET
 {
   meta:
     severity = "MEDIUM"
+    text     = "Ярлик вказує на мережеву теку"
     finding  = "LNK_REMOTE_TARGET"
   condition:
     docscan.lnk_target matches /^\\\\/ and not DS_LNK_REMOTE_EXEC
@@ -406,6 +435,7 @@ rule DS_LNK_LOLBIN
 {
   meta:
     severity = "MEDIUM"
+    text     = "Ярлик запускає системну утиліту (cmd, powershell, mshta, rundll32…)"
     finding  = "LNK_LOLBIN"
   condition:
     docscan.lnk_target matches /(^|\\)(cmd|powershell|pwsh|mshta|rundll32|wscript|cscript|regsvr32|certutil|bitsadmin|msiexec|forfiles|conhost)\.exe$/i
