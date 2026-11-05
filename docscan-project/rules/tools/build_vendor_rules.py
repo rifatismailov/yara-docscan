@@ -23,7 +23,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 RULES = HERE.parent
-DEFAULT_VENDOR = RULES.parent / "reference" / "vendor-rules-full-later" / "vendor"
+DEFAULT_VENDOR = RULES.parent / "vendor-sources"   # git clones of the sources (not in git)
 
 SOURCES = {
     "signature-base": ("https://github.com/Neo23x0/signature-base.git",
@@ -32,12 +32,21 @@ SOURCES = {
                              "0f93570194a80d2f2032869055808b0ddcdfb360"),
     "protections-artifacts": ("https://github.com/elastic/protections-artifacts.git",
                               "ce99f77ba7cc2e442589d49e01b9db262d31ae91"),
+    "bartblaze": ("https://github.com/bartblaze/Yara-rules.git",
+                  "5cc871d82361de8a80d387ec8bbd01fe4258b4a9"),
+    "inquest": ("https://github.com/InQuest/yara-rules.git",
+                "922e6a8a24027152935b1a1ec8f07912a57dbf2b"),
+}
+
+# the source's OWN classification of a rule as informational -> docscan_info
+# (bartblaze: meta category = "INFO"; InQuest: meta Severity = "0")
+SOURCE_INFO = {
+    "bartblaze": re.compile(r'\bcategory\s*=\s*"INFO"'),
+    "inquest": re.compile(r'\bSeverity\s*=\s*"0"'),
 }
 
 # identifier clashes: (source path, rule) -> new name
-RENAME = {
-    ("yara/general_officemacros.yar", "Office_AutoOpen_Macro"): "Office_AutoOpen_Macro_SB",
-}
+RENAME = {}
 
 # rules removed on purpose (besides the automatic platform filter): name or (source path, name) -> reason
 _OLD = "older copy of the signature-base rule of the same name (kept there, maintained)"
@@ -51,29 +60,56 @@ DROP = {
     "Windows_VulnDriver_Csc_856c8393": "FP: matches the inbox Microsoft driver csc.sys",
     "Windows_VulnDriver_SmSerl64_00319890": "FP: matches the inbox Microsoft driver SmSerl64.sys",
     "Windows_VulnDriver_Ksld_c608656e": "FP: matches KslD.sys of Microsoft Defender (found on a clean workstation)",
+    # exact duplicates (same strings and condition under another name)
+    ("maldocs/Maldoc_Dridex.yar", "PHISH_02Dez2015_dropped_p0o6543f"): "duplicate of signature-base PHISH_02Dez2015_dropped_p0o6543f_1",
+    ("maldocs/maldoc_somerules.yar", "office_document_vba"): "duplicate of Contains_VBA_macro_code",
+    # variants: same strings + an extra condition -> fire only where the base rule already fires
+    "PAExec_Cloaked": "variant of PAExec (adds a file-name check)",
+    "SUSP_VULN_DRV_PROCEXP152_Renamed_May23": "variant of SUSP_VULN_DRV_PROCEXP152_May23 (adds a file-name check)",
+    "Windows_VulnDriver_MyPortIO_37c35201": "variant of Windows_VulnDriver_MyPortIO_bab77af0 (adds a header check)",
+    "EquationGroup_Toolset_Apr17_msgks_mskgu": "variant of EquationGroup_EquationDrug_Gen_3 (smaller filesize limit)",
+    # obsolete technology: Flash is end-of-life (2020) and blocked in Office (2021)
+    "Flash_in_LNK": "obsolete: Adobe Flash",
+    "crime_ole_loadswf_cve_2018_4878": "obsolete: Adobe Flash",
+    # slow: YARA warns these strings slow down scanning
+    "Hex_Encoded_Powershell": "slow (YARA: unbounded regex)",
+    "FE_LEGALSTRIKE_MACRO_2": "slow (YARA: unbounded regex)",
+    "Contains_VBE_File": "slow (YARA: unbounded regex)",
+    "MIME_MSO_ActiveMime_base64": "slow (YARA: unbounded regex)",
+    "invalid_trailer_structure": "slow (YARA: unbounded regex)",
+    "invalid_xref_numbers": "slow (YARA: unbounded regex)",
+    "multiple_filtering": "slow (YARA: unbounded regex)",
+    "possible_exploit": "slow (YARA: unbounded regex)",
+    "suspicious_obfuscation": "slow (YARA: unbounded regex)",
+    "Maldoc_Suspicious_OLE_target": "slow (YARA: unbounded regex)",
+    "maldoc_indirect_function_call_2": "slow (YARA: string may slow down scanning)",
+    "maldoc_indirect_function_call_3": "slow (YARA: string may slow down scanning)",
+    "MC_Office_DDE_Command_Execution": "slow (YARA: unbounded regex)",
 }
+
+# rules whose last change (meta modified / last_modified, else date / creation_date) is this year
+# or older are dropped: written for samples and campaigns of that time
+OLD_YEAR = 2016
 
 # indicators, not detections: reported in yara_info_matches, never raise the verdict.
 # Most duplicate what the docscan policy already decides with proper severity.
 INFO = {
     # PDF structure / metadata oddities (common in legitimate generator/scanner output)
-    "suspicious_version", "suspicious_creation", "multiple_filtering", "suspicious_title",
+    "suspicious_version", "suspicious_creation", "suspicious_title",
     "suspicious_author", "suspicious_producer", "suspicious_creator", "multiple_versions",
     "js_wrong_version", "JBIG2_wrong_version", "FlateDecode_wrong_version", "embed_wrong_version",
-    "invalid_xref_numbers", "invalid_trailer_structure", "header_evasion",
+    "header_evasion",
     # PDF features the policy grades itself (PDF_JS*, PDF_LAUNCH, PDF_EMBEDDED, PDF_OPENACTION)
-    "suspicious_js", "suspicious_launch_action", "suspicious_embed", "suspicious_obfuscation",
+    "suspicious_js", "suspicious_launch_action", "suspicious_embed",
     # "a macro exists" / generic macro strings (policy: MACRO_PRESENT / MACRO_AUTOEXEC / MACRO_SUSPICIOUS)
-    "Contains_VBA_macro_code", "office_document_vba", "macrocheck", "Office_AutoOpen_Macro",
-    "Office_AutoOpen_Macro_SB", "Contains_UserForm_Object", "SUSP_WordDoc_VBA_Macro_Strings",
-    "SUSP_VBA_FileSystem_Access", "maldoc_suspicious_strings",
+    "macrocheck", "SUSP_WordDoc_VBA_Macro_Strings", "SUSP_VBA_FileSystem_Access",
     # bare keyword / container format
     "powershell", "Word_2007_XML_Flat_OPC",
 }
 INFO_TAG = "docscan_info"
-# every rule under maldoc/ is a document rule: on a file the docscan module does not recognise as a
-# document (exe, dll, scripts...) yara64 reports it as an indicator only. Shellcode patterns such as
-# getEIP / PEB access are strong in a document but ordinary machine code in any binary.
+# every rule under maldoc/ is a document rule: yara64 reports its matches in "yara_doc_matches" and the
+# watcher counts them only for its document category. Shellcode patterns such as getEIP / PEB access
+# are strong in a document but ordinary machine code in any binary.
 DOC_TAG = "docscan_doc"
 
 HEADER = re.compile(r'(?m)^[ \t]*((?:private|global)[ \t]+)*rule[ \t]+([A-Za-z0-9_]+)[ \t\r\n]*(:[^{]*)?\{')
@@ -157,6 +193,26 @@ def platform_reason(fname, r):
         return "Linux/ESXi/macOS (by rule name)"
     if ('webshell' in n or re.search(r'<\?php|<%@|<%=|runat=|\$_(post|get|request)\[', s)) and 'compiled' not in n:
         return "webshell source (PHP/JSP/ASPX; not scanned on workstations)"
+    # no PE check and the rule / file NAME says it is for another platform, a network appliance or
+    # server software, or for scripts the watcher never scans
+    hay = n + "_" + fname.lower().rsplit('.', 1)[0]
+    m = re.search(r'(^|_)(lnx|linux|unix|solaris|aix|freebsd|bsd|esx|vcenter|vmware|macos|osx|ios|'
+                  r'cisco|asa|juniper|junos|fortinet|fortigate|fortios|ivanti|pulse|citrix|netscaler|'
+                  r'confluence|jira|atlassian|barracuda|esg|zimbra|moveit|sonicwall|paloalto|panos|'
+                  r'globalprotect|f5|bigip|mikrotik|router|iot|php|jsp|java|tomcat|weblogic|perl|python|'
+                  r'bash|nginx|apache)(_|$)', hay)
+    if m:
+        return f"not a Windows workstation file ({m.group(2)}, no PE check)"
+    return None
+
+
+def old_reason(r):
+    """Rule last changed in OLD_YEAR or before (None = keep; no date = keep)."""
+    meta = r['text'][r['hoff']:]
+    m = (re.search(r'\b(?:modified|last_modified|updated_date)\s*=\s*"(\d{4})', meta)
+         or re.search(r'\b(?:date|creation_date|first_imported|created)\s*=\s*"(\d{4})', meta))
+    if m and int(m.group(1)) <= OLD_YEAR:
+        return f"old: last change {m.group(1)}"
     return None
 
 
@@ -210,7 +266,7 @@ def build(vendor, out, yarac):
         for r in rules:
             why = None
             if not r['private']:
-                why = DROP.get(r['name']) or DROP.get((rel, r['name'])) or platform_reason(fname, r)
+                why = DROP.get(r['name']) or DROP.get((rel, r['name'])) or platform_reason(fname, r) or old_reason(r)
             r['drop'] = why
         kept_conds = " ".join(r['cond'] for r in rules if not r['drop'])
         for r in rules:
@@ -225,9 +281,10 @@ def build(vendor, out, yarac):
                 new = RENAME[(rel, name)]
                 t = rename(t, r['hoff'], name, new); name = new
                 report['renamed'].append(f"{src}/{rel}: {r['name']} -> {new}")
-            if name in INFO:
+            src_info = src in SOURCE_INFO and SOURCE_INFO[src].search(r['text'][r['hoff']:])
+            if name in INFO or src_info:
                 t = add_tag(t, r['hoff'], INFO_TAG)
-                report['info'].append(f"{src}/{rel}: {name}")
+                report['info'].append(f"{src}/{rel}: {name}" + (" (source: informational)" if src_info else ""))
             elif od.startswith("maldoc") and not r['private']:
                 t = add_tag(t, r['hoff'], DOC_TAG)
                 report['doc'].append(f"{src}/{rel}: {name}")
@@ -252,7 +309,8 @@ def build(vendor, out, yarac):
     if clashes:
         sys.exit("rule name clashes (different rules, same name) — add RENAME entries:\n  " + "\n  ".join(clashes))
     # licenses of the sources
-    for src, lic in (("signature-base", "LICENSE"), ("yara-rules-community", "LICENSE"), ("protections-artifacts", "LICENSE.txt")):
+    for src, lic in (("signature-base", "LICENSE"), ("yara-rules-community", "LICENSE"), ("protections-artifacts", "LICENSE.txt"),
+                     ("bartblaze", "LICENSE"), ("inquest", "LICENSE")):
         p = vendor / src / lic
         if p.exists():
             shutil.copy(p, out / f"LICENSE-{src}")
@@ -303,7 +361,7 @@ def main():
             r = subprocess.run(["diff", "-rq", "-x", "tools", "-x", "docscan*", "-x", ".DS_Store", str(t), str(RULES)], capture_output=True, text=True)
             print(r.stdout or "rules/ is up to date"); sys.exit(1 if r.stdout else 0)
     # rebuild in place: wipe generated dirs first
-    for d in ("general", "maldoc/signature-base", "maldoc/community"):
+    for d in ("general", "maldoc/signature-base", "maldoc/community", "maldoc/bartblaze", "maldoc/inquest"):
         shutil.rmtree(RULES / d, ignore_errors=True)
     for f in RULES.glob("LICENSE-*"):
         f.unlink()

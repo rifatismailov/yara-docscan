@@ -1,12 +1,15 @@
 ﻿# DocScan watcher — стежить за новими файлами (FileSystemWatcher) і сканує їх yara64.exe.
 #
-# Один запуск на файл:  yara64 -w --docscan-json [--docscan-disarm] docscan-index.yar <file>
+# Один запуск на файл:  yara64 -w --docscan-json [--docscan-disarm] -C rules.yarc <file>
+#   (rules.yarc компілюється з docscan-index.yar один раз на старті)
 #   docscan-index.yar = docscan-policy.yar (що вважати HIGH/MEDIUM, що лікувати)
 #                     + file-index.yar     (vendor-правила: по файлу і по розпакованому VBA)
 #
 # Категорії файлів:
-#   document — Office / RTF / PDF / LNK: модуль + політика + vendor; ЛІКУВАННЯ ЗА ПОЛІТИКОЮ (за замовч.)
-#   general  — exe/dll/скрипти/hta/архіви/образи: тільки vendor-правила (модуль нічого не знайде)
+#   document — Office (і надбудови) / RTF / PDF / LNK / OneNote / IQY / SLK: модуль + політика
+#              + vendor, зокрема документні правила (yara_doc_matches); ЛІКУВАННЯ ЗА ПОЛІТИКОЮ (за замовч.)
+#   general  — exe/dll/xll/скрипти/hta/msc/url/HTML/SVG/архіви/образи: vendor-правила; документні
+#              правила тут лише індикатори (шаблони шелкоду — звичайний код у будь-якому бінарнику)
 #
 # Результат: один JSON на рядок у $OutDir\docscan-results.json (у майбутньому забиратиме Wazuh:
 # <localfile><log_format>json</log_format>). Діагностика роботи — $OutDir\watcher.log.
@@ -35,10 +38,17 @@ param(
     ".doc",".dot",".docx",".docm",".dotx",".dotm",
     ".xls",".xlt",".xlsx",".xlsm",".xltx",".xltm",".xlsb",
     ".ppt",".pps",".pot",".pptx",".pptm",".potx",".potm",".ppsx",".ppsm",
-    ".rtf",".pdf",".lnk"),
+    ".xla",".xlam",".ppa",".ppam",                 # надбудови Excel / PowerPoint (макроси при відкритті)
+    ".rtf",".pdf",".lnk",
+    ".one",                                         # OneNote: вкладені скрипти/exe
+    ".iqy",".slk"),                                 # Excel Web Query / SYLK: тягнуть дані, виконують DDE
   [string[]]$GenExt = @(
     ".exe",".dll",".sys",".scr",".cpl",".ocx",".com",".msi",
     ".ps1",".psm1",".vbs",".vbe",".js",".jse",".wsf",".wsh",".hta",".bat",".cmd",".jar",
+    ".xll",                                         # надбудова Excel = DLL
+    ".msc",                                         # консоль MMC (GrimResource)
+    ".url",                                         # Internet Shortcut
+    ".svg",".htm",".html",                          # HTML smuggling
     ".zip",".rar",".7z",".iso",".img",".vhd",".vhdx"),
   # шляхи (regex), які не скануємо: кеші браузерів, Recent (там .lnk на кожне відкриття файлу) тощо
   [string[]]$ExcludePattern = @(
@@ -164,6 +174,8 @@ function Scan-File([string]$path, [string]$evt) {
         $rec.docscan = $ds.docscan
         $rec.disarm  = $ds.disarm
         $rec.yara_file_matches = @($ds.docscan.yara_file_matches)
+        # документні правила (тег docscan_doc) — детект лише для документів
+        if ($cat -eq "document") { $rec.yara_file_matches += @($ds.docscan.yara_doc_matches | ? { $_ }) }
         $rec.verdict = $ds.docscan.verdict
       }
       # vendor-правило на самому файлі: документ — щонайменше MEDIUM, general — HIGH
@@ -244,6 +256,8 @@ if (-not $watchers.Count) { Log "жодної теки для спостереж
 Log ("старт: стежу за {0} | disarm={1} | карантин: {2} | результат: {3}" -f ($WatchPath -join ", "), (-not $NoDisarm), $BackupDir, $Result)
 
 $pending = @{}   # path -> @{ t = час останньої події; evt = тип першої події }
+$rescanAt = $null   # після переповнення буфера: коли доскановувати
+$rescanFrom = $null # ... файли, змінені з цього моменту
 $recent  = @{}   # path -> sha256 останнього скану (щоб не дублювати Changed після того ж вмісту)
 
 try {
@@ -253,6 +267,9 @@ try {
       $sid = $e.SourceIdentifier
       if ($sid -like "*.Error") {
         Log ("FileSystemWatcher error (можливо переповнення буфера, частина подій втрачена): " + $e.SourceEventArgs.GetException().Message) "ERROR"
+        # події втрачено -> через хвилину пройдемося по теках і візьмемо файли, змінені з цього часу
+        if (-not $rescanFrom) { $rescanFrom = (Get-Date).AddMinutes(-1) }
+        $rescanAt = (Get-Date).AddSeconds(60)
       } else {
         $path = $e.SourceEventArgs.FullPath
         $type = "$($e.SourceEventArgs.ChangeType)"
@@ -266,6 +283,16 @@ try {
     }
 
     $now = Get-Date
+    if ($rescanAt -and $now -ge $rescanAt) {
+      $n = 0
+      foreach ($wp in $WatchPath) {
+        Get-ChildItem -LiteralPath $wp -Recurse -File -Force -ErrorAction SilentlyContinue |
+          Where-Object { $_.LastWriteTime -ge $rescanFrom -and (Get-Category $_.FullName) -and -not (Test-Excluded $_.FullName) } |
+          ForEach-Object { if (-not $pending.ContainsKey($_.FullName)) { $pending[$_.FullName] = @{ t = $now.AddSeconds(-$SettleSeconds); evt = "Rescan" }; $n++ } }
+      }
+      Log ("доскановування після переповнення: файлів змінених з {0:HH:mm:ss} — {1}" -f $rescanFrom, $n) "WARN"
+      $rescanAt = $null; $rescanFrom = $null
+    }
     foreach ($path in @($pending.Keys)) {
       if (($now - $pending[$path].t).TotalSeconds -lt $SettleSeconds) { continue }
       $evt = $pending[$path].evt

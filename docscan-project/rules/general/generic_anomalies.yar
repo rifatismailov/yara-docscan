@@ -177,22 +177,6 @@ rule Suspicious_Size_csrss_exe {
       and (filesize > 50KB)
 }
 
-rule Suspicious_Size_iexplore_exe {
-   meta:
-      description = "Detects uncommon file size of iexplore.exe"
-      license = "Detection Rule License 1.1 https://github.com/Neo23x0/signature-base/blob/master/LICENSE"
-      author = "Florian Roth (Nextron Systems)"
-      score = 60
-      date = "2015-12-21"
-      noarchivescan = 1
-      id = "d097a599-0fad-574f-8281-46c910e8e54d"
-   condition:
-      uint16(0) == 0x5a4d
-      and filename == "iexplore.exe"
-      and not filepath contains "teamviewer"
-      and (filesize < 75KB or filesize > 910KB)
-}
-
 rule Suspicious_Size_firefox_exe {
    meta:
       description = "Detects uncommon file size of firefox.exe"
@@ -226,51 +210,6 @@ rule Suspicious_Size_java_exe {
       and (filesize < 30KB or filesize > 1500KB)
 }
 
-rule Suspicious_Size_lsass_exe {
-   meta:
-      description = "Detects uncommon file size of lsass.exe"
-      license = "Detection Rule License 1.1 https://github.com/Neo23x0/signature-base/blob/master/LICENSE"
-      author = "Florian Roth (Nextron Systems)"
-      score = 60
-      date = "2015-12-21"
-      noarchivescan = 1
-      id = "005661c7-7576-5c13-9534-b49c12b2faad"
-   condition:
-      uint16(0) == 0x5a4d
-      and filename == "lsass.exe"
-      and (filesize < 10KB or filesize > 100KB)
-}
-
-rule Suspicious_Size_svchost_exe {
-   meta:
-      description = "Detects uncommon file size of svchost.exe"
-      license = "Detection Rule License 1.1 https://github.com/Neo23x0/signature-base/blob/master/LICENSE"
-      author = "Florian Roth (Nextron Systems)"
-      score = 60
-      date = "2015-12-21"
-      noarchivescan = 1
-      id = "31a8d00e-ebfc-5001-9c58-d3a2580f16b3"
-   condition:
-      uint16(0) == 0x5a4d
-      and filename == "svchost.exe"
-      and (filesize < 14KB or filesize > 100KB)
-}
-
-rule Suspicious_Size_winlogon_exe {
-   meta:
-      description = "Detects uncommon file size of winlogon.exe"
-      license = "Detection Rule License 1.1 https://github.com/Neo23x0/signature-base/blob/master/LICENSE"
-      author = "Florian Roth (Nextron Systems)"
-      score = 60
-      date = "2015-12-21"
-      noarchivescan = 1
-      id = "8665e8d0-3b5f-5227-8879-cdd614123439"
-   condition:
-      uint16(0) == 0x5a4d
-      and filename == "winlogon.exe"
-      and (filesize < 279KB or filesize > 970KB)
-}
-
 rule Suspicious_Size_igfxhk_exe {
    meta:
       description = "Detects uncommon file size of igfxhk.exe"
@@ -285,36 +224,6 @@ rule Suspicious_Size_igfxhk_exe {
       uint16(0) == 0x5a4d
       and filename == "igfxhk.exe"
       and (filesize < 200KB or filesize > 300KB)
-}
-
-rule Suspicious_Size_servicehost_dll {
-   meta:
-      description = "Detects uncommon file size of servicehost.dll"
-      license = "Detection Rule License 1.1 https://github.com/Neo23x0/signature-base/blob/master/LICENSE"
-      author = "Florian Roth (Nextron Systems)"
-      score = 60
-      date = "2015-12-23"
-      noarchivescan = 1
-      id = "ac71393c-a475-59e0-b22a-d5ee3d25084b"
-   condition:
-      uint16(0) == 0x5a4d
-      and filename == "servicehost.dll"
-      and filesize > 150KB
-}
-
-rule Suspicious_Size_rundll32_exe {
-   meta:
-      description = "Detects uncommon file size of rundll32.exe"
-      license = "Detection Rule License 1.1 https://github.com/Neo23x0/signature-base/blob/master/LICENSE"
-      author = "Florian Roth (Nextron Systems)"
-      score = 60
-      date = "2015-12-23"
-      noarchivescan = 1
-      id = "5b9feae7-17d8-56e4-870a-ef865f2d09bf"
-   condition:
-      uint16(0) == 0x5a4d
-      and filename == "rundll32.exe"
-      and (filesize < 30KB or filesize > 120KB)
 }
 
 rule Suspicious_Size_taskhost_exe {
@@ -348,21 +257,6 @@ rule Suspicious_Size_spoolsv_exe {
       uint16(0) == 0x5a4d
       and filename == "spoolsv.exe"
       and (filesize < 50KB or filesize > 1500KB)
-}
-
-rule Suspicious_Size_smss_exe {
-   meta:
-      description = "Detects uncommon file size of smss.exe"
-      license = "Detection Rule License 1.1 https://github.com/Neo23x0/signature-base/blob/master/LICENSE"
-      author = "Florian Roth (Nextron Systems)"
-      score = 60
-      date = "2015-12-23"
-      noarchivescan = 1
-      id = "7bdc8953-9240-5d22-b2a6-fe95fbc101c2"
-   condition:
-      uint16(0) == 0x5a4d
-      and filename == "smss.exe"
-      and (filesize < 40KB or filesize > 5000KB)
 }
 
 rule Suspicious_Size_wininit_exe {

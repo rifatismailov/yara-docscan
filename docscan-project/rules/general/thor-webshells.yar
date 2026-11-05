@@ -29,70 +29,6 @@ rule perlbot_pl {
 	condition:
 		1 of them
 }
-rule php_backdoor_php {
-	meta:
-		description = "Semi-Auto-generated  - file php-backdoor.php.txt"
-		author = "Neo23x0 Yara BRG + customization by Stefan -dfate- Molls"
-		hash = "2b5cb105c4ea9b5ebc64705b4bd86bf7"
-		id = "aca53071-f793-538d-bbeb-34469cdb4d1f"
-	strings:
-		$s0 = "http://michaeldaw.org   2006"
-		$s1 = "or http://<? echo $SERVER_NAME.$REQUEST_URI; ?>?d=c:/windows on win"
-		$s3 = "coded by z0mbie"
-	condition:
-		1 of them
-}
-rule Liz0ziM_Private_Safe_Mode_Command_Execuriton_Bypass_Exploit_php {
-	meta:
-		description = "Semi-Auto-generated  - file Liz0ziM Private Safe Mode Command Execuriton Bypass Exploit.php.txt"
-		author = "Neo23x0 Yara BRG + customization by Stefan -dfate- Molls"
-		hash = "c6eeacbe779518ea78b8f7ed5f63fc11"
-		id = "e91114ce-18f9-51cd-b41c-b796960ea4fe"
-	strings:
-		$s0 = "<option value=\"cat /var/cpanel/accounting.log\">/var/cpanel/accounting.log</opt"
-		$s1 = "Liz0ziM Private Safe Mode Command Execuriton Bypass"
-		$s2 = "echo \"<b><font color=red>Kimim Ben :=)</font></b>:$uid<br>\";" fullword
-	condition:
-		1 of them
-}
-rule Nshell__1__php_php {
-	meta:
-		description = "Semi-Auto-generated  - file Nshell (1).php.php.txt"
-		author = "Neo23x0 Yara BRG + customization by Stefan -dfate- Molls"
-		hash = "973fc89694097a41e684b43a21b1b099"
-		id = "44e8b6c5-6f41-5c37-a083-26acedd91956"
-	strings:
-		$s0 = "echo \"Command : <INPUT TYPE=text NAME=cmd value=\".@stripslashes(htmlentities($"
-		$s1 = "if(!$whoami)$whoami=exec(\"whoami\"); echo \"whoami :\".$whoami.\"<br>\";" fullword
-	condition:
-		1 of them
-}
-rule Casus15_php_php {
-	meta:
-		description = "Semi-Auto-generated  - file Casus15.php.php.txt"
-		author = "Neo23x0 Yara BRG + customization by Stefan -dfate- Molls"
-		hash = "5e2ede2d1c4fa1fcc3cbfe0c005d7b13"
-		id = "ba6748a2-fb80-5eda-816c-155bab9285e5"
-	strings:
-		$s0 = "copy ( $dosya_gonder2, \"$dir/$dosya_gonder2_name\") ? print(\"$dosya_gonder2_na"
-		$s2 = "echo \"<center><font size='$sayi' color='#FFFFFF'>HACKLERIN<font color='#008000'"
-		$s3 = "value='Calistirmak istediginiz "
-	condition:
-		1 of them
-}
-rule small_php_php {
-	meta:
-		description = "Semi-Auto-generated  - file small.php.php.txt"
-		author = "Neo23x0 Yara BRG + customization by Stefan -dfate- Molls"
-		hash = "fcee6226d09d150bfa5f103bee61fbde"
-		id = "cf4fb88f-a312-560d-be0b-b55bfcb889be"
-	strings:
-		$s1 = "$pass='abcdef1234567890abcdef1234567890';" fullword
-		$s2 = "eval(gzinflate(base64_decode('FJzHkqPatkU/550IGnjXxHvv6bzAe0iE5+svFVGtKqXMZq05x1"
-		$s4 = "@ini_set('error_log',NULL);" fullword
-	condition:
-		2 of them
-}
 rule shellbot_pl {
 	meta:
 		description = "Semi-Auto-generated  - file shellbot.pl.txt"
@@ -105,48 +41,6 @@ rule shellbot_pl {
 		$s2 = "CoRpOrAtIoN"
 		$s3 = "# Servidor de irc que vai ser usado "
 		$s4 = "/^ctcpflood\\s+(\\d+)\\s+(\\S+)"
-	condition:
-		2 of them
-}
-rule fuckphpshell_php {
-	meta:
-		description = "Semi-Auto-generated  - file fuckphpshell.php.txt"
-		author = "Neo23x0 Yara BRG + customization by Stefan -dfate- Molls"
-		hash = "554e50c1265bb0934fcc8247ec3b9052"
-		id = "010db63b-ff72-5f97-8651-a1c7851471ff"
-	strings:
-		$s0 = "$succ = \"Warning! "
-		$s1 = "Don`t be stupid .. this is a priv3 server, so take extra care!"
-		$s2 = "\\*=-- MEMBERS AREA --=*/"
-		$s3 = "preg_match('/(\\n[^\\n]*){' . $cache_lines . '}$/', $_SESSION['o"
-	condition:
-		2 of them
-}
-rule ngh_php_php {
-	meta:
-		description = "Semi-Auto-generated  - file ngh.php.php.txt"
-		author = "Neo23x0 Yara BRG + customization by Stefan -dfate- Molls"
-		hash = "c372b725419cdfd3f8a6371cfeebc2fd"
-		id = "2d8ff3c1-d6b3-57ce-8213-232b376dbd05"
-	strings:
-		$s0 = "Cr4sh_aka_RKL"
-		$s1 = "NGH edition"
-		$s2 = "/* connectback-backdoor on perl"
-		$s3 = "<form action=<?=$script?>?act=bindshell method=POST>"
-		$s4 = "$logo = \"R0lGODlhMAAwAOYAAAAAAP////r"
-	condition:
-		1 of them
-}
-rule jsp_reverse_jsp {
-	meta:
-		description = "Semi-Auto-generated  - file jsp-reverse.jsp.txt"
-		author = "Neo23x0 Yara BRG + customization by Stefan -dfate- Molls"
-		hash = "8b0e6779f25a17f0ffb3df14122ba594"
-		id = "4953b230-4cd9-55d6-a3cb-8d3713e7fb0c"
-	strings:
-		$s0 = "// backdoor.jsp"
-		$s1 = "JSP Backdoor Reverse Shell"
-		$s2 = "http://michaeldaw.org"
 	condition:
 		2 of them
 }
@@ -177,60 +71,6 @@ rule NT_Addy_asp {
 	condition:
 		1 of them
 }
-rule SimAttacker___Vrsion_1_0_0___priv8_4_My_friend_php {
-	meta:
-		description = "Semi-Auto-generated  - file SimAttacker - Vrsion 1.0.0 - priv8 4 My friend.php.txt"
-		author = "Neo23x0 Yara BRG + customization by Stefan -dfate- Molls"
-		hash = "089ff24d978aeff2b4b2869f0c7d38a3"
-		id = "8a34f4fd-337d-5eb4-b7b7-4adb1c2b7937"
-	strings:
-		$s0 = "SimAttacker - Vrsion : 1.0.0 - priv8 4 My friend"
-		$s3 = " fputs ($fp ,\"\\n*********************************************\\nWelcome T0 Sim"
-		$s4 = "echo \"<a target='_blank' href='?id=fm&fedit=$dir$file'><span style='text-decora"
-	condition:
-		1 of them
-}
-rule phvayvv_php_php {
-	meta:
-		description = "Semi-Auto-generated  - file phvayvv.php.php.txt"
-		author = "Neo23x0 Yara BRG + customization by Stefan -dfate- Molls"
-		hash = "35fb37f3c806718545d97c6559abd262"
-		id = "76351a59-8f52-5110-a9b8-36edd59026df"
-	strings:
-		$s0 = "{mkdir(\"$dizin/$duzenx2\",777)"
-		$s1 = "$baglan=fopen($duzkaydet,'w');"
-		$s2 = "PHVayv 1.0"
-	condition:
-		1 of them
-}
-rule r57shell_php_php {
-	meta:
-		description = "Semi-Auto-generated  - file r57shell.php.php.txt"
-		author = "Neo23x0 Yara BRG + customization by Stefan -dfate- Molls"
-		hash = "d28445de424594a5f14d0fe2a7c4e94f"
-		id = "1f1070e8-e82c-5cae-a64a-cd5028adae97"
-	strings:
-		$s1 = " else if ($HTTP_POST_VARS['with'] == \"lynx\") { $HTTP_POST_VARS['cmd']= \"lynx "
-		$s2 = "RusH security team"
-		$s3 = "'ru_text12' => 'back-connect"
-		$s4 = "<title>r57shell</title>"
-	condition:
-		1 of them
-}
-rule rst_sql_php_php {
-	meta:
-		description = "Semi-Auto-generated  - file rst_sql.php.php.txt"
-		author = "Neo23x0 Yara BRG + customization by Stefan -dfate- Molls"
-		hash = "0961641a4ab2b8cb4d2beca593a92010"
-		id = "41730336-0dce-5ed9-95b0-c911a4e3cb48"
-	strings:
-		$s0 = "C:\\tmp\\dump_"
-		$s1 = "RST MySQL"
-		$s2 = "http://rst.void.ru"
-		$s3 = "$st_form_bg='R0lGODlhCQAJAIAAAOfo6u7w8yH5BAAAAAAALAAAAAAJAAkAAAIPjAOnuJfNHJh0qtfw0lcVADs=';"
-	condition:
-		2 of them
-}
 rule lurm_safemod_on_cgi {
 	meta:
 		description = "Semi-Auto-generated  - file lurm_safemod_on.cgi.txt"
@@ -244,42 +84,6 @@ rule lurm_safemod_on_cgi {
 	condition:
 		1 of them
 }
-rule c99madshell_v2_0_php_php {
-	meta:
-		description = "Semi-Auto-generated  - file c99madshell_v2.0.php.php.txt"
-		author = "Neo23x0 Yara BRG + customization by Stefan -dfate- Molls"
-		hash = "d27292895da9afa5b60b9d3014f39294"
-		id = "b0724920-dc1e-5819-a99b-618a9a7e1eca"
-	strings:
-		$s2 = "eval(gzinflate(base64_decode('HJ3HkqNQEkU/ZzqCBd4t8V4YAQI2E3jvPV8/1Gw6orsVFLyXef"
-	condition:
-		all of them
-}
-rule backupsql_php_often_with_c99shell {
-	meta:
-		description = "Semi-Auto-generated  - file backupsql.php.php.txt"
-		author = "Neo23x0 Yara BRG + customization by Stefan -dfate- Molls"
-		hash = "ab1a06ab1a1fe94e3f3b7f80eedbc12f"
-		id = "ce88027c-ae08-59f3-948d-6f3d58515468"
-	strings:
-		$s2 = "//$message.= \"--{$mime_boundary}\\n\" .\"Content-Type: {$fileatt_type};\\n\" ."
-		$s4 = "$ftpconnect = \"ncftpput -u $ftp_user_name -p $ftp_user_pass -d debsender_ftplog"
-	condition:
-		all of them
-}
-rule uploader_php_php {
-	meta:
-		description = "Semi-Auto-generated  - file uploader.php.php.txt"
-		author = "Neo23x0 Yara BRG + customization by Stefan -dfate- Molls"
-		hash = "0b53b67bb3b004a8681e1458dd1895d0"
-		id = "62aa783b-f12f-5bb5-9d96-7aee1666788b"
-	strings:
-		$s2 = "move_uploaded_file($userfile, \"entrika.php\"); " fullword
-		$s3 = "Send this file: <INPUT NAME=\"userfile\" TYPE=\"file\">" fullword
-		$s4 = "<INPUT TYPE=\"hidden\" name=\"MAX_FILE_SIZE\" value=\"100000\">" fullword
-	condition:
-		2 of them
-}
 rule telnet_pl {
 	meta:
 		description = "Semi-Auto-generated  - file telnet.pl.txt"
@@ -292,19 +96,6 @@ rule telnet_pl {
 	condition:
 		all of them
 }
-rule w3d_php_php {
-	meta:
-		description = "Semi-Auto-generated  - file w3d.php.php.txt"
-		author = "Neo23x0 Yara BRG + customization by Stefan -dfate- Molls"
-		hash = "987f66b29bfb209a0b4f097f84f57c3b"
-		id = "1a4e3c84-2d3b-5245-bccc-9a5f59b9fc17"
-	strings:
-		$s0 = "W3D Shell"
-		$s1 = "By: Warpboy"
-		$s2 = "No Query Executed"
-	condition:
-		2 of them
-}
 rule WinX_Shell_html {
 	meta:
 		description = "Semi-Auto-generated  - file WinX Shell.html.txt"
@@ -315,152 +106,6 @@ rule WinX_Shell_html {
 		$s0 = "WinX Shell"
 		$s1 = "Created by greenwood from n57"
 		$s2 = "<td><font color=\\\"#990000\\\">Win Dir:</font></td>"
-	condition:
-		2 of them
-}
-rule Dx_php_php {
-	meta:
-		description = "Semi-Auto-generated  - file Dx.php.php.txt"
-		author = "Neo23x0 Yara BRG + customization by Stefan -dfate- Molls"
-		hash = "9cfe372d49fe8bf2fac8e1c534153d9b"
-		id = "67d0bccb-d39a-5e30-bdc0-801525ebddd7"
-	strings:
-		$s0 = "print \"\\n\".'Tip: to view the file \"as is\" - open the page in <a href=\"'.Dx"
-		$s2 = "$DEF_PORTS=array (1=>'tcpmux (TCP Port Service Multiplexer)',2=>'Management Util"
-		$s3 = "$ra44  = rand(1,99999);$sj98 = \"sh-$ra44\";$ml = \"$sd98\";$a5 = $_SERVER['HTTP"
-	condition:
-		1 of them
-}
-rule csh_php_php {
-	meta:
-		description = "Semi-Auto-generated  - file csh.php.php.txt"
-		author = "Neo23x0 Yara BRG + customization by Stefan -dfate- Molls"
-		hash = "194a9d3f3eac8bc56d9a7c55c016af96"
-		id = "da691516-d6c9-5c4b-85c3-f1cd7fc96ae7"
-	strings:
-		$s0 = ".::[c0derz]::. web-shell"
-		$s1 = "http://c0derz.org.ua"
-		$s2 = "vint21h@c0derz.org.ua"
-		$s3 = "$name='63a9f0ea7bb98050796b649e85481845';//root"
-	condition:
-		1 of them
-}
-rule pHpINJ_php_php {
-	meta:
-		description = "Semi-Auto-generated  - file pHpINJ.php.php.txt"
-		author = "Neo23x0 Yara BRG + customization by Stefan -dfate- Molls"
-		hash = "d7a4b0df45d34888d5a09f745e85733f"
-		id = "7bf54ef4-a3d8-51c6-8db7-bf8947e992ed"
-	strings:
-		$s1 = "News Remote PHP Shell Injection"
-		$s3 = "Php Shell <br />" fullword
-		$s4 = "<input type = \"text\" name = \"url\" value = \""
-	condition:
-		2 of them
-}
-rule sig_2008_php_php {
-	meta:
-		description = "Semi-Auto-generated  - file 2008.php.php.txt"
-		author = "Neo23x0 Yara BRG + customization by Stefan -dfate- Molls"
-		hash = "3e4ba470d4c38765e4b16ed930facf2c"
-		id = "bfa3caa9-70a5-536b-a887-58427eee43df"
-	strings:
-		$s0 = "Codz by angel(4ngel)"
-		$s1 = "Web: http://www.4ngel.net"
-		$s2 = "$admin['cookielife'] = 86400;"
-		$s3 = "$errmsg = 'The file you want Downloadable was nonexistent';"
-	condition:
-		1 of them
-}
-rule ak74shell_php_php {
-	meta:
-		description = "Semi-Auto-generated  - file ak74shell.php.php.txt"
-		author = "Neo23x0 Yara BRG + customization by Stefan -dfate- Molls"
-		hash = "7f83adcb4c1111653d30c6427a94f66f"
-		id = "eaf243cb-fa26-5f34-a724-60a08acff636"
-	strings:
-		$s1 = "$res .= '<td align=\"center\"><a href=\"'.$xshell.'?act=chmod&file='.$_SESSION["
-		$s2 = "AK-74 Security Team Web Site: www.ak74-team.net"
-		$s3 = "$xshell"
-	condition:
-		2 of them
-}
-rule Rem_View_php_php {
-	meta:
-		description = "Semi-Auto-generated  - file Rem View.php.php.txt"
-		author = "Neo23x0 Yara BRG + customization by Stefan -dfate- Molls"
-		hash = "29420106d9a81553ef0d1ca72b9934d9"
-		id = "6137434c-89e9-537b-9b26-b56178022b76"
-	strings:
-		$s0 = "$php=\"/* line 1 */\\n\\n// \".mm(\"for example, uncomment next line\").\""
-		$s2 = "<input type=submit value='\".mm(\"Delete all dir/files recursive\").\" (rm -fr)'"
-		$s4 ="Welcome to phpRemoteView (RemView)"
-	condition:
-		1 of them
-}
-rule Java_Shell_js {
-	meta:
-		description = "Semi-Auto-generated  - file Java Shell.js.txt"
-		author = "Neo23x0 Yara BRG + customization by Stefan -dfate- Molls"
-		hash = "36403bc776eb12e8b7cc0eb47c8aac83"
-		id = "eff52c3a-fc3a-5e80-8da9-786168159ebc"
-	strings:
-		$s2 = "PySystemState.initialize(System.getProperties(), null, argv);" fullword
-		$s3 = "public class JythonShell extends JPanel implements Runnable {" fullword
-		$s4 = "public static int DEFAULT_SCROLLBACK = 100"
-	condition:
-		2 of them
-}
-rule STNC_php_php {
-	meta:
-		description = "Semi-Auto-generated  - file STNC.php.php.txt"
-		author = "Neo23x0 Yara BRG + customization by Stefan -dfate- Molls"
-		hash = "2e56cfd5b5014cbbf1c1e3f082531815"
-		id = "8a7167f6-fa62-574f-a37c-3ceadc7f92ec"
-	strings:
-		$s0 = "drmist.ru" fullword
-		$s1 = "hidden(\"action\",\"download\").hidden_pwd().\"<center><table><tr><td width=80"
-		$s2 = "STNC WebShell"
-		$s3 = "http://www.security-teams.net/index.php?showtopic="
-	condition:
-		1 of them
-}
-rule aZRaiLPhp_v1_0_php {
-	meta:
-		description = "Semi-Auto-generated  - file aZRaiLPhp v1.0.php.txt"
-		author = "Neo23x0 Yara BRG + customization by Stefan -dfate- Molls"
-		hash = "26b2d3943395682e36da06ed493a3715"
-		id = "60152b96-e8d3-5b06-a855-fb64a490742b"
-	strings:
-		$s0 = "azrailphp"
-		$s1 = "<br><center><INPUT TYPE='SUBMIT' NAME='dy' VALUE='Dosya Yolla!'></center>"
-		$s3 = "<center><INPUT TYPE='submit' name='okmf' value='TAMAM'></center>"
-	condition:
-		2 of them
-}
-rule Moroccan_Spamers_Ma_EditioN_By_GhOsT_php {
-	meta:
-		description = "Semi-Auto-generated  - file Moroccan Spamers Ma-EditioN By GhOsT.php.txt"
-		author = "Neo23x0 Yara BRG + customization by Stefan -dfate- Molls"
-		hash = "d1b7b311a7ffffebf51437d7cd97dc65"
-		id = "721d6e9f-a237-5462-a8d3-f838d7fda420"
-	strings:
-		$s0 = ";$sd98=\"john.barker446@gmail.com\""
-		$s1 = "print \"Sending mail to $to....... \";"
-		$s2 = "<td colspan=\"2\" width=\"715\" background=\"/simparts/images/cellpic1.gif\" hei"
-	condition:
-		1 of them
-}
-rule zacosmall_php {
-	meta:
-		description = "Semi-Auto-generated  - file zacosmall.php.txt"
-		author = "Neo23x0 Yara BRG + customization by Stefan -dfate- Molls"
-		hash = "5295ee8dc2f5fd416be442548d68f7a6"
-		id = "25946aa7-7c56-5670-ae2f-c55e65a3b911"
-	strings:
-		$s0 = "rand(1,99999);$sj98"
-		$s1 = "$dump_file.='`'.$rows2[0].'`"
-		$s3 = "filename=\\\"dump_{$db_dump}_${table_d"
 	condition:
 		2 of them
 }
@@ -478,19 +123,6 @@ rule CmdAsp_asp {
 	condition:
 		2 of them
 }
-rule mysql_shell_php {
-	meta:
-		description = "Semi-Auto-generated  - file mysql_shell.php.txt"
-		author = "Neo23x0 Yara BRG + customization by Stefan -dfate- Molls"
-		hash = "d42aec2891214cace99b3eb9f3e21a63"
-		id = "e517984b-575c-5ead-a438-9767d2c74099"
-	strings:
-		$s0 = "SooMin Kim"
-		$s1 = "smkim@popeye.snu.ac.kr"
-		$s2 = "echo \"<td><a href='$PHP_SELF?action=deleteData&dbname=$dbname&tablename=$tablen"
-	condition:
-		1 of them
-}
 rule Asmodeus_v0_1_pl {
 	meta:
 		description = "Semi-Auto-generated  - file Asmodeus v0.1.pl.txt"
@@ -505,19 +137,6 @@ rule Asmodeus_v0_1_pl {
 	condition:
 		2 of them
 }
-rule backup_php_often_with_c99shell {
-	meta:
-		description = "Semi-Auto-generated  - file backup.php.php.txt"
-		author = "Neo23x0 Yara BRG + customization by Stefan -dfate- Molls"
-		hash = "aeee3bae226ad57baf4be8745c3f6094"
-		id = "ce88027c-ae08-59f3-948d-6f3d58515468"
-	strings:
-		$s0 = "#phpMyAdmin MySQL-Dump" fullword
-		$s2 = ";db_connect();header('Content-Type: application/octetstr"
-		$s4 = "$data .= \"#Database: $database" fullword
-	condition:
-		all of them
-}
 rule Reader_asp {
 	meta:
 		description = "Semi-Auto-generated  - file Reader.asp.txt"
@@ -528,46 +147,6 @@ rule Reader_asp {
 		$s1 = "Mehdi & HolyDemon"
 		$s2 = "www.infilak."
 		$s3 = "'*T@*r@#@&mms^PdbYbVuBcAAA==^#~@%><form method=post name=inf><table width=\"75%"
-	condition:
-		2 of them
-}
-rule myshell_php_php {
-	meta:
-		description = "Semi-Auto-generated  - file myshell.php.php.txt"
-		author = "Neo23x0 Yara BRG + customization by Stefan -dfate- Molls"
-		hash = "62783d1db52d05b1b6ae2403a7044490"
-		id = "eaf243cb-fa26-5f34-a724-60a08acff636"
-	strings:
-		$s0 = "@chdir($work_dir) or ($shellOutput = \"MyShell: can't change directory."
-		$s1 = "echo \"<font color=$linkColor><b>MyShell file editor</font> File:<font color"
-		$s2 = " $fileEditInfo = \"&nbsp;&nbsp;:::::::&nbsp;&nbsp;Owner: <font color=$"
-	condition:
-		2 of them
-}
-rule jspshall_jsp {
-	meta:
-		description = "Semi-Auto-generated  - file jspshall.jsp.txt"
-		author = "Neo23x0 Yara BRG + customization by Stefan -dfate- Molls"
-		hash = "efe0f6edaa512c4e1fdca4eeda77b7ee"
-		id = "4bccad33-d26e-52c2-b7f8-802f2c8f3889"
-	strings:
-		$s0 = "kj021320"
-		$s1 = "case 'T':systemTools(out);break;"
-		$s2 = "out.println(\"<tr><td>\"+ico(50)+f[i].getName()+\"</td><td> file"
-	condition:
-		2 of them
-}
-rule rootshell_php {
-	meta:
-		description = "Semi-Auto-generated  - file rootshell.php.txt"
-		author = "Neo23x0 Yara BRG + customization by Stefan -dfate- Molls"
-		hash = "265f3319075536030e59ba2f9ef3eac6"
-		id = "aec6621e-f23a-5f9f-91f1-d2f1b1ab58d0"
-	strings:
-		$s0 = "shells.dl.am"
-		$s1 = "This server has been infected by $owner"
-		$s2 = "<input type=\"submit\" value=\"Include!\" name=\"inc\"></p>"
-		$s4 = "Could not write to file! (Maybe you didn't enter any text?)"
 	condition:
 		2 of them
 }
@@ -584,44 +163,6 @@ rule connectback2_pl {
 	condition:
 		1 of them
 }
-rule DefaceKeeper_0_2_php {
-	meta:
-		description = "Semi-Auto-generated  - file DefaceKeeper_0.2.php.txt"
-		author = "Neo23x0 Yara BRG + customization by Stefan -dfate- Molls"
-		hash = "713c54c3da3031bc614a8a55dccd7e7f"
-		id = "671323e2-42cb-5ce0-9839-5d01c446471c"
-	strings:
-		$s0 = "target fi1e:<br><input type=\"text\" name=\"target\" value=\"index.php\"></br>" fullword
-		$s1 = "eval(base64_decode(\"ZXZhbChiYXNlNjRfZGVjb2RlKCJhV2R1YjNKbFgzVnpaWEpmWVdKdmNuUW9"
-		$s2 = "<img src=\"http://s43.radikal.ru/i101/1004/d8/ced1f6b2f5a9.png\" align=\"center"
-	condition:
-		1 of them
-}
-rule shells_PHP_wso {
-	meta:
-		description = "Semi-Auto-generated  - file wso.txt"
-		author = "Neo23x0 Yara BRG + customization by Stefan -dfate- Molls"
-		hash = "33e2891c13b78328da9062fbfcf898b6"
-		id = "fdce6094-a88e-5da6-aeb0-bc97b15bf397"
-	strings:
-		$s0 = "$back_connect_p=\"IyEvdXNyL2Jpbi9wZXJsDQp1c2UgU29ja2V0Ow0KJGlhZGRyPWluZXRfYXRvbi"
-		$s3 = "echo '<h1>Execution PHP-code</h1><div class=content><form name=pf method=pos"
-	condition:
-		1 of them
-}
-rule backdoor1_php {
-	meta:
-		description = "Semi-Auto-generated  - file backdoor1.php.txt"
-		author = "Neo23x0 Yara BRG + customization by Stefan -dfate- Molls"
-		hash = "e1adda1f866367f52de001257b4d6c98"
-		id = "89f44a1c-8a42-58f6-9308-371f4e652bff"
-	strings:
-		$s1 = "echo \"[DIR] <A HREF=\\\"\".$_SERVER['PHP_SELF'].\"?rep=\".realpath($rep.\".."
-		$s2 = "class backdoor {"
-		$s4 = "echo \"<a href=\\\"\".$_SERVER['PHP_SELF'].\"?copy=1\\\">Copier un fichier</a> <"
-	condition:
-		1 of them
-}
 rule indexer_asp {
 	meta:
 		description = "Semi-Auto-generated  - file indexer.asp.txt"
@@ -631,18 +172,6 @@ rule indexer_asp {
 	strings:
 		$s0 = "<td>Nereye :<td><input type=\"text\" name=\"nereye\" size=25></td><td><input typ"
 		$s2 = "D7nD7l.km4snk`JzKnd{n_ejq;bd{KbPur#kQ8AAA==^#~@%>></td><td><input type=\"submit"
-	condition:
-		1 of them
-}
-rule DxShell_php_php {
-	meta:
-		description = "Semi-Auto-generated  - file DxShell.php.php.txt"
-		author = "Neo23x0 Yara BRG + customization by Stefan -dfate- Molls"
-		hash = "33a2b31810178f4c2e71fbdeb4899244"
-		id = "b89930b7-acf3-5078-8429-d59e27e4b00c"
-	strings:
-		$s0 = "print \"\\n\".'Tip: to view the file \"as is\" - open the page in <a href=\"'.Dx"
-		$s2 = "print \"\\n\".'<tr><td width=100pt class=linelisting><nobr>POST (php eval)</td><"
 	condition:
 		1 of them
 }
@@ -673,85 +202,6 @@ rule kacak_asp {
 	condition:
 		1 of them
 }
-rule PHP_Backdoor_Connect_pl_php {
-	meta:
-		description = "Semi-Auto-generated  - file PHP Backdoor Connect.pl.php.txt"
-		author = "Neo23x0 Yara BRG + customization by Stefan -dfate- Molls"
-		hash = "57fcd9560dac244aeaf95fd606621900"
-		id = "96c9258e-3894-5ee9-b52c-eb7ba7454416"
-	strings:
-		$s0 = "LorD of IRAN HACKERS SABOTAGE"
-		$s1 = "LorD-C0d3r-NT"
-		$s2 = "echo --==Userinfo==-- ;"
-	condition:
-		1 of them
-}
-rule Antichat_Socks5_Server_php_php {
-	meta:
-		description = "Semi-Auto-generated  - file Antichat Socks5 Server.php.php.txt"
-		author = "Neo23x0 Yara BRG + customization by Stefan -dfate- Molls"
-		hash = "cbe9eafbc4d86842a61a54d98e5b61f1"
-		id = "35d0930c-ef07-5fd4-9d7a-c0d685f92339"
-	strings:
-		$s0 = "$port = base_convert(bin2hex(substr($reqmessage[$id], 3+$reqlen+1, 2)), 16, 10);" fullword
-		$s3 = "#   [+] Domain name address type"
-		$s4 = "www.antichat.ru"
-	condition:
-		1 of them
-}
-rule Antichat_Shell_v1_3_php {
-	meta:
-		description = "Semi-Auto-generated  - file Antichat Shell v1.3.php.txt"
-		author = "Neo23x0 Yara BRG + customization by Stefan -dfate- Molls"
-		hash = "40d0abceba125868be7f3f990f031521"
-		id = "856cf977-24da-58e0-b6d2-820c92075ecc"
-	strings:
-		$s0 = "Antichat"
-		$s1 = "Can't open file, permission denide"
-		$s2 = "$ra44"
-	condition:
-		2 of them
-}
-rule Safe_Mode_Bypass_PHP_4_4_2_and_PHP_5_1_2_php {
-	meta:
-		description = "Semi-Auto-generated  - file Safe_Mode Bypass PHP 4.4.2 and PHP 5.1.2.php.txt"
-		author = "Neo23x0 Yara BRG + customization by Stefan -dfate- Molls"
-		hash = "49ad9117c96419c35987aaa7e2230f63"
-		id = "3e81f628-31b4-5c22-943e-62c8cb4c0c4d"
-	strings:
-		$s0 = "Welcome.. By This script you can jump in the (Safe Mode=ON) .. Enjoy"
-		$s1 = "Mode Shell v1.0</font></span>"
-		$s2 = "has been already loaded. PHP Emperor <xb5@hotmail."
-	condition:
-		1 of them
-}
-rule mysql_php_php {
-	meta:
-		description = "Semi-Auto-generated  - file mysql.php.php.txt"
-		author = "Neo23x0 Yara BRG + customization by Stefan -dfate- Molls"
-		hash = "12bbdf6ef403720442a47a3cc730d034"
-		id = "41730336-0dce-5ed9-95b0-c911a4e3cb48"
-	strings:
-		$s0 = "action=mysqlread&mass=loadmass\">load all defaults"
-		$s2 = "if (@passthru($cmd)) { echo \" -->\"; $this->output_state(1, \"passthru"
-		$s3 = "$ra44  = rand(1,99999);$sj98 = \"sh-$ra44\";$ml = \"$sd98\";$a5 = "
-	condition:
-		1 of them
-}
-rule cyberlords_sql_php_php {
-	meta:
-		description = "Semi-Auto-generated  - file cyberlords_sql.php.php.txt"
-		author = "Neo23x0 Yara BRG + customization by Stefan -dfate- Molls"
-		hash = "03b06b4183cb9947ccda2c3d636406d4"
-		id = "41730336-0dce-5ed9-95b0-c911a4e3cb48"
-	strings:
-		$s0 = "Coded by n0 [nZer0]"
-		$s1 = " www.cyberlords.net"
-		$s2 = "U29mdHdhcmUAQWRvYmUgSW1hZ2VSZWFkeXHJZTwAAAAMUExURf///wAAAJmZzAAAACJoURkAAAAE"
-		$s3 = "return \"<BR>Dump error! Can't write to \".htmlspecialchars($file);"
-	condition:
-		1 of them
-}
 rule cmd_asp_5_1_asp {
 	meta:
 		description = "Semi-Auto-generated  - file cmd-asp-5.1.asp.txt"
@@ -763,31 +213,6 @@ rule cmd_asp_5_1_asp {
 		$s3 = "Call oS.Run(\"win.com cmd.exe /c \"\"\" & szCMD & \" > \" & szTF &" fullword
 	condition:
 		1 of them
-}
-rule pws_php_php {
-	meta:
-		description = "Semi-Auto-generated  - file pws.php.php.txt"
-		author = "Neo23x0 Yara BRG + customization by Stefan -dfate- Molls"
-		hash = "ecdc6c20f62f99fa265ec9257b7bf2ce"
-		id = "1ec47c33-dbec-50bd-b4b0-8f00b704a816"
-	strings:
-		$s0 = "<div align=\"left\"><font size=\"1\">Input command :</font></div>" fullword
-		$s1 = "<input type=\"text\" name=\"cmd\" size=\"30\" class=\"input\"><br>" fullword
-		$s4 = "<input type=\"text\" name=\"dir\" size=\"30\" value=\"<? passthru(\"pwd\"); ?>"
-	condition:
-		2 of them
-}
-rule PHP_Shell_php_php {
-	meta:
-		description = "Semi-Auto-generated  - file PHP Shell.php.php.txt"
-		author = "Neo23x0 Yara BRG + customization by Stefan -dfate- Molls"
-		hash = "a2f8fa4cce578fc9c06f8e674b9e63fd"
-		id = "6978126c-5414-52d2-b085-6e5589716d93"
-	strings:
-		$s0 = "echo \"</form><form action=\\\"$SFileName?$urlAdd\\\" method=\\\"post\\\"><input"
-		$s1 = "echo \"<form action=\\\"$SFileName?$urlAdd\\\" method=\\\"POST\\\"><input type="
-	condition:
-		all of them
 }
 rule Ayyildiz_Tim___AYT__Shell_v_2_1_Biz_html {
 	meta:
@@ -815,58 +240,6 @@ rule EFSO_2_asp {
 	condition:
 		2 of them
 }
-rule Ajax_PHP_Command_Shell_php {
-	meta:
-		description = "Semi-Auto-generated  - file Ajax_PHP Command Shell.php.txt"
-		author = "Neo23x0 Yara BRG + customization by Stefan -dfate- Molls"
-		hash = "93d1a2e13a3368a2472043bd6331afe9"
-		id = "cae2e035-ae7b-589b-b2d9-e709028274c5"
-	strings:
-		$s1 = "newhtml = '<b>File browser is under construction! Use at your own risk!</b> <br>"
-		$s2 = "Empty Command..type \\\"shellhelp\\\" for some ehh...help"
-		$s3 = "newhtml = '<font size=0><b>This will reload the page... :(</b><br><br><form enct"
-	condition:
-		1 of them
-}
-rule Sincap_php_php {
-	meta:
-		description = "Semi-Auto-generated  - file Sincap.php.php.txt"
-		author = "Neo23x0 Yara BRG + customization by Stefan -dfate- Molls"
-		hash = "b68b90ff6012a103e57d141ed38a7ee9"
-		id = "8c4dc7b1-94ce-5528-8442-eae05d2c9980"
-	strings:
-		$s0 = "$baglan=fopen(\"/tmp/$ekinci\",'r');"
-		$s2 = "$tampon4=$tampon3-1"
-		$s3 = "@aventgrup.net"
-	condition:
-		2 of them
-}
-rule Test_php_php {
-	meta:
-		description = "Semi-Auto-generated  - file Test.php.php.txt"
-		author = "Neo23x0 Yara BRG + customization by Stefan -dfate- Molls"
-		hash = "77e331abd03b6915c6c6c7fe999fcb50"
-		id = "58d73264-6507-5560-ad3e-0cc86c2ee291"
-	strings:
-		$s0 = "$yazi = \"test\" . \"\\r\\n\";" fullword
-		$s2 = "fwrite ($fp, \"$yazi\");" fullword
-		$s3 = "$entry_line=\"HACKed by EntriKa\";" fullword
-	condition:
-		1 of them
-}
-rule mysql_tool_php_php {
-	meta:
-		description = "Semi-Auto-generated  - file mysql_tool.php.php.txt"
-		author = "Neo23x0 Yara BRG + customization by Stefan -dfate- Molls"
-		hash = "5fbe4d8edeb2769eda5f4add9bab901e"
-		id = "c67197d1-6e40-5bf2-9e1b-6ada43529435"
-	strings:
-		$s0 = "$error_text = '<strong>Failed selecting database \"'.$this->db['"
-		$s1 = "$ra44  = rand(1,99999);$sj98 = \"sh-$ra44\";$ml = \"$sd98\";$a5 = $_SERV"
-		$s4 = "<div align=\"center\">The backup process has now started<br "
-	condition:
-		1 of them
-}
 rule Zehir_4_asp {
 	meta:
 		description = "Semi-Auto-generated  - file Zehir 4.asp.txt"
@@ -876,46 +249,6 @@ rule Zehir_4_asp {
 	strings:
 		$s2 = "</a><a href='\"&dosyapath&\"?status=10&dPath=\"&f1.path&\"&path=\"&path&\"&Time="
 		$s4 = "<input type=submit value=\"Test Et!\" onclick=\""
-	condition:
-		1 of them
-}
-rule phpbackdoor15_php {
-	meta:
-		description = "Semi-Auto-generated  - file phpbackdoor15.php.txt"
-		author = "Neo23x0 Yara BRG + customization by Stefan -dfate- Molls"
-		hash = "0fdb401a49fc2e481e3dfd697078334b"
-		id = "a93b881b-3050-5f43-803c-4a571aaaef82"
-	strings:
-		$s1 = "echo \"fichier telecharge dans \".good_link(\"./\".$_FILES[\"fic\"][\"na"
-		$s2 = "if(move_uploaded_file($_FILES[\"fic\"][\"tmp_name\"],good_link(\"./\".$_FI"
-		$s3 = "echo \"Cliquez sur un nom de fichier pour lancer son telechargement. Cliquez s"
-	condition:
-		1 of them
-}
-rule sql_php_php {
-	meta:
-		description = "Semi-Auto-generated  - file sql.php.php.txt"
-		author = "Neo23x0 Yara BRG + customization by Stefan -dfate- Molls"
-		hash = "8334249cbb969f2d33d678fec2b680c5"
-		id = "41730336-0dce-5ed9-95b0-c911a4e3cb48"
-	strings:
-		$s1 = "fputs ($fp, \"# RST MySQL tools\\r\\n# Home page: http://rst.void.ru\\r\\n#"
-		$s2 = "http://rst.void.ru"
-		$s3 = "print \"<a href=\\\"$_SERVER[PHP_SELF]?s=$s&login=$login&passwd=$passwd&"
-	condition:
-		1 of them
-		and not uint32(0) == 0x6D783F3C /* <?xm */
-}
-rule DTool_Pro_php {
-	meta:
-		description = "Semi-Auto-generated  - file DTool Pro.php.txt"
-		author = "Neo23x0 Yara BRG + customization by Stefan -dfate- Molls"
-		hash = "366ad973a3f327dfbfb915b0faaea5a6"
-		id = "c02c522c-8418-5760-869a-52b41785bebc"
-	strings:
-		$s0 = "r3v3ng4ns\\nDigite"
-		$s1 = "if(!@opendir($chdir)) $ch_msg=\"dtool: line 1: chdir: It seems that the permissi"
-		$s3 = "if (empty($cmd) and $ch_msg==\"\") echo (\"Comandos Exclusivos do DTool Pro\\n"
 	condition:
 		1 of them
 }
@@ -934,44 +267,6 @@ rule telnetd_pl {
 	condition:
 		1 of them
 }
-rule php_include_w_shell_php {
-	meta:
-		description = "Semi-Auto-generated  - file php-include-w-shell.php.txt"
-		author = "Neo23x0 Yara BRG + customization by Stefan -dfate- Molls"
-		hash = "4e913f159e33867be729631a7ca46850"
-		id = "ddcf9031-2ec8-5a86-8326-60e4a699f494"
-	strings:
-		$s0 = "$dataout .= \"<td><a href='$MyLoc?$SREQ&incdbhost=$myhost&incdbuser=$myuser&incd"
-		$s1 = "if($run == 1 && $phpshellapp && $phpshellhost && $phpshellport) $strOutput .= DB"
-	condition:
-		1 of them
-}
-rule Safe0ver_Shell__Safe_Mod_Bypass_By_Evilc0der_php {
-	meta:
-		description = "Semi-Auto-generated  - file Safe0ver Shell -Safe Mod Bypass By Evilc0der.php.txt"
-		author = "Neo23x0 Yara BRG + customization by Stefan -dfate- Molls"
-		hash = "6163b30600f1e80d2bb5afaa753490b6"
-		id = "25971f62-33ee-5ed6-8d72-118be5bd2deb"
-	strings:
-		$s0 = "Safe0ver" fullword
-		$s1 = "Script Gecisi Tamamlayamadi!"
-		$s2 = "document.write(unescape('%3C%68%74%6D%6C%3E%3C%62%6F%64%79%3E%3C%53%43%52%49%50%"
-	condition:
-		1 of them
-}
-rule shell_php_php {
-	meta:
-		description = "Semi-Auto-generated  - file shell.php.php.txt"
-		author = "Neo23x0 Yara BRG + customization by Stefan -dfate- Molls"
-		hash = "1a95f0163b6dea771da1694de13a3d8d"
-		id = "eaf243cb-fa26-5f34-a724-60a08acff636"
-	strings:
-		$s1 = "/* We have found the parent dir. We must be carefull if the parent " fullword
-		$s2 = "$tmpfile = tempnam('/tmp', 'phpshell');"
-		$s3 = "if (ereg('^[[:blank:]]*cd[[:blank:]]+([^;]+)$', $command, $regs)) {" fullword
-	condition:
-		1 of them
-}
 rule telnet_cgi {
 	meta:
 		description = "Semi-Auto-generated  - file telnet.cgi.txt"
@@ -982,18 +277,6 @@ rule telnet_cgi {
 		$s1 = "W A R N I N G: Private Server"
 		$s2 = "print \"Set-Cookie: SAVEDPWD=;\\n\"; # remove password cookie"
 		$s3 = "$Prompt = $WinNT ? \"$CurrentDir> \" : \"[admin\\@$ServerName $C"
-	condition:
-		1 of them
-}
-rule backdoorfr_php {
-	meta:
-		description = "Semi-Auto-generated  - file backdoorfr.php.txt"
-		author = "Neo23x0 Yara BRG + customization by Stefan -dfate- Molls"
-		hash = "91e4afc7444ed258640e85bcaf0fecfc"
-		id = "5ba2b617-a873-5e80-9cfc-c61cc8d605f3"
-	strings:
-		$s1 = "www.victime.com/index.php?page=http://emplacement_de_la_backdoor.php , ou en tan"
-		$s2 = "print(\"<br>Provenance du mail : <input type=\\\"text\\\" name=\\\"provenanc"
 	condition:
 		1 of them
 }
@@ -1008,20 +291,6 @@ rule aspydrv_asp {
 		$s0 = "If mcolFormElem.Exists(LCase(sIndex)) Then Form = mcolFormElem.Item(LCase(sIndex))"
 		$s1 = "password"
 		$s2 = "session(\"shagman\")="
-	condition:
-		2 of them
-}
-rule cmdjsp_jsp {
-	meta:
-		description = "Semi-Auto-generated  - file cmdjsp.jsp.txt"
-		author = "Neo23x0 Yara BRG + customization by Stefan -dfate- Molls"
-		hash = "b815611cc39f17f05a73444d699341d4"
-		id = "048478a8-9622-54c7-80ed-e4e223d14500"
-	strings:
-		$s0 = "// note that linux = cmd and windows = \"cmd.exe /c + cmd\" " fullword
-		$s1 = "Process p = Runtime.getRuntime().exec(\"cmd.exe /C \" + cmd);" fullword
-		$s2 = "cmdjsp.jsp"
-		$s3 = "michaeldaw.org" fullword
 	condition:
 		2 of them
 }
@@ -1050,383 +319,6 @@ rule Ajan_asp {
 	condition:
 		1 of them
 }
-rule PHANTASMA_php {
-	meta:
-		description = "Semi-Auto-generated  - file PHANTASMA.php.txt"
-		author = "Neo23x0 Yara BRG + customization by Stefan -dfate- Molls"
-		hash = "52779a27fa377ae404761a7ce76a5da7"
-		id = "21ff4cee-9cdc-57d1-9c43-e033fdb47de0"
-	strings:
-		$s0 = ">[*] Safemode Mode Run</DIV>"
-		$s1 = "$file1 - $file2 - <a href=$SCRIPT_NAME?$QUERY_STRING&see=$file>$file</a><br>"
-		$s2 = "[*] Spawning Shell"
-		$s3 = "Cha0s"
-	condition:
-		2 of them
-}
-rule MySQL_Web_Interface_Version_0_8_php {
-	meta:
-		description = "Semi-Auto-generated  - file MySQL Web Interface Version 0.8.php.txt"
-		author = "Neo23x0 Yara BRG + customization by Stefan -dfate- Molls"
-		hash = "36d4f34d0a22080f47bb1cb94107c60f"
-		id = "90616d2d-082b-5983-a859-62d1c5b8066e"
-	strings:
-		$s0 = "SooMin Kim"
-		$s1 = "http://popeye.snu.ac.kr/~smkim/mysql"
-		$s2 = "href='$PHP_SELF?action=dropField&dbname=$dbname&tablename=$tablename"
-		$s3 = "<th>Type</th><th>&nbspM&nbsp</th><th>&nbspD&nbsp</th><th>unsigned</th><th>zerofi"
-	condition:
-		2 of them
-}
-rule _1_c2007_php_php_c100_php {
-	meta:
-		description = "Semi-Auto-generated  - from files 1.txt, c2007.php.php.txt, c100.php.txt"
-		author = "Neo23x0 Yara BRG + customization by Stefan -dfate- Molls"
-		super_rule = 1
-		hash0 = "44542e5c3e9790815c49d5f9beffbbf2"
-		hash1 = "d089e7168373a0634e1ac18c0ee00085"
-		hash2 = "38fd7e45f9c11a37463c3ded1c76af4c"
-		id = "00ada6a4-a32a-5184-867d-e10a8c95c41c"
-	strings:
-		$s0 = "echo \"<b>Changing file-mode (\".$d.$f.\"), \".view_perms_color($d.$f).\" (\""
-		$s3 = "echo \"<td>&nbsp;<a href=\\\"\".$sql_surl.\"sql_act=query&sql_query=\".ur"
-	condition:
-		1 of them
-}
-rule _nst_php_php_img_php_php_nstview_php_php {
-	meta:
-		description = "Semi-Auto-generated  - from files nst.php.php.txt, img.php.php.txt, nstview.php.php.txt"
-		author = "Neo23x0 Yara BRG + customization by Stefan -dfate- Molls"
-		super_rule = 1
-		hash0 = "ddaf9f1986d17284de83a17fe5f9fd94"
-		hash1 = "17a07bb84e137b8aa60f87cd6bfab748"
-		hash2 = "4745d510fed4378e4b1730f56f25e569"
-		id = "238242f5-4e57-5edb-8806-ea5e06f1f637"
-	strings:
-		$s0 = "<tr><form method=post><td><font color=red><b>Back connect:</b></font></td><td><i"
-		$s1 = "$perl_proxy_scp = \"IyEvdXNyL2Jpbi9wZXJsICANCiMhL3Vzci91c2MvcGVybC81LjAwNC9iaW4v"
-		$s2 = "<tr><form method=post><td><font color=red><b>Backdoor:</b></font></td><td><input"
-	condition:
-		1 of them
-}
-rule _network_php_php_xinfo_php_php_nfm_php_php {
-	meta:
-		description = "Semi-Auto-generated  - from files network.php.php.txt, xinfo.php.php.txt, nfm.php.php.txt"
-		author = "Neo23x0 Yara BRG + customization by Stefan -dfate- Molls"
-		super_rule = 1
-		hash0 = "acdbba993a5a4186fd864c5e4ea0ba4f"
-		hash1 = "2601b6fc1579f263d2f3960ce775df70"
-		hash2 = "401fbae5f10283051c39e640b77e4c26"
-		id = "4fd11db6-902d-5f1a-96c5-9dfcccce7488"
-	strings:
-		$s0 = ".textbox { background: White; border: 1px #000000 solid; color: #000099; font-fa"
-		$s2 = "<input class='inputbox' type='text' name='pass_de' size=50 onclick=this.value=''"
-	condition:
-		all of them
-}
-rule _w_php_php_c99madshell_v2_1_php_php_wacking_php_php_SpecialShell_99_php_php {
-	meta:
-		description = "Semi-Auto-generated "
-		author = "Neo23x0 Yara BRG + customization by Stefan -dfate- Molls"
-		super_rule = 1
-		hash0 = "38a3f9f2aa47c2e940695f3dba6a7bb2"
-		hash1 = "3ca5886cd54d495dc95793579611f59a"
-		hash2 = "9c5bb5e3a46ec28039e8986324e42792"
-		hash3 = "09609851caa129e40b0d56e90dfc476c"
-		id = "ee1fd555-f1bc-59a5-998c-f6098de8623e"
-	strings:
-		$s2 = "echo \"<hr size=\\\"1\\\" noshade><b>Done!</b><br>Total time (secs.): \".$ft"
-		$s3 = "$fqb_log .= \"\\r\\n------------------------------------------\\r\\nDone!\\r"
-	condition:
-		1 of them
-}
-rule _w_php_php_c99madshell_v2_1_php_php_wacking_php_php_c99shell_v1_0_php_php_c99php_SpecialShell_99_php_php {
-	meta:
-		description = "Semi-Auto-generated "
-		author = "Neo23x0 Yara BRG + customization by Stefan -dfate- Molls"
-		super_rule = 1
-		hash0 = "38a3f9f2aa47c2e940695f3dba6a7bb2"
-		hash1 = "3ca5886cd54d495dc95793579611f59a"
-		hash2 = "9c5bb5e3a46ec28039e8986324e42792"
-		hash3 = "d8ae5819a0a2349ec552cbcf3a62c975"
-		hash4 = "9e9ae0332ada9c3797d6cee92c2ede62"
-		hash5 = "09609851caa129e40b0d56e90dfc476c"
-		id = "ce88027c-ae08-59f3-948d-6f3d58515468"
-	strings:
-		$s0 = "$sess_data[\"cut\"] = array(); c99_s"
-		$s3 = "if ((!eregi(\"http://\",$uploadurl)) and (!eregi(\"https://\",$uploadurl))"
-	condition:
-		1 of them
-}
-rule _w_php_php_wacking_php_php_SpecialShell_99_php_php {
-	meta:
-		description = "Semi-Auto-generated  - from files w.php.php.txt, wacking.php.php.txt, SpecialShell_99.php.php.txt"
-		author = "Neo23x0 Yara BRG + customization by Stefan -dfate- Molls"
-		super_rule = 1
-		hash0 = "38a3f9f2aa47c2e940695f3dba6a7bb2"
-		hash1 = "9c5bb5e3a46ec28039e8986324e42792"
-		hash2 = "09609851caa129e40b0d56e90dfc476c"
-		id = "c01ad0e5-1aff-5128-9d0c-5d0967532a4b"
-	strings:
-		$s0 = "\"<td>&nbsp;<a href=\\\"\".$sql_surl.\"sql_act=query&sql_query=\".ur"
-		$s2 = "c99sh_sqlquery"
-	condition:
-		1 of them
-}
-rule _w_php_php_c99madshell_v2_1_php_php_wacking_php_php_SsEs_php_php_SpecialShell_99_php_php {
-	meta:
-		description = "Semi-Auto-generated "
-		author = "Neo23x0 Yara BRG + customization by Stefan -dfate- Molls"
-		super_rule = 1
-		hash0 = "38a3f9f2aa47c2e940695f3dba6a7bb2"
-		hash1 = "3ca5886cd54d495dc95793579611f59a"
-		hash2 = "9c5bb5e3a46ec28039e8986324e42792"
-		hash3 = "6cd50a14ea0da0df6a246a60c8f6f9c9"
-		hash4 = "09609851caa129e40b0d56e90dfc476c"
-		id = "ee1fd555-f1bc-59a5-998c-f6098de8623e"
-	strings:
-		$s0 = "else {$act = \"f\"; $d = dirname($mkfile); if (substr($d,-1) != DIRECTORY_SEPA"
-		$s3 = "else {echo \"<b>File \\\"\".$sql_getfile.\"\\\":</b><br>\".nl2br(htmlspec"
-	condition:
-		1 of them
-}
-rule _r577_php_php_SnIpEr_SA_Shell_php_r57_php_php_spy_php_php_s_php_php {
-	meta:
-		description = "Semi-Auto-generated "
-		author = "Neo23x0 Yara BRG + customization by Stefan -dfate- Molls"
-		super_rule = 1
-		hash0 = "0714f80f35c1fddef1f8938b8d42a4c8"
-		hash1 = "911195a9b7c010f61b66439d9048f400"
-		hash2 = "eddf7a8fde1e50a7f2a817ef7cece24f"
-		hash3 = "eed14de3907c9aa2550d95550d1a2d5f"
-		hash4 = "817671e1bdc85e04cc3440bbd9288800"
-		id = "44b53124-c8b6-545b-819f-77fd65e5d61b"
-	strings:
-		$s0 = "echo sr(15,\"<b>\".$lang[$language.'_text"
-		$s1 = ".$arrow.\"</b>\",in('text','"
-	condition:
-		2 of them
-}
-rule _r577_php_php_SnIpEr_SA_Shell_php_r57_php_php {
-	meta:
-		description = "Semi-Auto-generated  - from files r577.php.php.txt, SnIpEr_SA Shell.php.txt, r57.php.php.txt"
-		author = "Neo23x0 Yara BRG + customization by Stefan -dfate- Molls"
-		super_rule = 1
-		hash0 = "0714f80f35c1fddef1f8938b8d42a4c8"
-		hash1 = "911195a9b7c010f61b66439d9048f400"
-		hash2 = "eddf7a8fde1e50a7f2a817ef7cece24f"
-		id = "44b53124-c8b6-545b-819f-77fd65e5d61b"
-	strings:
-		$s0 = "'ru_text9' =>'???????? ????? ? ???????? ??? ? /bin/bash'," fullword
-		$s1 = "$name='ec371748dc2da624b35a4f8f685dd122'"
-		$s2 = "rst.void.ru"
-	condition:
-		3 of them
-}
-rule _w_php_php_wacking_php_php_SsEs_php_php_SpecialShell_99_php_php {
-	meta:
-		description = "Semi-Auto-generated  - from files w.php.php.txt, wacking.php.php.txt, SsEs.php.php.txt, SpecialShell_99.php.php.txt"
-		author = "Neo23x0 Yara BRG + customization by Stefan -dfate- Molls"
-		super_rule = 1
-		hash0 = "38a3f9f2aa47c2e940695f3dba6a7bb2"
-		hash1 = "9c5bb5e3a46ec28039e8986324e42792"
-		hash2 = "6cd50a14ea0da0df6a246a60c8f6f9c9"
-		hash3 = "09609851caa129e40b0d56e90dfc476c"
-		id = "81480945-b684-50b6-9431-4ab7a786b214"
-	strings:
-		$s0 = "\"ext_avi\"=>array(\"ext_avi\",\"ext_mov\",\"ext_mvi"
-		$s1 = "echo \"<b>Execute file:</b><form action=\\\"\".$surl.\"\\\" method=POST><inpu"
-		$s2 = "\"ext_htaccess\"=>array(\"ext_htaccess\",\"ext_htpasswd"
-	condition:
-		1 of them
-}
-rule _w_php_php_c99madshell_v2_1_php_php_wacking_php_php {
-	meta:
-		description = "Semi-Auto-generated  - from files w.php.php.txt, c99madshell_v2.1.php.php.txt, wacking.php.php.txt"
-		author = "Neo23x0 Yara BRG + customization by Stefan -dfate- Molls"
-		super_rule = 1
-		hash0 = "38a3f9f2aa47c2e940695f3dba6a7bb2"
-		hash1 = "3ca5886cd54d495dc95793579611f59a"
-		hash2 = "9c5bb5e3a46ec28039e8986324e42792"
-		id = "ee1fd555-f1bc-59a5-998c-f6098de8623e"
-	strings:
-		$s0 = "<b>Dumped! Dump has been writed to "
-		$s1 = "if ((!empty($donated_html)) and (in_array($act,$donated_act))) {echo \"<TABLE st"
-		$s2 = "<input type=submit name=actarcbuff value=\\\"Pack buffer to archive"
-	condition:
-		1 of them
-}
-rule _w_php_php_c99madshell_v2_1_php_php_wacking_php_php_c99shell_v1_0_php_php_c99php {
-	meta:
-		description = "Semi-Auto-generated "
-		author = "Neo23x0 Yara BRG + customization by Stefan -dfate- Molls"
-		super_rule = 1
-		hash0 = "38a3f9f2aa47c2e940695f3dba6a7bb2"
-		hash1 = "3ca5886cd54d495dc95793579611f59a"
-		hash2 = "9c5bb5e3a46ec28039e8986324e42792"
-		hash3 = "d8ae5819a0a2349ec552cbcf3a62c975"
-		hash4 = "9e9ae0332ada9c3797d6cee92c2ede62"
-		id = "ce88027c-ae08-59f3-948d-6f3d58515468"
-	strings:
-		$s0 = "@ini_set(\"highlight" fullword
-		$s1 = "echo \"<b>Result of execution this PHP-code</b>:<br>\";" fullword
-		$s2 = "{$row[] = \"<b>Owner/Group</b>\";}" fullword
-	condition:
-		2 of them
-}
-rule _w_php_php_c99madshell_v2_1_php_php_wacking_php_php_c99shell_v1_0_php_php_SpecialShell_99_php_php {
-	meta:
-		description = "Semi-Auto-generated "
-		author = "Neo23x0 Yara BRG + customization by Stefan -dfate- Molls"
-		super_rule = 1
-		hash0 = "38a3f9f2aa47c2e940695f3dba6a7bb2"
-		hash1 = "3ca5886cd54d495dc95793579611f59a"
-		hash2 = "9c5bb5e3a46ec28039e8986324e42792"
-		hash3 = "d8ae5819a0a2349ec552cbcf3a62c975"
-		hash4 = "09609851caa129e40b0d56e90dfc476c"
-		id = "ce88027c-ae08-59f3-948d-6f3d58515468"
-	strings:
-		$s0 = "c99ftpbrutecheck"
-		$s1 = "$ftpquick_t = round(getmicrotime()-$ftpquick_st,4);" fullword
-		$s2 = "$fqb_lenght = $nixpwdperpage;" fullword
-		$s3 = "$sock = @ftp_connect($host,$port,$timeout);" fullword
-	condition:
-		2 of them
-}
-rule _w_php_php_wacking_php_php_c99shell_v1_0_php_php_c99php_SpecialShell_99_php_php {
-	meta:
-		description = "Semi-Auto-generated "
-		author = "Neo23x0 Yara BRG + customization by Stefan -dfate- Molls"
-		super_rule = 1
-		hash0 = "38a3f9f2aa47c2e940695f3dba6a7bb2"
-		hash1 = "9c5bb5e3a46ec28039e8986324e42792"
-		hash2 = "d8ae5819a0a2349ec552cbcf3a62c975"
-		hash3 = "9e9ae0332ada9c3797d6cee92c2ede62"
-		hash4 = "09609851caa129e40b0d56e90dfc476c"
-		id = "ce88027c-ae08-59f3-948d-6f3d58515468"
-	strings:
-		$s0 = "$sqlquicklaunch[] = array(\""
-		$s1 = "else {echo \"<center><b>File does not exists (\".htmlspecialchars($d.$f).\")!<"
-	condition:
-		all of them
-}
-rule _c99shell_v1_0_php_php_c99php_SsEs_php_php {
-	meta:
-		description = "Semi-Auto-generated  - from files c99shell_v1.0.php.php.txt, c99php.txt, SsEs.php.php.txt"
-		author = "Neo23x0 Yara BRG + customization by Stefan -dfate- Molls"
-		super_rule = 1
-		hash0 = "d8ae5819a0a2349ec552cbcf3a62c975"
-		hash1 = "9e9ae0332ada9c3797d6cee92c2ede62"
-		hash2 = "6cd50a14ea0da0df6a246a60c8f6f9c9"
-		id = "ce88027c-ae08-59f3-948d-6f3d58515468"
-	strings:
-		$s3 = "if (!empty($delerr)) {echo \"<b>Deleting with errors:</b><br>\".$delerr;}" fullword
-	condition:
-		1 of them
-}
-rule _Crystal_php_nshell_php_php_load_shell_php_php {
-	meta:
-		description = "Semi-Auto-generated  - from files Crystal.php.txt, nshell.php.php.txt, load_shell.php.php.txt"
-		author = "Neo23x0 Yara BRG + customization by Stefan -dfate- Molls"
-		super_rule = 1
-		hash0 = "fdbf54d5bf3264eb1c4bff1fac548879"
-		hash1 = "4a44d82da21438e32d4f514ab35c26b6"
-		hash2 = "0c5d227f4aa76785e4760cdcff78a661"
-		id = "a92134cd-7f10-589f-bcda-508bc7a20efe"
-	strings:
-		$s0 = "if ($filename != \".\" and $filename != \"..\"){" fullword
-		$s1 = "$dires = $dires . $directory;" fullword
-		$s4 = "$arr = array_merge($arr, glob(\"*\"));" fullword
-	condition:
-		2 of them
-}
-rule _w_php_php_c99madshell_v2_1_php_php_wacking_php_php_dC3_Security_Crew_Shell_PRiV_php_SpecialShell_99_php_php {
-	meta:
-		description = "Semi-Auto-generated "
-		author = "Neo23x0 Yara BRG + customization by Stefan -dfate- Molls"
-		super_rule = 1
-		hash0 = "38a3f9f2aa47c2e940695f3dba6a7bb2"
-		hash1 = "3ca5886cd54d495dc95793579611f59a"
-		hash2 = "9c5bb5e3a46ec28039e8986324e42792"
-		hash3 = "433706fdc539238803fd47c4394b5109"
-		hash4 = "09609851caa129e40b0d56e90dfc476c"
-		id = "d22c4cc3-842b-5a24-bf4b-a8024b447b9e"
-	strings:
-		$s0 = " if ($mode & 0x200) {$world[\"execute\"] = ($world[\"execute\"] == \"x\")?\"t\":"
-		$s1 = " $group[\"execute\"] = ($mode & 00010)?\"x\":\"-\";" fullword
-	condition:
-		all of them
-}
-rule _c99shell_v1_0_php_php_c99php_1_c2007_php_php_c100_php {
-	meta:
-		description = "Semi-Auto-generated  - from files c99shell_v1.0.php.php.txt, c99php.txt, 1.txt, c2007.php.php.txt, c100.php.txt"
-		author = "Neo23x0 Yara BRG + customization by Stefan -dfate- Molls"
-		super_rule = 1
-		hash0 = "d8ae5819a0a2349ec552cbcf3a62c975"
-		hash1 = "9e9ae0332ada9c3797d6cee92c2ede62"
-		hash2 = "44542e5c3e9790815c49d5f9beffbbf2"
-		hash3 = "d089e7168373a0634e1ac18c0ee00085"
-		hash4 = "38fd7e45f9c11a37463c3ded1c76af4c"
-		id = "ce88027c-ae08-59f3-948d-6f3d58515468"
-	strings:
-		$s0 = "$result = mysql_query(\"SHOW PROCESSLIST\", $sql_sock); " fullword
-	condition:
-		all of them
-}
-rule _w_php_php_c99madshell_v2_1_php_php_wacking_php_php_1_SpecialShell_99_php_php {
-	meta:
-		description = "Semi-Auto-generated "
-		author = "Neo23x0 Yara BRG + customization by Stefan -dfate- Molls"
-		super_rule = 1
-		hash0 = "38a3f9f2aa47c2e940695f3dba6a7bb2"
-		hash1 = "3ca5886cd54d495dc95793579611f59a"
-		hash2 = "9c5bb5e3a46ec28039e8986324e42792"
-		hash3 = "44542e5c3e9790815c49d5f9beffbbf2"
-		hash4 = "09609851caa129e40b0d56e90dfc476c"
-		id = "4915146e-141c-5515-ac5a-61901d42dc40"
-	strings:
-		$s0 = "if ($total === FALSE) {$total = 0;}" fullword
-		$s1 = "$free_percent = round(100/($total/$free),2);" fullword
-		$s2 = "if (!$bool) {$bool = is_dir($letter.\":\\\\\");}" fullword
-		$s3 = "$bool = $isdiskette = in_array($letter,$safemode_diskettes);" fullword
-	condition:
-		2 of them
-}
-rule _r577_php_php_r57_php_php_spy_php_php_s_php_php {
-	meta:
-		description = "Semi-Auto-generated  - from files r577.php.php.txt, r57.php.php.txt, spy.php.php.txt, s.php.php.txt"
-		author = "Neo23x0 Yara BRG + customization by Stefan -dfate- Molls"
-		super_rule = 1
-		hash0 = "0714f80f35c1fddef1f8938b8d42a4c8"
-		hash1 = "eddf7a8fde1e50a7f2a817ef7cece24f"
-		hash2 = "eed14de3907c9aa2550d95550d1a2d5f"
-		hash3 = "817671e1bdc85e04cc3440bbd9288800"
-		id = "022d2255-50cd-500b-8d91-8e34f3c46fcf"
-	strings:
-		$s0 = "$res = mssql_query(\"select * from r57_temp_table\",$db);" fullword
-		$s2 = "'eng_text30'=>'Cat file'," fullword
-		$s3 = "@mssql_query(\"drop table r57_temp_table\",$db);" fullword
-	condition:
-		1 of them
-}
-rule _nixrem_php_php_c99shell_v1_0_php_php_c99php_NIX_REMOTE_WEB_SHELL_v_0_5_alpha_Lite_Public_Version_php {
-	meta:
-		description = "Semi-Auto-generated "
-		author = "Neo23x0 Yara BRG + customization by Stefan -dfate- Molls"
-		super_rule = 1
-		hash0 = "40a3e86a63d3d7f063a86aab5b5f92c6"
-		hash1 = "d8ae5819a0a2349ec552cbcf3a62c975"
-		hash2 = "9e9ae0332ada9c3797d6cee92c2ede62"
-		hash3 = "f3ca29b7999643507081caab926e2e74"
-		id = "ce88027c-ae08-59f3-948d-6f3d58515468"
-	strings:
-		$s0 = "$num = $nixpasswd + $nixpwdperpage;" fullword
-		$s1 = "$ret = posix_kill($pid,$sig);" fullword
-		$s2 = "if ($uid) {echo join(\":\",$uid).\"<br>\";}" fullword
-		$s3 = "$i = $nixpasswd;" fullword
-	condition:
-		2 of them
-}
 
 rule Unpack_Injectt {
 	meta:
@@ -1439,18 +331,6 @@ rule Unpack_Injectt {
 		$s2 = "%s -Run                              -->To Install And Run The Service"
 		$s3 = "%s -Uninstall                        -->To Uninstall The Service"
 		$s4 = "(STANDARD_RIGHTS_REQUIRED |SC_MANAGER_CONNECT |SC_MANAGER_CREATE_SERVICE |SC_MAN"
-	condition:
-		all of them
-}
-rule FeliksPack3___PHP_Shells_ssh {
-	meta:
-		description = "Webshells Auto-generated - file ssh.php"
-		license = "Detection Rule License 1.1 https://github.com/Neo23x0/signature-base/blob/master/LICENSE"
-		author = "Florian Roth (Nextron Systems)"
-		hash = "1aa5307790d72941589079989b4f900e"
-		id = "0b971065-df16-5092-beff-c55608447f19"
-	strings:
-		$s0 = "eval(gzinflate(str_rot13(base64_decode('"
 	condition:
 		all of them
 }
@@ -1685,20 +565,6 @@ rule ASP_CmdAsp {
 	condition:
 		all of them
 }
-rule PHP_Backdoor_v1 {
-	meta:
-		description = "Webshells Auto-generated - file PHP Backdoor v1.php"
-		license = "Detection Rule License 1.1 https://github.com/Neo23x0/signature-base/blob/master/LICENSE"
-		author = "Florian Roth (Nextron Systems)"
-		hash = "0506ba90759d11d78befd21cabf41f3d"
-		id = "f47298a9-a47c-5088-ab1f-1bd76bfd0ca8"
-	strings:
-
-		$s5 = "echo\"<form method=\\\"POST\\\" action=\\\"\".$_SERVER['PHP_SELF'].\"?edit=\".$th"
-		$s8 = "echo \"<a href=\\\"\".$_SERVER['PHP_SELF'].\"?proxy"
-	condition:
-		all of them
-}
 rule svchostdll {
 	meta:
 		description = "Webshells Auto-generated - file svchostdll.dll"
@@ -1850,20 +716,6 @@ rule shelltools_g0t_root_uptime {
 	condition:
 		all of them
 }
-rule Simple_PHP_BackDooR {
-	meta:
-		description = "Webshells Auto-generated - file Simple_PHP_BackDooR.php"
-		license = "Detection Rule License 1.1 https://github.com/Neo23x0/signature-base/blob/master/LICENSE"
-		author = "Florian Roth (Nextron Systems)"
-		hash = "a401132363eecc3a1040774bec9cb24f"
-		id = "bd7c19b9-e035-5e70-b626-1d210cadc055"
-	strings:
-		$s0 = "<hr>to browse go to http://<? echo $SERVER_NAME.$REQUEST_URI; ?>?d=[directory he"
-		$s6 = "if(!move_uploaded_file($HTTP_POST_FILES['file_name']['tmp_name'], $dir.$fn"
-		$s9 = "// a simple php backdoor"
-	condition:
-		1 of them
-}
 rule sig_2005Gray {
 	meta:
 		description = "Webshells Auto-generated - file 2005Gray.asp"
@@ -1914,19 +766,6 @@ rule hkshell_hkrmv {
 	strings:
 		$s5 = "/THUMBPOSITION7"
 		$s6 = "\\EvilBlade\\"
-	condition:
-		all of them
-}
-rule FeliksPack3___PHP_Shells_phpft {
-	meta:
-		description = "Webshells Auto-generated - file phpft.php"
-		license = "Detection Rule License 1.1 https://github.com/Neo23x0/signature-base/blob/master/LICENSE"
-		author = "Florian Roth (Nextron Systems)"
-		hash = "60ef80175fcc6a879ca57c54226646b1"
-		id = "00bc690b-4977-5076-a40a-edd39c37233f"
-	strings:
-		$s6 = "PHP Files Thief"
-		$s11 = "http://www.4ngel.net"
 	condition:
 		all of them
 }
@@ -2295,19 +1134,6 @@ rule dbgntboot {
 	condition:
 		all of them
 }
-rule PHP_shell {
-	meta:
-		description = "Webshells Auto-generated - file shell.php"
-		license = "Detection Rule License 1.1 https://github.com/Neo23x0/signature-base/blob/master/LICENSE"
-		author = "Florian Roth (Nextron Systems)"
-		hash = "45e8a00567f8a34ab1cccc86b4bc74b9"
-		id = "08dff4db-3b1c-5702-a8c9-efaedf83c4ff"
-	strings:
-		$s0 = "AR8iROET6mMnrqTpC6W1Kp/DsTgxNby9H1xhiswfwgoAtED0y6wEXTihoAtICkIX6L1+vTUYWuWz"
-		$s11 = "1HLp1qnlCyl5gko8rDlWHqf8/JoPKvGwEm9Q4nVKvEh0b0PKle3zeFiJNyjxOiVepMSpflJkPv5s"
-	condition:
-		all of them
-}
 rule hxdef100 {
 	meta:
 		description = "Webshells Auto-generated - file hxdef100.exe"
@@ -2543,18 +1369,6 @@ rule adjustcr {
 	condition:
 		all of them
 }
-rule FeliksPack3___PHP_Shells_xIShell {
-	meta:
-		description = "Webshells Auto-generated - file xIShell.php"
-		license = "Detection Rule License 1.1 https://github.com/Neo23x0/signature-base/blob/master/LICENSE"
-		author = "Florian Roth (Nextron Systems)"
-		hash = "997c8437c0621b4b753a546a53a88674"
-		id = "32a32a9a-8d5f-5b3f-8ff4-560555f0ae1e"
-	strings:
-		$s3 = "if (!$nix) { $xid = implode(explode(\"\\\\\",$xid),\"\\\\\\\\\");}echo (\"<td><a href='Java"
-	condition:
-		all of them
-}
 rule HYTop_AppPack_2005 {
 	meta:
 		description = "Webshells Auto-generated - file 2005.asp"
@@ -2720,18 +1534,6 @@ rule shelltools_g0t_root_HideRun {
 	strings:
 		$s0 = "Usage -- hiderun [AppName]"
 		$s7 = "PVAX SW, Alexey A. Popoff, Moscow, 1997."
-	condition:
-		all of them
-}
-rule PHP_Shell_v1_7 {
-	meta:
-		description = "Webshells Auto-generated - file PHP_Shell_v1.7.php"
-		license = "Detection Rule License 1.1 https://github.com/Neo23x0/signature-base/blob/master/LICENSE"
-		author = "Florian Roth (Nextron Systems)"
-		hash = "b5978501c7112584532b4ca6fb77cba5"
-		id = "7eb69ac3-90bb-5a44-8dcd-e71f5edcf18f"
-	strings:
-		$s8 = "<title>[ADDITINAL TITTLE]-phpShell by:[YOURNAME]"
 	condition:
 		all of them
 }
@@ -3101,99 +1903,6 @@ rule FSO_s_ajan_2 {
 		$s3 = "/file.zip"
 	condition:
 		all of them
-}
-
-rule SoakSoak_Infected_Wordpress {
-	meta:
-		description = "Detects a SoakSoak infected Wordpress site http://goo.gl/1GzWUX"
-		reference = "http://goo.gl/1GzWUX"
-		license = "Detection Rule License 1.1 https://github.com/Neo23x0/signature-base/blob/master/LICENSE"
-		author = "Florian Roth (Nextron Systems)"
-		date = "2014/12/15"
-		score = 60
-		id = "d147af65-72de-50be-9435-bef47eb4842a"
-	strings:
-		$s0 = "wp_enqueue_script(\"swfobject\");" ascii fullword
-		$s1 = "function FuncQueueObject()" ascii fullword
-		$s2 = "add_action(\"wp_enqueue_scripts\", 'FuncQueueObject');" ascii fullword
-	condition:
-		all of ($s*)
-}
-
-/*
-	Yara Rule Set
-	Author: Florian Roth
-	Date: 2016-09-10
-	Identifier: Webshells PHP bartblaze
-*/
-
-/* Rule Set ----------------------------------------------------------------- */
-
-rule UploadShell_98038f1efa4203432349badabad76d44337319a6 {
-	meta:
-		description = "Detects a web shell"
-		license = "Detection Rule License 1.1 https://github.com/Neo23x0/signature-base/blob/master/LICENSE"
-		author = "Florian Roth (Nextron Systems)"
-		reference = "https://github.com/bartblaze/PHP-backdoors"
-		date = "2016-09-10"
-		hash1 = "506a6ab6c49e904b4adc1f969c91e4f1a7dde164be549c6440e766de36c93215"
-		id = "f385b091-ce0d-5d5b-8eeb-57e00c8d0210"
-	strings:
-		$s2 = "$lol = file_get_contents(\"../../../../../wp-config.php\");" fullword ascii
-		$s6 = "@unlink(\"./export-check-settings.php\");" fullword ascii
-		$s7 = "$xos = \"Safe-mode:[Safe-mode:\".$hsafemode.\"] " fullword ascii
-	condition:
-		( uint16(0) == 0x3f3c and filesize < 6KB and ( all of ($s*) ) ) or ( all of them )
-}
-
-rule Unknown_8af033424f9590a15472a23cc3236e68070b952e {
-	meta:
-		description = "Detects a web shell"
-		license = "Detection Rule License 1.1 https://github.com/Neo23x0/signature-base/blob/master/LICENSE"
-		author = "Florian Roth (Nextron Systems)"
-		reference = "https://github.com/bartblaze/PHP-backdoors"
-		date = "2016-09-10"
-		hash1 = "3382b5eaaa9ad651ab4793e807032650667f9d64356676a16ae3e9b02740ccf3"
-		id = "fcf467b6-f49a-52d0-a57f-9f3cf6d0b25b"
-	strings:
-		$s1 = "$check = $_SERVER['DOCUMENT_ROOT']" fullword ascii
-		$s2 = "$fp=fopen(\"$check\",\"w+\");" fullword ascii
-		$s3 = "fwrite($fp,base64_decode('" ascii
-	condition:
-		( uint16(0) == 0x6324 and filesize < 6KB and ( all of ($s*) ) ) or ( all of them )
-}
-
-rule Unknown_0f06c5d1b32f4994c3b3abf8bb76d5468f105167 {
-	meta:
-		description = "Detects a web shell"
-		license = "Detection Rule License 1.1 https://github.com/Neo23x0/signature-base/blob/master/LICENSE"
-		author = "Florian Roth (Nextron Systems)"
-		reference = "https://github.com/bartblaze/PHP-backdoors"
-		date = "2016-09-10"
-		hash1 = "6362372850ac7455fa9461ed0483032a1886543f213a431f81a2ac76d383b47e"
-		id = "efd09da2-f232-5a21-99c8-dc2bf00baa73"
-	strings:
-		$s1 = "$check = $_SERVER['DOCUMENT_ROOT'] . \"/libraries/lola.php\" ;" fullword ascii
-		$s2 = "$fp=fopen(\"$check\",\"w+\");" fullword ascii
-		$s3 = "fwrite($fp,base64_decode('" ascii
-	condition:
-		( uint16(0) == 0x6324 and filesize < 2KB and all of them )
-}
-
-rule WSOShell_0bbebaf46f87718caba581163d4beed56ddf73a7 {
-	meta:
-		description = "Detects a web shell"
-		license = "Detection Rule License 1.1 https://github.com/Neo23x0/signature-base/blob/master/LICENSE"
-		author = "Florian Roth (Nextron Systems)"
-		reference = "https://github.com/bartblaze/PHP-backdoors"
-		date = "2016-09-10"
-		hash1 = "d053086907aed21fbb6019bf9e644d2bae61c63563c4c3b948d755db3e78f395"
-		id = "92165645-5392-588d-ba2a-5ef6b7499a5a"
-	strings:
-		$s8 = "$default_charset='Wi'.'ndo.'.'ws-12'.'51';" fullword ascii
-		$s9 = "$mosimage_session = \"" fullword ascii
-	condition:
-		( uint16(0) == 0x3f3c and filesize < 300KB and all of them )
 }
 
 /*

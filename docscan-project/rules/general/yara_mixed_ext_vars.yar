@@ -28,24 +28,6 @@ rule Acrotray_Anomaly {
       and not all of ($s*)
 }
 
-rule COZY_FANCY_BEAR_modified_VmUpgradeHelper {
-   meta:
-      description = "Detects a malicious VmUpgradeHelper.exe as mentioned in the CrowdStrike report"
-      license = "Detection Rule License 1.1 https://github.com/Neo23x0/signature-base/blob/master/LICENSE"
-      author = "Florian Roth (Nextron Systems)"
-      reference = "https://www.crowdstrike.com/blog/bears-midst-intrusion-democratic-national-committee/"
-      date = "2016-06-14"
-      id = "97b844a4-0fa4-5850-8803-2212a69e3d16"
-   strings:
-      $s1 = "VMware, Inc." wide fullword
-      $s2 = "Virtual hardware upgrade helper service" fullword wide
-      $s3 = "vmUpgradeHelper\\vmUpgradeHelper.pdb" ascii
-   condition:
-      uint16(0) == 0x5a4d and
-      filename == "VmUpgradeHelper.exe" and
-      not all of ($s*)
-}
-
 rule IronTiger_Gh0stRAT_variant {
    meta:
       author = "Cyber Safety Solutions, Trend Micro"
@@ -91,88 +73,6 @@ rule msi_dll_Anomaly {
       $x1 = "msi.dll.eng" fullword wide
    condition:
       uint16(0) == 0x5a4d and filesize < 15KB and filename == "msi.dll" and $x1
-}
-
-rule PoS_Malware_MalumPOS_Config {
-   meta:
-      license = "Detection Rule License 1.1 https://github.com/Neo23x0/signature-base/blob/master/LICENSE"
-      author = "Florian Roth (Nextron Systems)"
-      date = "2015-06-25"
-      description = "MalumPOS Config File"
-      reference = "http://blog.trendmicro.com/trendlabs-security-intelligence/trend-micro-discovers-malumpos-targets-hotels-and-other-us-industries/"
-      id = "0fd2b9c2-d016-5db2-8fcc-618df6c815de"
-   strings:
-      $s1 = "[PARAMS]"
-      $s2 = "Name="
-      $s3 = "InterfacesIP="
-      $s4 = "Port="
-   condition:
-      all of ($s*) and filename == "log.ini" and filesize < 20KB
-}
-
-rule Malware_QA_update_test {
-   meta:
-      description = "VT Research QA uploaded malware - file update_.exe"
-      license = "Detection Rule License 1.1 https://github.com/Neo23x0/signature-base/blob/master/LICENSE"
-      author = "Florian Roth (Nextron Systems)"
-      reference = "VT Research QA"
-      date = "2016-08-29"
-      score = 80
-      hash1 = "3b3392bc730ded1f97c51e23611740ff8b218abf0a1100903de07819eeb449aa"
-      id = "8f319277-1eaf-559e-87ad-f4ab89b04ca5"
-   strings:
-      $s1 = "test.exe" fullword ascii
-      $s2 = "PADDINGXXPADDINGPADDINGXXPADDINGPADDINGXXPADDINGPADDINGXXPADDINGP" fullword ascii
-   condition:
-      uint16(0) == 0x5a4d and filesize < 1000KB and all of them and filename == "update.exe"
-}
-
-/* These only work with external variable "filename" ------------------------ */
-/* as used in LOKI, THOR, SPARK --------------------------------------------- */
-
-rule SysInterals_PipeList_NameChanged {
-   meta:
-      description = "Detects NirSoft PipeList"
-      license = "Detection Rule License 1.1 https://github.com/Neo23x0/signature-base/blob/master/LICENSE"
-      author = "Florian Roth (Nextron Systems)"
-      reference = "https://goo.gl/Mr6M2J"
-      date = "2016-06-04"
-      score = 90
-      hash1 = "83f0352c14fa62ae159ab532d85a2b481900fed50d32cc757aa3f4ccf6a13bee"
-      id = "01afcf29-a74c-5be2-8b24-694a2802ef34"
-   strings:
-      $s1 = "PipeList" ascii fullword
-      $s2 = "Sysinternals License" ascii fullword
-   condition:
-      uint16(0) == 0x5a4d and filesize < 170KB and all of them
-      and not filename contains "pipelist.exe"
-      and not filename contains "PipeList.exe"
-}
-
-/*
-	Yara Rule Set
-	Author: Florian Roth
-	Date: 2016-04-26
-	Identifier: regsvr32 issue
-*/
-
-/* Rule Set ----------------------------------------------------------------- */
-
-rule SCT_Scriptlet_in_Temp_Inet_Files {
-   meta:
-      description = "Detects a scriptlet file in the temporary Internet files (see regsvr32 AppLocker bypass)"
-      license = "Detection Rule License 1.1 https://github.com/Neo23x0/signature-base/blob/master/LICENSE"
-      author = "Florian Roth (Nextron Systems)"
-      reference = "http://goo.gl/KAB8Jw"
-      date = "2016-04-26"
-      id = "8b729257-3676-59b2-961c-dae1085cbbf6"
-   strings:
-      $s1 = "<scriptlet>" fullword ascii nocase
-      $s2 = "ActiveXObject(\"WScript.Shell\")" ascii
-   condition:
-      (uint32(0) == 0x4D583F3C or uint32(0) == 0x6D78F3C)  /* <?XM or <?xm */
-      and $s1 and $s2
-      and filepath contains "Temporary Internet Files"
 }
 
 /* causes FPs and relevancy is limited
@@ -239,39 +139,6 @@ rule HackTool_Producers {
       not extension contains ".ini" and
       not extension contains ".xml" and
       not extension contains ".sqlite"
-}
-
-rule Exe_Cloaked_as_ThumbsDb {
-   meta:
-      description = "Detects an executable cloaked as thumbs.db - Malware"
-      date = "2014-07-18"
-      license = "Detection Rule License 1.1 https://github.com/Neo23x0/signature-base/blob/master/LICENSE"
-      author = "Florian Roth (Nextron Systems)"
-      score = 50
-      id = "ff09f8cf-de5a-50fc-aa0b-c54f7667e246"
-   condition:
-      uint16(0) == 0x5a4d and filename matches /[Tt]humbs\.db/
-}
-
-rule Fake_AdobeReader_EXE {
-   meta:
-      description = "Detects an fake AdobeReader executable based on filesize OR missing strings in file"
-      date = "2014-09-11"
-      author = "Florian Roth (Nextron Systems)"
-      score = 50
-      nodeepdive = 1
-      nodeepdive = 1
-      id = "e3dd9d94-9f4b-5ff9-bfec-29abfb3555bb"
-   strings:
-      $s1 = "Adobe Systems" ascii
-
-      $fp1 = "Adobe Reader" ascii wide
-      $fp2 = "Xenocode Virtual Appliance Runtime" ascii wide
-   condition:
-      uint16(0) == 0x5a4d and
-      filename matches /AcroRd32.exe/i and
-      not $s1 in (filesize - 2500..filesize)
-      and not 1 of ($fp*)
 }
 
 rule mimikatz_lsass_mdmp {

@@ -6,9 +6,8 @@ A fork of YARA 4.6.0 with a custom **`docscan`** module: it detects weaponised d
 rules over the extracted macro, disarms the document and reports the result as JSON. All of it lives
 in **one binary**, `yara64.exe`. On top of it, a **watcher** automatically scans new files on the system.
 
-> This is the single project document. Primary sources (the original `doc-scan.ps1`, Mandiant
-> material, the article, the full vendor rule corpus) live in `reference/` (not published) and are
-> not part of our documentation.
+> This is the single project document. The previous implementation (PowerShell `doc-scan.ps1` for
+> Wazuh active-response, based on Mandiant scripts) is retired and deleted; its logic was ported to C.
 
 **Contents**
 1. [Goals and principles](#1-goals-and-principles)
@@ -51,7 +50,7 @@ Principles:
   Every binary read is bounds-checked.
 - **Portable C.** Developed on macOS, production is Windows (MSVC). No POSIX-only APIs in the module.
 - **No Wazuh coupling.** `yara64.exe` emits plain JSON; delivery is the job of the watcher/agent.
-- The reference logic is `reference/doc-scan.ps1` + `reference/mandiant/` (ported from PowerShell to C).
+- The detection logic was ported from the previous PowerShell implementation (`doc-scan.ps1`, Mandiant) to C.
 
 ---
 
@@ -157,11 +156,10 @@ docscan-project/
     run_tests.ps1                   regression test (copy → detect+disarm → re-scan)
     gen_range.ps1                   test-range generator (Windows + Word COM)
     gen_test_range.py               quick synthetic generator (no Office)
-    samples/generated/              local duplicate of test-samples/generated (not in git)
   test-samples/                     ORIGINAL test set (never disarm in place!)
     provided/  (7)                  real customer samples (live C2) — NOT in git
     generated/ (16)                 safe test range, one file per vector
-  reference/                        primary sources (PS script, Mandiant, article, full vendor corpus) — not in git
+  vendor-sources/                   git clones of the vendor rule sources at pinned commits — not in git
 ```
 
 ---
@@ -430,7 +428,7 @@ the JSON is printed at `SCAN_FINISHED`, when everything is known.
 {"ftype":"ooxml","findings":["MACRO_PRESENT","MACRO_SUSPICIOUS","MACRO_AUTOEXEC"],"verdict":"HIGH",
  "evidence":{"vba_evidence":"powershell | DownloadFile | AutoOpen"},
  "yara_matches":["powershell","VBA_AutoExec_DownloadCradle"],
- "yara_file_matches":[],"yara_info_matches":["Contains_VBA_macro_code","office_document_vba"],
+ "yara_file_matches":[],"yara_doc_matches":[],"yara_info_matches":["Contains_VBA_macro_code","office_document_vba"],
  "details":[{"rule":"DS_MACRO_SUSPICIOUS","finding":"MACRO_SUSPICIOUS","severity":"HIGH","disarm":"macro","mitre":"T1204.002"}, …]}
 ```
 `verdict` — the highest `meta.severity` among matching policy rules (`INFO` if none). `evidence` —
@@ -538,8 +536,8 @@ PDF: 2 HIGHs on pdf.js test files made exactly for `/Launch` and `launchURL` —
 | `rules/docscan-policy.yar` | policy | `import "docscan"` + the `DS_*` rules |
 | `rules/docscan.yar` | our detection only | `include "docscan-policy.yar"` |
 | `rules/docscan-index.yar` | **full scan** (watcher, run_tests) | `include "docscan-policy.yar"` + `include "file-index.yar"` |
-| `rules/file-index.yar` | vendor rules (**generated**) | 1460 files, 7176 rules: `general/` (signature-base), `general/elastic/` (Elastic protections-artifacts, Windows/Multi), `maldoc/signature-base/`, `maldoc/community/` + `maldoc/vba_plaintext.yar` |
-| `rules/general/`, `rules/general/elastic/`, `rules/maldoc/signature-base/`, `rules/maldoc/community/` | vendor rules (**generated**, do not edit) | signature-base + Elastic + Yara-Rules, filtered per rule |
+| `rules/file-index.yar` | vendor rules (**generated**) | 1364 files, 5560 rules: `general/` (signature-base), `general/elastic/` (Elastic protections-artifacts, Windows/Multi), `general/bartblaze/`, `general/inquest/`, `maldoc/signature-base/`, `maldoc/community/`, `maldoc/bartblaze/`, `maldoc/inquest/` + `maldoc/vba_plaintext.yar` |
+| `rules/general/**`, `rules/maldoc/**` (except `vba_plaintext.yar`) | vendor rules (**generated**, do not edit) | signature-base + Elastic + Yara-Rules + bartblaze + InQuest, filtered per rule |
 | `rules/maldoc/vba_plaintext.yar` | our rules for decompressed VBA | edited by hand |
 | `rules/tools/build_vendor_rules.py` | generator | pinned sources, filter, renames, tags, compile check |
 | `rules/tools/vendor-selection.txt` | which source files are used | `<dir> <source> <path>` |
@@ -548,7 +546,9 @@ PDF: 2 HIGHs on pdf.js test files made exactly for `/Launch` and `launchURL` —
 | `rules/tools/fp_scan.ps1` | false-positive check | `cand.yarc` over a clean Windows (`C:\Windows`, `Program Files`, `ProgramData`) with `--file-vars` → `hits.txt`, `summary.txt` |
 
 **How the vendor set is built** (`python3 rules/tools/build_vendor_rules.py [--fetch]`):
-1. Sources live in `reference/vendor-rules-full-later/vendor/` (not in git), commits pinned in `SOURCES`;
+1. Sources live in `docscan-project/vendor-sources/` (not in git), commits pinned in `SOURCES`:
+   Neo23x0/signature-base, Yara-Rules/rules, elastic/protections-artifacts, bartblaze/Yara-rules,
+   InQuest/yara-rules (**we do not write our own rules — only ready public ones**);
    `--fetch` clones/checks them out.
 2. Files from `vendor-selection.txt` are taken; every rule is checked on its own:
    - **dropped** if it cannot fire on a Windows workstation: the condition requires ELF / Mach-O /
@@ -558,9 +558,16 @@ PDF: 2 HIGHs on pdf.js test files made exactly for `/Launch` and `launchURL` —
    - **dropped by hand** (`DROP`: name or `(file, name)` + reason) — false positives, outdated copies;
    - **skipped as a duplicate** when a rule with the same name and the same strings/condition was already
      taken from another file ("Duplicates skipped" in the report);
+   - **dropped as old** — last change (`modified`, else `date`/`creation_date`) in `OLD_YEAR` = 2016 or earlier:
+     rules for samples and campaigns of that time. Rules without a date stay;
+   - **dropped as non-Windows** — the condition has no PE check and the rule or file name points at another
+     platform, a network appliance, server software or scripts the watcher never scans (Linux, Solaris,
+     Cisco, Fortinet, Ivanti, Citrix, F5, Palo Alto, VMware, Confluence, MOVEit, PHP, JSP/Java, Python, Perl, Bash…);
    - **renamed** on identifier clashes between different rules (`RENAME`) instead of excluding a whole file;
    - **tagged `docscan_info`** (`INFO`) when it is an indicator rather than a detection: "a macro exists",
      the word `powershell`, PDF structure/metadata anomalies, PDF features the policy grades itself.
+     For bartblaze and InQuest — **by the author's own classification** (`SOURCE_INFO`): bartblaze
+     `category = "INFO"`, InQuest `Severity = "0"`;
 3. `file-index.yar` is generated and compiled with `yarac` (with the THOR variables); any error or a name
    clash between different rules fails the build. `--check` tells whether `rules/` matches the generator.
 
@@ -584,11 +591,49 @@ does not scan such files).
 
 **Tags in JSON:** a vendor match → `yara_file_matches` (detection: document → at least MEDIUM,
 general → HIGH); a `docscan_info` match → `yara_info_matches` (for the analyst only, does **not** raise
-the verdict, ignored in Layer 2). The `docscan_doc` tag (the generator puts it on every `maldoc/` rule) marks a document rule: on a
-file the module did not recognise as a document (`ftype=unknown`: exe, dll, scripts) its match goes to
-`yara_info_matches`. Shellcode patterns (`getEIP`, PEB access) and words like `ppaction` are strong in a
-document but ordinary code in any binary: without this tag they gave ~2,900 false HIGHs on .NET/Adobe/
-Acronis files of a clean Windows 10.
+the verdict, ignored in Layer 2). The `docscan_doc` tag (the generator puts it on every `maldoc/` rule) marks a document rule: its match goes to
+a separate field `yara_doc_matches`, and the watcher counts it as a detection **only for the `document`
+category** (by extension); for `general` (exe, dll, msi, scripts, HTML) it is only visible in the JSON.
+Shellcode patterns (`getEIP`, PEB access) and words like `ppaction` are strong in a document but ordinary
+code in any binary: without this they gave ~2,900 false HIGHs on .NET/Adobe/Acronis/MSI files of a clean
+Windows 10. The category comes from the extension, not from the module, because the module does not parse
+some document formats (`.one`, `.mht`) while `.msi` is an OLE file.
+
+**Rule set cleanup (2026-11-05).** Principle: we do not invent rules, we work with ready ones; every rule
+is unique; old, ineffective and non-Windows rules go. Was 7,239 rules, now **5,560** (1,364 files):
+
+| Removed | Count | How |
+|---|---|---|
+| exact duplicates (same strings and condition under another name) | 2 | `DROP`: `PHISH_02Dez2015_dropped_p0o6543f` (community copy), `office_document_vba` |
+| variants (same strings + an extra condition — fire only where the base rule already fires) | ~505 | file `yara-rules_vuln_drivers_strict_renamed.yar`; `PAExec_Cloaked`, `SUSP_VULN_DRV_PROCEXP152_Renamed_May23`, `Windows_VulnDriver_MyPortIO_37c35201`, `EquationGroup_Toolset_Apr17_msgks_mskgu` |
+| off-purpose (configuration hygiene, not malware) | 3 | file `configured_vulns_ext_vars.yar` |
+| obsolete technology (Adobe Flash) | 5 | InQuest `Adobe_Flash_DRM_Use_After_Free`, `CVE_2018_4878_0day_ITW`, `Microsoft_Office_Document_with_Embedded_Flash_File`; `Flash_in_LNK`, `crime_ole_loadswf_cve_2018_4878` |
+| slow (YARA: "slowing down scanning") | 14 | `DROP`; after the cleanup `yarac` gives no such warning |
+| old (last change ≤ 2016) | ~985 | `OLD_YEAR` |
+| non-Windows (by name, no PE check) | ~170 | platform filter |
+| false / ineffective on a Windows 10 workstation (whole disk, incl. `C:\Users`) | 3 | InQuest `PE.rule` (any PE), `Embedded_PE.rule` (555 .NET images), `ClamAV_Emotet_String_Aggregrate.rule` (`Microsoft.CSharp.dll`) |
+
+Every dropped rule with its reason is in `rules/tools/vendor-report.md`. The 23-sample regression is unchanged.
+
+**Step 3 (2026-11-05) — new formats.** Added sources bartblaze/Yara-rules (MIT, `rules/generic/`, 21 files)
+and InQuest/yara-rules (MIT, 25 files; `GlowSpark_Downloader` does not compile — not taken). Coverage:
+
+| Format | Ready rules |
+|---|---|
+| `.msc` (GrimResource) | `GrimResource` (bartblaze; the author labels it INFO → indicator) |
+| `.one` | `OneNote_BuildPath` (bartblaze), `gen_onenote_phish` (signature-base) |
+| `.iqy` | `IQY_File` (INFO), `IQY_File_With_Suspicious_URL`, `IQY_File_With_Pivot_Extension_URL` (InQuest) |
+| `.slk` | `Symbolic_Link_Files_Macros_File_Characteristic`, `…_DLL_Reference_Suspicious_Characteristics` (InQuest) |
+| XLM macros (Excel 4.0) | `Excel_Hidden_Macro_Sheet`, `Microsoft_XLSX_with_Macrosheet` (InQuest) |
+| `.xll` | `gen_excel_xll_addin_suspicious` (signature-base, moved to `general/`) |
+| `.url` | `URL_File_Local_EXE`, `gen_url_persitence` (signature-base) |
+| `.svg` | `SUSP_SVG_JS_Payload_Mar25` (signature-base) |
+| `.lnk` | the `LNK_Ruleset` set (bartblaze, all INFO — indicators) |
+| PDF / DDE / RTF | `NTLM_Credentials_Theft_via_PDF_Files`, `PDF_Document_with_Embedded_IQY_File`, `Microsoft_Office_DDE_Command_Execution`, `RTF_Byte_Nibble_Obfuscation` (InQuest), `Generic_Phishing_PDF`, `oAuth_Phishing_PDF` (bartblaze) |
+
+No ready rules exist for `.odt/.ods/.odp`, `.scf`, `.library-ms`, `.chm` and `.mht/.mhtml` (the only rule,
+`Office_as_MHTML`, dates from 2015 and was dropped as old) — the watcher does **not**
+scan these extensions (to be added when rules appear; delivr-to/detections and Nick Carr's gist have no license). Check of the new sources: 476 benign documents — 0.
 
 Rules for index files:
 - `include` paths **use `/`**, relative to the index file or absolute (YARA treats `\` as an escape).
@@ -606,11 +651,12 @@ No `yarac64.exe` or the compile fails — a WARN in the log and scans from the `
 
 | Category | Extensions | Scan |
 |---|---|---|
-| `document` | doc dot docx docm dotx dotm, xls xlt xlsx xlsm xltx xltm xlsb, ppt pps pot pptx pptm potx potm ppsx ppsm, rtf, pdf, lnk | `yara64 -w --docscan-json [--docscan-disarm] -C rules.yarc` |
-| `general` | exe dll sys scr cpl ocx com msi, ps1 psm1 vbs vbe js jse wsf wsh hta bat cmd jar, zip rar 7z iso img vhd vhdx | the same without `--docscan-disarm` (only vendor rules apply) |
+| `document` | doc dot docx docm dotx dotm, xls xlt xlsx xlsm xltx xltm xlsb, ppt pps pot pptx pptm potx potm ppsx ppsm, **xla xlam ppa ppam**, rtf, pdf, lnk, **one, iqy slk** | `yara64 -w --docscan-json [--docscan-disarm] -C rules.yarc` |
+| `general` | exe dll sys scr cpl ocx com msi, **xll**, ps1 psm1 vbs vbe js jse wsf wsh hta bat cmd jar, **msc, url, svg htm html**, zip rar 7z iso img vhd vhdx | the same without `--docscan-disarm` (vendor rules; document rules only in the JSON) |
 | other | — | ignored |
 
-- **Record verdict:** the verdict from the JSON (policy); if there are `yara_file_matches` — a document
+- **Record verdict:** the verdict from the JSON (policy); if there are `yara_file_matches` (for `document`
+  together with `yara_doc_matches`) — a document
   is raised to at least `MEDIUM`, a general file becomes `HIGH`. Also `SKIPPED` (> `-MaxSizeMB`) and
   `ERROR` (scan failed).
 - Vendor rules see the bytes **before** disarm: yara collects the matches before `--docscan-disarm` runs.
@@ -625,7 +671,10 @@ No `yarac64.exe` or the compile fails — a WARN in the log and scans from the `
    stable (up to `-ReadyTimeout` s).
 4. If the SHA256 equals the last scan of that path — skip.
 5. `Scan-File`: SHA256 → `Invoke-Scan` → write the JSON line + a log line.
-6. Ctrl+C / task stop → `finally`: unregister events, `Dispose` the watchers.
+6. Buffer overflow (Error event): after 60 s the watcher walks the `-WatchPath` folders and queues files
+   changed since the overflow (log line `доскановування після переповнення`); files already scanned with the
+   same SHA256 are skipped.
+7. Ctrl+C / task stop → `finally`: unregister events, `Dispose` the watchers.
 On start it checks that `yara64.exe` and `-Rules` exist and compile.
 
 | Function | What it does |
@@ -673,7 +722,7 @@ Start-ScheduledTask docscan-watcher          # Stop-ScheduledTask docscan-watche
    "docscan":{"ftype":"ooxml","findings":["MACRO_PRESENT","MACRO_SUSPICIOUS","MACRO_AUTOEXEC","MACRO_NETWORK"],
               "verdict":"HIGH","evidence":{"vba_evidence":"powershell | WScript.Shell | …"},
               "yara_matches":["powershell","VBA_AutoExec_DownloadCradle"],
-              "yara_file_matches":[],"yara_info_matches":["Contains_VBA_macro_code","office_document_vba"],"details":[…]},
+              "yara_file_matches":[],"yara_doc_matches":[],"yara_info_matches":["Contains_VBA_macro_code","office_document_vba"],"details":[…]},
    "yara_file_matches":[],"disarm":null,"errors":[]}
   ```
 - `results\watcher.log` — human-readable log. Follow it live:
@@ -1025,7 +1074,10 @@ agent's `ossec.log` (`localfile` not picked up).
 - Defender in ordinary folders may remove a malicious file first → the log says the file vanished before the scan, and there is no JSON record.
 - Noisy indicators (`invalid_trailer_structure`, `invalid_xref_numbers`, `powershell`, `Contains_VBA_macro_code`, …) are tagged `docscan_info` → `yara_info_matches`, no verdict change (on 476 benign local documents: 25 false MEDIUM → 0). `DS_PDF_OPENACTION` without JS is INFO (35 of them were benign).
 - Archives are scanned as-is, not unpacked.
-- FileSystemWatcher buffer overflow (thousands of files at once) → some events are lost (logged).
+- FileSystemWatcher buffer overflow (thousands of files at once) → events are lost; after 60 s the watcher
+  rescans files changed since then (walking `-WatchPath` takes a while on big profiles).
+- `.odt/.ods/.odp`, `.scf`, `.library-ms`, `.chm`, `.mht/.mhtml` are not scanned — no ready rules.
+  `GrimResource` (`.msc`) is labelled INFO by its author — the match is in `yara_info_matches`, no alert.
 - The quarantine folder (`-BackupDir`) grows without limit — clean it manually or with a retention job.
 
 **Repository**
@@ -1043,8 +1095,8 @@ git push docscan feature/docscan-module
 ```
 
 **Never published** (`.gitignore`): `docscan-project/test-samples/provided/` (live customer samples,
-internal C2), `attack-vectors`, `docscan-project/reference/` (Mandiant, Elastic rules), `.claude/`,
-`docscan-project/test-range/samples/`, `*.docscan-bak`, `*.docscan-tmp`. The upstream rule
+internal C2), `attack-vectors`, `docscan-project/vendor-sources/` (rule source clones), `.claude/`,
+`docscan-project/test-range/samples/`, `docscan-project/fuzz/external/`, `docscan-project/dist/`, `*.docscan-bak`, `*.docscan-tmp`. The upstream rule
 `test-*[^.c]` hides the `test-range`/`test-samples` folders — `.gitignore` re-includes them explicitly.
 The repository is public: before every push check that there are no internal IPs, host names or credentials.
 
@@ -1053,5 +1105,6 @@ Upstream will not accept such a module: YARA is in maintenance mode and new work
 
 **Licensing:** the fork is under YARA's BSD-3-Clause (`COPYING`); miniz — public domain / MIT;
 `rules/general/` and `rules/maldoc/signature-base/` — Detection Rule License 1.1 (a few rules are
-CC BY 4.0 or Volexity); `rules/maldoc/community/` — GNU GPLv2. Do not remove rule headers or the
+CC BY 4.0 or Volexity); `rules/general/elastic/` — Elastic License 2.0; `rules/maldoc/community/` — GNU GPLv2;
+`rules/*/bartblaze/`, `rules/*/inquest/` — MIT. License texts — `rules/LICENSE-*`. Do not remove rule headers or the
 `license` meta field.

@@ -1,4 +1,4 @@
-/* DocScan: PDF inspector. Mirrors Inspect-Pdf from reference/doc-scan.ps1. */
+/* DocScan: PDF inspector. Mirrors Inspect-Pdf from the retired PowerShell implementation (doc-scan.ps1). */
 
 #include "inspect.h"
 #include "search.h"

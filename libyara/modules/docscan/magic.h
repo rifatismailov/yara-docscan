@@ -1,5 +1,5 @@
 /* DocScan: file-type detection by magic bytes (plain C, no YARA dependency).
-   Mirrors Get-Magic from reference/doc-scan.ps1. */
+   Mirrors Get-Magic from the retired PowerShell implementation (doc-scan.ps1). */
 
 #ifndef DOCSCAN_MAGIC_H
 #define DOCSCAN_MAGIC_H

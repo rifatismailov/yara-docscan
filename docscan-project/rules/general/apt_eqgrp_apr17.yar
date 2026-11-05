@@ -1213,24 +1213,6 @@ rule EquationGroup_seconddate_ImplantStandalone_3_0_3 {
       ( uint16(0) == 0x457f and filesize < 1000KB and all of them )
 }
 
-rule EquationGroup_watcher_solaris_i386_v_3_3_0 {
-   meta:
-      description = "Equation Group hack tool set"
-      license = "Detection Rule License 1.1 https://github.com/Neo23x0/signature-base/blob/master/LICENSE"
-      author = "Florian Roth (Nextron Systems)"
-      reference = "https://medium.com/@shadowbrokerss/dont-forget-your-base-867d304a94b1"
-      date = "2017-04-09"
-      hash1 = "395ec2531970950ffafde234dded0cce0c95f1f9a22763d1d04caa060a5222bb"
-      id = "e75c6ed9-b6e6-530d-a6ac-40bd0477754f"
-   strings:
-      $s1 = "getexecname" fullword ascii
-      $s2 = "invalid option `" fullword ascii
-      $s6 = "__fpstart" ascii
-      $s12 = "GHFIJKLMNOPQRSTUVXW" fullword ascii
-   condition:
-      ( uint16(0) == 0x457f and filesize < 700KB and all of them )
-}
-
 rule EquationGroup_gr_dev_bin_now {
    meta:
       description = "Equation Group hack tool set"
@@ -2583,24 +2565,6 @@ rule EquationGroup_Toolset_Apr17_GrDo_FileScanner_Implant {
       $s3 = "\\dllcache\\" wide
    condition:
       ( uint16(0) == 0x5a4d and filesize < 400KB and all of them )
-}
-
-rule EquationGroup_Toolset_Apr17_msgks_mskgu {
-   meta:
-      description = "Detects EquationGroup Tool - April Leak"
-      license = "Detection Rule License 1.1 https://github.com/Neo23x0/signature-base/blob/master/LICENSE"
-      author = "Florian Roth (Nextron Systems)"
-      reference = "https://steemit.com/shadowbrokers/@theshadowbrokers/lost-in-translation"
-      date = "2017-04-15"
-      hash1 = "7b4986aee8f5c4dca255431902907b36408f528f6c0f7d7fa21f079fa0a42e09"
-      hash2 = "ef906b8a8ad9dca7407e0a467b32d7f7cf32814210964be2bfb5b0e6d2ca1998"
-      id = "1692848d-a8db-5c11-9dc4-f1b0c45a78c3"
-   strings:
-      $op1 = { f4 65 c6 45 f5 6c c6 45 f6 33 c6 45 f7 32 c6 45 }
-      $op2 = { 36 c6 45 e6 34 c6 45 e7 50 c6 45 e8 72 c6 45 e9 }
-      $op3 = { c6 45 e8 65 c6 45 e9 70 c6 45 ea 74 c6 45 eb 5f }
-   condition:
-      ( uint16(0) == 0x5a4d and filesize < 300KB and all of them )
 }
 
 rule EquationGroup_Toolset_Apr17_Ifconfig_Target {

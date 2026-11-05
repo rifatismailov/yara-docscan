@@ -50,21 +50,6 @@ rule suspicious_creation : PDF raw docscan_info {
 		$magic in (0..1024) and $header and 1 of ($create*)
 }
 
-rule multiple_filtering : PDF raw docscan_info {
-meta: 
-author = "Glenn Edwards (@hiddenillusion)"
-version = "0.2"
-weight = 3
-
-    strings:
-            $magic = { 25 50 44 46 }
-            $attrib = /\/Filter.*(\/ASCIIHexDecode\W+|\/LZWDecode\W+|\/ASCII85Decode\W+|\/FlateDecode\W+|\/RunLengthDecode){2}/ 
-            // left out: /CCITTFaxDecode, JBIG2Decode, DCTDecode, JPXDecode, Crypt
-
-    condition: 
-            $magic in (0..1024) and $attrib
-}
-
 rule suspicious_title : PDF raw docscan_info {
 	meta:
 		author = "Glenn Edwards (@hiddenillusion)"
@@ -131,30 +116,6 @@ rule suspicious_creator : PDF raw docscan_info {
 		$creator2 = "Viraciregavi"
 	condition:
 		$magic in (0..1024) and $header and 1 of ($creator*)
-}
-
-rule possible_exploit : PDF raw docscan_doc {
-	meta:
-		author = "Glenn Edwards (@hiddenillusion)"
-		version = "0.1"
-		weight = 3
-		
-	strings:
-		$magic = { 25 50 44 46 }
-		
-		$attrib0 = /\/JavaScript /
-		$attrib3 = /\/ASCIIHexDecode/
-		$attrib4 = /\/ASCII85Decode/
-
-		$action0 = /\/Action/
-		$action1 = "Array"
-		$shell = "A"
-		$cond0 = "unescape"
-		$cond1 = "String.fromCharCode"
-		
-		$nop = "%u9090%u9090"
-	condition:
-		$magic in (0..1024) and (2 of ($attrib*)) or ($action0 and #shell > 10 and 1 of ($cond*)) or ($action1 and $cond0 and $nop)
 }
 
 rule shellcode_blob_metadata : PDF raw docscan_doc {
@@ -236,20 +197,6 @@ rule suspicious_embed : PDF raw docscan_info {
 		$magic in (0..1024) and 1 of ($meth*) and 2 of ($attrib*)
 }
 
-rule suspicious_obfuscation : PDF raw docscan_info {
-	meta:
-		author = "Glenn Edwards (@hiddenillusion)"
-		version = "0.1"
-		weight = 2
-		
-	strings:
-		$magic = { 25 50 44 46 }
-		$reg = /\/\w#[a-zA-Z0-9]{2}#[a-zA-Z0-9]{2}/
-		
-	condition:
-		$magic in (0..1024) and #reg > 5
-}
-
 rule invalid_XObject_js : PDF raw docscan_doc {
 	meta:
 		author = "Glenn Edwards (@hiddenillusion)"
@@ -267,22 +214,6 @@ rule invalid_XObject_js : PDF raw docscan_doc {
 		
 	condition:
 		$magic in (0..1024) and not $ver and all of ($attrib*)
-}
-
-rule invalid_trailer_structure : PDF raw docscan_info {
-	meta:
-		author = "Glenn Edwards (@hiddenillusion)"
-		version = "0.1"
-		weight = 1
-		
-        strings:
-                $magic = { 25 50 44 46 }
-				// Required for a valid PDF
-                $reg0 = /trailer\r?\n?.*\/Size.*\r?\n?\.*/
-                $reg1 = /\/Root.*\r?\n?.*startxref\r?\n?.*\r?\n?%%EOF/
-
-        condition:
-                $magic in (0..1024) and not $reg0 and not $reg1
 }
 
 rule multiple_versions : PDF raw docscan_info {
@@ -367,22 +298,6 @@ rule embed_wrong_version : PDF raw docscan_info {
 
         condition:
                 $magic in (0..1024) and $embed and not $ver
-}
-
-rule invalid_xref_numbers : PDF raw docscan_info {
-        meta:
-			author = "Glenn Edwards (@hiddenillusion)"
-			version = "0.1"
-			description = "The first entry in a cross-reference table is always free and has a generation number of 65,535"
-			notes = "This can be also be in a stream..."
-			weight = 1
-		
-        strings:
-                $magic = { 25 50 44 46 }
-                $reg0 = /xref\r?\n?.*\r?\n?.*65535\sf/
-                $reg1 = /endstream.*\r?\n?endobj.*\r?\n?startxref/
-        condition:
-                $magic in (0..1024) and not $reg0 and not $reg1
 }
 
 rule js_splitting : PDF raw docscan_doc {

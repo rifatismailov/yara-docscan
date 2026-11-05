@@ -108,6 +108,7 @@ typedef struct _DOCSCAN_STATE
   char details[8192];        // JSON objects, one per matching policy rule
   char file_matches[4096];   // JSON tokens: vendor rules matching the raw file
   char info_matches[4096];   // JSON tokens: vendor rules tagged docscan_info (indicators)
+  char doc_matches[4096];    // JSON tokens: vendor rules tagged docscan_doc (document rules)
   docscan_disarm_info ds;    // what --docscan-disarm should remove
 } DOCSCAN_STATE;
 
@@ -1518,11 +1519,13 @@ static void docscan_on_match(YR_RULE* rule, DOCSCAN_STATE* st)
 
   if (sev == NULL)
   {
-    // docscan_doc: a document rule (shellcode patterns, PDF/Office keywords) — on a
-    // file the module did not recognise as a document it is only an indicator
-    int not_doc = st->ftype == NULL || strcmp(st->ftype, "unknown") == 0;
-    if (docscan_is_info(rule) || (not_doc && docscan_has_tag(rule, "docscan_doc")))
+    // docscan_doc: a document rule (shellcode patterns, PDF/Office keywords) — reported
+    // separately; the caller decides by file category whether it is a detection
+    // (watcher: only for documents — in any binary such patterns are ordinary code)
+    if (docscan_is_info(rule))
       docscan_list_add(st->info_matches, sizeof(st->info_matches), rule->identifier);
+    else if (docscan_has_tag(rule, "docscan_doc"))
+      docscan_list_add(st->doc_matches, sizeof(st->doc_matches), rule->identifier);
     else
       docscan_list_add(st->file_matches, sizeof(st->file_matches), rule->identifier);
     return;
@@ -1646,6 +1649,7 @@ static void print_docscan_json(DOCSCAN_STATE* st)
 
   printf(",\"yara_matches\":[%s]", vmatches);
   printf(",\"yara_file_matches\":[%s]", st->file_matches);
+  printf(",\"yara_doc_matches\":[%s]", st->doc_matches);
   printf(",\"yara_info_matches\":[%s]", st->info_matches);
   printf(",\"details\":[%s]", st->details);
   printf("}\n");  // close root object

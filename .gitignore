@@ -95,7 +95,7 @@ tests/mapper
 # DocScan: never publish
 /.claude/
 /attack-vectors
-/docscan-project/reference/
+/docscan-project/vendor-sources/
 /docscan-project/test-samples/provided/
 /docscan-project/test-range/samples/
 *.docscan-bak
@@ -103,8 +103,6 @@ tests/mapper
 # upstream rule "test-*[^.c]" hides these dirs; re-include, then re-exclude live samples
 !/docscan-project/test-range/
 !/docscan-project/test-samples/
-/docscan-project/test-samples/provided/
-/docscan-project/test-range/samples/
 /docscan-project/fuzz/external/
 /docscan-project/dist/
 

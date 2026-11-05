@@ -1,6 +1,6 @@
 /* DocScan: find & inspect VBA macro source inside a CFB container
    (vbaProject.bin, or a legacy .doc/.xls which is itself a CFB).
-   Mirrors Expand-VbaSource + Inspect-VbaSource from reference/doc-scan.ps1. */
+   Mirrors Expand-VbaSource + Inspect-VbaSource from the retired PowerShell implementation (doc-scan.ps1). */
 
 #ifndef DOCSCAN_VBA_H
 #define DOCSCAN_VBA_H

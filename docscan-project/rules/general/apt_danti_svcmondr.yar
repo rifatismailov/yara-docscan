@@ -9,22 +9,7 @@
 
 /* Rule Set ----------------------------------------------------------------- */
 
-rule Mal_Dropper_httpEXE_from_CAB {
-	meta:
-		description = "Detects a dropper from a CAB file mentioned in the article"
-		license = "Detection Rule License 1.1 https://github.com/Neo23x0/signature-base/blob/master/LICENSE"
-		author = "Florian Roth (Nextron Systems)"
-		reference = "https://goo.gl/13Wgy1"
-		date = "2016-05-25"
-		score = 60
-		hash1 = "9e7e5f70c4b32a4d5e8c798c26671843e76bb4bd5967056a822e982ed36e047b"
-		id = "f67c13e9-67e7-56aa-8ced-55e9bb814971"
-	strings:
-		$s1 = "029.Hdl" fullword ascii
-		$s2 = "http.exe" fullword ascii
-	condition:
-		( uint16(0) == 0x5a4d and filesize < 1000KB and ( all of ($s*) ) )
-}
+
 
 rule Mal_http_EXE {
 	meta:
@@ -57,23 +42,4 @@ rule Mal_http_EXE {
 		$s8 = "\\|%s|0|0|" ascii
 	condition:
 		( uint16(0) == 0x5a4d and filesize < 2000KB and ( 1 of ($x*) and 2 of ($s*) ) ) or ( 3 of ($x*) )
-}
-
-rule Mal_PotPlayer_DLL {
-	meta:
-		description = "Detects a malicious PotPlayer.dll"
-		license = "Detection Rule License 1.1 https://github.com/Neo23x0/signature-base/blob/master/LICENSE"
-		author = "Florian Roth (Nextron Systems)"
-		reference = "https://goo.gl/13Wgy1"
-		date = "2016-05-25"
-		score = 70
-		hash1 = "705409bc11fb45fa3c4e2fa9dd35af7d4613e52a713d9c6ea6bc4baff49aa74a"
-		id = "71d34266-63e0-5a97-9a80-952be917641a"
-	strings:
-		$x1 = "C:\\Users\\john\\Desktop\\PotPlayer\\Release\\PotPlayer.pdb" fullword ascii
-
-		$s3 = "PotPlayer.dll" fullword ascii
-		$s4 = "\\update.dat" ascii
-	condition:
-		uint16(0) == 0x5a4d and filesize < 200KB and $x1 or all of ($s*)
 }

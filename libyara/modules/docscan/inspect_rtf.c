@@ -1,4 +1,4 @@
-/* DocScan: RTF inspector. Mirrors Inspect-Rtf from reference/doc-scan.ps1. */
+/* DocScan: RTF inspector. Mirrors Inspect-Rtf from the retired PowerShell implementation (doc-scan.ps1). */
 
 #include "inspect.h"
 #include "search.h"

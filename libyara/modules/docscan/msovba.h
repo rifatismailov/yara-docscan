@@ -1,5 +1,5 @@
 /* DocScan: MS-OVBA decompression (the compression used for VBA source inside
-   CFB streams). Mirrors Expand-MsOvba from reference/doc-scan.ps1. */
+   CFB streams). Mirrors Expand-MsOvba from the retired PowerShell implementation (doc-scan.ps1). */
 
 #ifndef DOCSCAN_MSOVBA_H
 #define DOCSCAN_MSOVBA_H

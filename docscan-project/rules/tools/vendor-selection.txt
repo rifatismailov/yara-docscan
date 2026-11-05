@@ -421,7 +421,6 @@ general signature-base yara/apt_zxshell.yar
 general signature-base yara/cn_pentestset_scripts.yar
 general signature-base yara/cn_pentestset_tools.yar
 general signature-base yara/cn_pentestset_webshells.yar
-general signature-base yara/configured_vulns_ext_vars.yar
 general signature-base yara/crime_andromeda_jun17.yar
 general signature-base yara/crime_antifw_installrex.yar
 general signature-base yara/crime_atm_javadipcash.yar
@@ -561,7 +560,7 @@ general signature-base yara/gen_empire.yar
 general signature-base yara/gen_enigma_protector.yar
 general signature-base yara/gen_event_mute_hook.yar
 maldoc/signature-base signature-base yara/gen_excel_auto_open_evasion.yar
-maldoc/signature-base signature-base yara/gen_excel_xll_addin_suspicious.yar
+general signature-base yara/gen_excel_xll_addin_suspicious.yar
 maldoc/signature-base signature-base yara/gen_excel_xor_obfuscation_velvetsweatshop.yar
 general signature-base yara/gen_exploit_cve_2017_10271_weblogic.yar
 general signature-base yara/gen_fake_amsi_dll.yar
@@ -720,7 +719,6 @@ general signature-base yara/vuln_proxynotshell_cve_2022_41040.yar
 general signature-base yara/webshell_regeorg.yar
 general signature-base yara/yara-rules_mal_drivers.yar
 general signature-base yara/yara-rules_vuln_drivers_strict.yar
-general signature-base yara/yara-rules_vuln_drivers_strict_renamed.yar
 general signature-base yara/yara_mixed_ext_vars.yar
 general/elastic protections-artifacts yara/rules/Multi_AttackSimulation_Blindspot.yar
 general/elastic protections-artifacts yara/rules/Multi_Cryptominer_Xmrig.yar
@@ -1484,3 +1482,52 @@ general signature-base yara/gen_susp_indicators.yar
 general signature-base yara/gen_susp_xor.yar
 general signature-base yara/gen_unsigned_thor.yar
 general signature-base yara/thor_inverse_matches.yar
+
+# step 3 (2026-11-05): bartblaze/Yara-rules generic (MIT) — category INFO -> docscan_info (source's own label)
+general/bartblaze bartblaze rules/generic/AutoIT.yar
+general/bartblaze bartblaze rules/generic/Costura_Protobuf.yar
+general/bartblaze bartblaze rules/generic/DotNet_Reactor.yar
+general/bartblaze bartblaze rules/generic/EnigmaStub.yar
+maldoc/bartblaze bartblaze rules/generic/Generic_Phishing_PDF.yar
+general/bartblaze bartblaze rules/generic/GrimResource.yar
+general/bartblaze bartblaze rules/generic/Hidden.yar
+maldoc/bartblaze bartblaze rules/generic/IEuser_author_doc.yar
+general/bartblaze bartblaze rules/generic/ISO_exec.yar
+maldoc/bartblaze bartblaze rules/generic/LNK_Ruleset.yar
+general/bartblaze bartblaze rules/generic/MalScript_Tricks.yar
+general/bartblaze bartblaze rules/generic/MiniTor.yar
+maldoc/bartblaze bartblaze rules/generic/OLEfile_in_CAD_FAS_LSP.yar
+maldoc/bartblaze bartblaze rules/generic/OneNote_BuildPath.yar
+general/bartblaze bartblaze rules/generic/PyInstaller.yar
+general/bartblaze bartblaze rules/generic/Rclone.yar
+maldoc/bartblaze bartblaze rules/generic/Specialist_Repack_Doc.yar
+general/bartblaze bartblaze rules/generic/VMProtectStub.yar
+general/bartblaze bartblaze rules/generic/Webshell_in_image.yar
+general/bartblaze bartblaze rules/generic/WinRAR_ADS_Traversal.yar
+maldoc/bartblaze bartblaze rules/generic/oAuth_Phishing_PDF.yar
+# step 3: InQuest/yara-rules (MIT) — Severity "0" -> docscan_info; GlowSpark_Downloader does not compile
+general/inquest inquest AgentTesla.rule
+general/inquest inquest Base64_Encoded_Powershell_Directives.rule
+maldoc/inquest inquest Excel_Hidden_Macro_Sheet.rule
+general/inquest inquest Executable_Converted_to_MSI.rule
+general/inquest inquest Hex_Encoded_Powershell.rule
+general/inquest inquest Hidden_Bee_Elements.rule
+general/inquest inquest Hunting_Rule_ShikataGaNai.rule
+maldoc/inquest inquest IQY_File.rule
+maldoc/inquest inquest IQY_File_With_Pivot_Extension_URL.rule
+maldoc/inquest inquest IQY_File_With_Suspicious_URL.rule
+general/inquest inquest MSIExec_Pivot.rule
+maldoc/inquest inquest Microsoft_Excel_Data_Connection.rule
+maldoc/inquest inquest Microsoft_Office_DDE_Command_Execution.rule
+maldoc/inquest inquest Microsoft_XLSX_with_Macrosheet.rule
+maldoc/inquest inquest NTLM_Credentials_Theft_via_PDF_Files.rule
+maldoc/inquest inquest PDF_Document_with_Embedded_IQY_File.rule
+maldoc/inquest inquest RTF_Byte_Nibble_Obfuscation.rule
+general/inquest inquest Signed_Executable_With_Custom_Elliptic_Curve_Parameters.rule
+maldoc/inquest inquest Symbolic_Link_Files_DLL_Reference_Suspicious_Characteristics.rule
+maldoc/inquest inquest Symbolic_Link_Files_Macros_File_Characteristic.rule
+# removed 2026-11-05: yara-rules_vuln_drivers_strict_renamed.yar (variants of the strict set), configured_vulns_ext_vars.yar
+#   (configuration hygiene, not malware), InQuest Flash rules (Adobe_Flash_DRM_Use_After_Free, CVE_2018_4878_0day_ITW,
+#   Microsoft_Office_Document_with_Embedded_Flash_File: Flash is obsolete)
+# removed 2026-11-05 after the FP scan of a Windows 10 workstation: InQuest PE.rule (matches every PE),
+#   Embedded_PE.rule (555 hits on .NET images), ClamAV_Emotet_String_Aggregrate.rule (Microsoft.CSharp.dll)

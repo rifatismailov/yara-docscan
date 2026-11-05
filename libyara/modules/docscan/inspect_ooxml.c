@@ -1,4 +1,4 @@
-/* DocScan: OOXML inspector. Mirrors Inspect-Ooxml from reference/doc-scan.ps1.
+/* DocScan: OOXML inspector. Mirrors Inspect-Ooxml from the retired PowerShell implementation (doc-scan.ps1).
 
    OOXML (docx/xlsx/pptx) is a ZIP. We iterate its entries and, by path:
      *.rels                         -> external relationships (rels.c)

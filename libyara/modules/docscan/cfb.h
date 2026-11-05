@@ -1,5 +1,5 @@
 /* DocScan: minimal OLE Compound File (CFB) reader — a "filesystem in a file".
-   Mirrors Read-CfbStreams from reference/doc-scan.ps1. Plain C, no YARA dep. */
+   Mirrors Read-CfbStreams from the retired PowerShell implementation (doc-scan.ps1). Plain C, no YARA dep. */
 
 #ifndef DOCSCAN_CFB_H
 #define DOCSCAN_CFB_H

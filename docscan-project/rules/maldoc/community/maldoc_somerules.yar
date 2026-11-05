@@ -55,24 +55,6 @@ rule maldoc_indirect_function_call_1 : maldoc docscan_doc {
         for any i in (1..#a): (uint8(@a[i] + 2) == uint8(@a[i] + 5))
 }
 
-rule maldoc_indirect_function_call_2 : maldoc docscan_doc {
-    meta:
-        author = "Didier Stevens (https://DidierStevens.com)"
-    strings:
-        $a = {FF B5 ?? ?? ?? ?? FF 95 ?? ?? ?? ??}
-    condition:
-        for any i in (1..#a): ((uint8(@a[i] + 2) == uint8(@a[i] + 8)) and (uint8(@a[i] + 3) == uint8(@a[i] + 9)) and (uint8(@a[i] + 4) == uint8(@a[i] + 10)) and (uint8(@a[i] + 5) == uint8(@a[i] + 11)))
-}
-
-rule maldoc_indirect_function_call_3 : maldoc docscan_doc {
-    meta:
-        author = "Didier Stevens (https://DidierStevens.com)"
-    strings:
-        $a = {FF B7 ?? ?? ?? ?? FF 57 ??}
-    condition:
-        $a
-}
-
 rule maldoc_find_kernel32_base_method_1 : maldoc docscan_doc {
     meta:
         author = "Didier Stevens (https://DidierStevens.com)"
@@ -182,74 +164,6 @@ rule macrocheck : maldoc docscan_info {
  
     condition:
         all of ($PARAM*) or (($invalid or $userloginform or $userform) and ($up1 or $up2))
-}
-rule office_document_vba : maldoc docscan_info {
-	meta:
-		description = "Office document with embedded VBA"
-		author = "Jean-Philippe Teissier / @Jipe_"
-		date = "2013-12-17"
-		reference = "https://github.com/jipegit/"
-
-	strings:
-		$officemagic = { D0 CF 11 E0 A1 B1 1A E1 }
-		$zipmagic = "PK"
-
-		$97str1 = "_VBA_PROJECT_CUR" wide
-		$97str2 = "VBAProject"
-		$97str3 = { 41 74 74 72 69 62 75 74 00 65 20 56 42 5F }
-
-		$xmlstr1 = "vbaProject.bin"
-		$xmlstr2 = "vbaData.xml"
-
-	condition:
-		($officemagic at 0 and any of ($97str*)) or ($zipmagic at 0 and any of ($xmlstr*))
-}
-
-rule Office_AutoOpen_Macro : maldoc docscan_info {
-	meta:
-		description = "Detects an Microsoft Office file that contains the AutoOpen Macro function"
-		author = "Florian Roth"
-		date = "2015-05-28"
-		score = 60
-		hash1 = "4d00695d5011427efc33c9722c61ced2"
-		hash2 = "63f6b20cb39630b13c14823874bd3743"
-		hash3 = "66e67c2d84af85a569a04042141164e6"
-		hash4 = "a3035716fe9173703941876c2bde9d98"
-		hash5 = "7c06cab49b9332962625b16f15708345"
-		hash6 = "bfc30332b7b91572bfe712b656ea8a0c"
-		hash7 = "25285b8fe2c41bd54079c92c1b761381"
-	strings:
-		$s1 = "AutoOpen" ascii fullword
-		$s2 = "Macros" wide fullword
-	condition:
-		uint32be(0) == 0xd0cf11e0 and all of ($s*) and filesize < 300000
-}
-
-rule Embedded_EXE_Cloaking : maldoc docscan_doc {
-    meta:
-        description = "Detects an embedded executable in a non-executable file"
-        author = "Florian Roth"
-        date = "2015/02/27"
-        score = 80
-    strings:
-        $noex_png = { 89 50 4E 47 }
-        $noex_pdf = { 25 50 44 46 }
-        $noex_rtf = { 7B 5C 72 74 66 31 }
-        $noex_jpg = { FF D8 FF E0 }
-        $noex_gif = { 47 49 46 38 }
-        $mz  = { 4D 5A }
-        $a1 = "This program cannot be run in DOS mode"
-        $a2 = "This program must be run under Win32"       
-    condition:
-        (
-            ( $noex_png at 0 ) or
-            ( $noex_pdf at 0 ) or
-            ( $noex_rtf at 0 ) or
-            ( $noex_jpg at 0 ) or
-            ( $noex_gif at 0 )
-        )
-        and
-        for any i in (1..#mz): ( @a1 < ( @mz[i] + 200 ) or @a2 < ( @mz[i] + 200 ) )
 }
 
 // This rule have beed improved by Javier Rascon

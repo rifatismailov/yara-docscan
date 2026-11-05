@@ -6,8 +6,8 @@
 макрос vendor-правилами, лікує документ і віддає результат у JSON. Усе — в **одному бінарнику**
 `yara64.exe`. Поверх нього — **watcher**, що автоматично сканує нові файли в системі.
 
-> Це єдиний документ проєкту. Першоджерела (оригінальний `doc-scan.ps1`, матеріали Mandiant, стаття,
-> повний корпус vendor-правил) — у `reference/`, вони не наша документація.
+> Це єдиний документ проєкту. Попередня реалізація (PowerShell `doc-scan.ps1` для Wazuh active-response,
+> на основі скриптів Mandiant) знята з використання й видалена; її логіку перенесено в модуль на C.
 
 **Зміст**
 1. [Мета і принципи](#1-мета-і-принципи)
@@ -49,7 +49,7 @@
   недовіреного вводу. Усі бінарні читання bounds-checked.
 - **Портативний C.** Розробка на macOS, прод — Windows (MSVC). Жодних POSIX-онлі API в модулі.
 - **Без прив'язки до Wazuh.** `yara64.exe` видає чистий JSON; доставка — справа watcher/агента.
-- Еталон логіки — `reference/doc-scan.ps1` + `reference/mandiant/` (перенесено з PowerShell у C).
+- Логіка детекту перенесена з попередньої PowerShell-реалізації (`doc-scan.ps1`, Mandiant) у C.
 
 ---
 
@@ -155,11 +155,10 @@ docscan-project/
     run_tests.ps1                   регресійний тест (копія → детект+лікування → повторний скан)
     gen_range.ps1                   генератор полігону (Windows + Word COM)
     gen_test_range.py               швидкий синтетичний генератор (без Office)
-    samples/generated/              локальний дубль test-samples/generated (не в git)
   test-samples/                     ОРИГІНАЛИ тест-набору (не лікувати напряму!)
     provided/  (7)                  реальні семпли замовника (живий C2) — НЕ в git
     generated/ (16)                 безпечний полігон, по файлу на вектор
-  reference/                        першоджерела (PS-скрипт, Mandiant, стаття, повний vendor-корпус)
+  vendor-sources/                   git-клони джерел vendor-правил на зафіксованих комітах (не в git)
 ```
 
 ---
@@ -428,7 +427,7 @@ MS-OVBA. Ланцюжок: **CFB → потоки → пошук контейн�
 {"ftype":"ooxml","findings":["MACRO_PRESENT","MACRO_SUSPICIOUS","MACRO_AUTOEXEC"],"verdict":"HIGH",
  "evidence":{"vba_evidence":"powershell | DownloadFile | AutoOpen"},
  "yara_matches":["powershell","VBA_AutoExec_DownloadCradle"],
- "yara_file_matches":[],"yara_info_matches":["Contains_VBA_macro_code","office_document_vba"],
+ "yara_file_matches":[],"yara_doc_matches":[],"yara_info_matches":["Contains_VBA_macro_code","office_document_vba"],
  "details":[{"rule":"DS_MACRO_SUSPICIOUS","finding":"MACRO_SUSPICIOUS","severity":"HIGH","disarm":"macro","mitre":"T1204.002"}, …]}
 ```
 `verdict` — найвищий `meta.severity` серед правил політики, що спрацювали (`INFO`, якщо жодне).
@@ -536,8 +535,8 @@ rule ORG_HUGE_PART { meta: severity = "MEDIUM" finding = "HUGE_PART"
 | `rules/docscan-policy.yar` | політика | `import "docscan"` + правила `DS_*` |
 | `rules/docscan.yar` | тільки наш детект | `include "docscan-policy.yar"` |
 | `rules/docscan-index.yar` | **повний скан** (watcher, run_tests) | `include "docscan-policy.yar"` + `include "file-index.yar"` |
-| `rules/file-index.yar` | vendor-правила (**генерується**) | 1460 файлів, 7176 правил: `general/` (signature-base), `general/elastic/` (Elastic protections-artifacts, Windows/Multi), `maldoc/signature-base/`, `maldoc/community/` + `maldoc/vba_plaintext.yar` |
-| `rules/general/`, `rules/general/elastic/`, `rules/maldoc/signature-base/`, `rules/maldoc/community/` | vendor-правила (**генеруються**, не правити руками) | signature-base + Elastic + Yara-Rules, відфільтровано по кожному правилу |
+| `rules/file-index.yar` | vendor-правила (**генерується**) | 1364 файли, 5560 правил: `general/` (signature-base), `general/elastic/` (Elastic protections-artifacts, Windows/Multi), `general/bartblaze/`, `general/inquest/`, `maldoc/signature-base/`, `maldoc/community/`, `maldoc/bartblaze/`, `maldoc/inquest/` + `maldoc/vba_plaintext.yar` |
+| `rules/general/**`, `rules/maldoc/**` (крім `vba_plaintext.yar`) | vendor-правила (**генеруються**, не правити руками) | signature-base + Elastic + Yara-Rules + bartblaze + InQuest, відфільтровано по кожному правилу |
 | `rules/maldoc/vba_plaintext.yar` | наші правила на розпакований VBA | правиться руками |
 | `rules/tools/build_vendor_rules.py` | генератор | джерела на зафіксованих комітах, фільтр, перейменування, теги, перевірка компіляції |
 | `rules/tools/vendor-selection.txt` | які файли джерел беремо | `<тека> <джерело> <шлях>` |
@@ -546,7 +545,9 @@ rule ORG_HUGE_PART { meta: severity = "MEDIUM" finding = "HUGE_PART"
 | `rules/tools/fp_scan.ps1` | перевірка на хибні спрацювання | `cand.yarc` по чистій Windows (`C:\Windows`, `Program Files`, `ProgramData`) з `--file-vars` → `hits.txt`, `summary.txt` |
 
 **Як збирається vendor-набір** (`python3 rules/tools/build_vendor_rules.py [--fetch]`):
-1. Джерела — `reference/vendor-rules-full-later/vendor/` (не в git), коміти зафіксовані в `SOURCES`;
+1. Джерела — `docscan-project/vendor-sources/` (не в git), коміти зафіксовані в `SOURCES`:
+   Neo23x0/signature-base, Yara-Rules/rules, elastic/protections-artifacts, bartblaze/Yara-rules,
+   InQuest/yara-rules (**власних правил ми не пишемо — лише готові публічні**);
    `--fetch` клонує/перемикає на них.
 2. Беруться файли з `vendor-selection.txt`; кожне правило перевіряється окремо:
    - **відкидається**, якщо не може спрацювати на робочій станції Windows: умова вимагає ELF / Mach-O /
@@ -556,9 +557,16 @@ rule ORG_HUGE_PART { meta: severity = "MEDIUM" finding = "HUGE_PART"
    - **відкидається вручну** (`DROP`: ім'я або `(файл, ім'я)` + причина) — хибні спрацювання, застарілі копії;
    - **пропускається як дубль**, якщо правило з тим самим ім'ям і тими самими рядками/умовою вже взяте з
      іншого файлу (у звіті — «Duplicates skipped»);
+   - **відкидається як старе** — остання зміна (`modified`, інакше `date`/`creation_date`) у `OLD_YEAR` = 2016
+     або раніше: правила під зразки й кампанії того часу. Правила без дати лишаються;
+   - **відкидається як не-Windows** — умова не перевіряє PE, а назва правила чи файлу вказує на іншу
+     платформу, мережевий пристрій, серверне ПЗ чи скрипти, яких вотчер не сканує (Linux, Solaris, Cisco,
+     Fortinet, Ivanti, Citrix, F5, Palo Alto, VMware, Confluence, MOVEit, PHP, JSP/Java, Python, Perl, Bash…);
    - **перейменовується** при збігу ідентифікаторів різних правил (`RENAME`) — замість виключення цілого файлу;
    - **позначається тегом `docscan_info`** (`INFO`), якщо це індикатор, а не детект: «є макрос»,
      слово `powershell`, аномалії структури/метаданих PDF, функції PDF, які політика оцінює сама.
+     Для bartblaze і InQuest — **за класифікацією самого автора** (`SOURCE_INFO`): bartblaze
+     `category = "INFO"`, InQuest `Severity = "0"`;
 3. Генерується `file-index.yar`, усе компілюється `yarac` (зі змінними THOR); будь-яка помилка або
    збіг імен різних правил — збірка падає. `--check` — чи `rules/` збігається з тим, що збирає генератор.
 
@@ -582,10 +590,49 @@ PowerShell, `.xml`, `.lua`, файлах самих правил — не вра
 **Теги в JSON:** збіг vendor-правила → `yara_file_matches` (детект: document → щонайменше MEDIUM,
 general → HIGH); збіг правила з тегом `docscan_info` → `yara_info_matches` (лише для аналітика,
 вердикт **не** підвищує, у Шарі 2 не враховується). Тег `docscan_doc` (генератор ставить його всім
-правилам `maldoc/`) — правило для документів: на файлі, який модуль не визнав документом
-(`ftype=unknown`: exe, dll, скрипти), його збіг іде в `yara_info_matches`. Шаблони шелкоду (`getEIP`,
-доступ до PEB) і слова на кшталт `ppaction` — сильна ознака в документі, але звичайний код у будь-якому
-бінарнику: без цього тегу на чистій Windows 10 вони дали ~2900 хибних HIGH на .NET/Adobe/Acronis.
+правилам `maldoc/`) — правило для документів: його збіг іде в окреме поле `yara_doc_matches`, і вотчер
+рахує його детектом **лише для категорії `document`** (за розширенням); для `general` (exe, dll, msi,
+скрипти, HTML) — тільки видно в JSON. Шаблони шелкоду (`getEIP`, доступ до PEB) і слова на кшталт
+`ppaction` — сильна ознака в документі, але звичайний код у будь-якому бінарнику: без цього на чистій
+Windows 10 вони дали ~2900 хибних HIGH на .NET/Adobe/Acronis/MSI. Категорія береться з розширення, а не
+з розбору модуля, бо модуль не розбирає частину документних форматів (`.one`, `.mht`), а `.msi` має
+формат OLE.
+
+**Чистка набору (2026-11-05).** Принцип: правил не вигадуємо, працюємо з готовими; кожне правило
+унікальне; старе, неефективне й не-Windows — геть. Було 7239 правил, стало **5560** (1364 файли):
+
+| Що видалено | Скільки | Як |
+|---|---|---|
+| точні дублі (ті самі рядки й умова під іншим іменем) | 2 | `DROP`: `PHISH_02Dez2015_dropped_p0o6543f` (копія community), `office_document_vba` |
+| варіанти (ті самі рядки + додаткова умова — спрацьовують лише там, де вже спрацювало основне) | ~505 | файл `yara-rules_vuln_drivers_strict_renamed.yar`; `PAExec_Cloaked`, `SUSP_VULN_DRV_PROCEXP152_Renamed_May23`, `Windows_VulnDriver_MyPortIO_37c35201`, `EquationGroup_Toolset_Apr17_msgks_mskgu` |
+| не за призначенням (гігієна конфігурації, не шкідливе ПЗ) | 3 | файл `configured_vulns_ext_vars.yar` |
+| застаріла технологія (Adobe Flash) | 5 | InQuest `Adobe_Flash_DRM_Use_After_Free`, `CVE_2018_4878_0day_ITW`, `Microsoft_Office_Document_with_Embedded_Flash_File`; `Flash_in_LNK`, `crime_ole_loadswf_cve_2018_4878` |
+| повільні (YARA: «slowing down scanning») | 14 | `DROP`; після чистки `yarac` не дає жодного такого попередження |
+| старі (остання зміна ≤ 2016) | ~985 | `OLD_YEAR` |
+| не-Windows (за назвою, без перевірки PE) | ~170 | фільтр платформ |
+| хибні / неефективні на робочій станції Windows 10 (повний диск, з `C:\Users`) | 3 | InQuest `PE.rule` (будь-який PE), `Embedded_PE.rule` (555 .NET-образів), `ClamAV_Emotet_String_Aggregrate.rule` (`Microsoft.CSharp.dll`) |
+
+Кожне видалене правило з причиною — у `rules/tools/vendor-report.md`. Регресія 23 зразків не змінилась.
+
+**Крок 3 (2026-11-05) — нові формати.** Додано джерела bartblaze/Yara-rules (MIT, `rules/generic/`, 21 файл)
+і InQuest/yara-rules (MIT, 25 файлів; `GlowSpark_Downloader` не компілюється — не взято). Покриття:
+
+| Формат | Готові правила |
+|---|---|
+| `.msc` (GrimResource) | `GrimResource` (bartblaze; автор позначив INFO → індикатор) |
+| `.one` | `OneNote_BuildPath` (bartblaze), `gen_onenote_phish` (signature-base) |
+| `.iqy` | `IQY_File` (INFO), `IQY_File_With_Suspicious_URL`, `IQY_File_With_Pivot_Extension_URL` (InQuest) |
+| `.slk` | `Symbolic_Link_Files_Macros_File_Characteristic`, `…_DLL_Reference_Suspicious_Characteristics` (InQuest) |
+| XLM-макроси (Excel 4.0) | `Excel_Hidden_Macro_Sheet`, `Microsoft_XLSX_with_Macrosheet` (InQuest) |
+| `.xll` | `gen_excel_xll_addin_suspicious` (signature-base, перенесено в `general/`) |
+| `.url` | `URL_File_Local_EXE`, `gen_url_persitence` (signature-base) |
+| `.svg` | `SUSP_SVG_JS_Payload_Mar25` (signature-base) |
+| `.lnk` | набір `LNK_Ruleset` (bartblaze, усі INFO — індикатори) |
+| PDF / DDE / RTF | `NTLM_Credentials_Theft_via_PDF_Files`, `PDF_Document_with_Embedded_IQY_File`, `Microsoft_Office_DDE_Command_Execution`, `RTF_Byte_Nibble_Obfuscation` (InQuest), `Generic_Phishing_PDF`, `oAuth_Phishing_PDF` (bartblaze) |
+
+Для `.odt/.ods/.odp`, `.scf`, `.library-ms`, `.chm` і `.mht/.mhtml` (єдине правило `Office_as_MHTML` —
+2015 року, видалене як старе) готових правил немає — ці розширення вотчер
+**не сканує** (додамо, коли з'являться правила; delivr-to/detections і gist Nick Carr — без ліцензії). Перевірка нових джерел: 476 легітимних документів — 0.
 
 Правила для index-файлів:
 - Шляхи в `include` — **через `/`**, відносні до index-файлу або абсолютні (`\` YARA сприймає як escape).
@@ -603,12 +650,12 @@ general → HIGH); збіг правила з тегом `docscan_info` → `yar
 
 | Категорія | Розширення | Скан |
 |---|---|---|
-| `document` | doc dot docx docm dotx dotm, xls xlt xlsx xlsm xltx xltm xlsb, ppt pps pot pptx pptm potx potm ppsx ppsm, rtf, pdf, lnk | `yara64 -w --docscan-json [--docscan-disarm] -C rules.yarc` |
-| `general` | exe dll sys scr cpl ocx com msi, ps1 psm1 vbs vbe js jse wsf wsh hta bat cmd jar, zip rar 7z iso img vhd vhdx | те саме без `--docscan-disarm` (працюють тільки vendor-правила) |
+| `document` | doc dot docx docm dotx dotm, xls xlt xlsx xlsm xltx xltm xlsb, ppt pps pot pptx pptm potx potm ppsx ppsm, **xla xlam ppa ppam**, rtf, pdf, lnk, **one, iqy slk** | `yara64 -w --docscan-json [--docscan-disarm] -C rules.yarc` |
+| `general` | exe dll sys scr cpl ocx com msi, **xll**, ps1 psm1 vbs vbe js jse wsf wsh hta bat cmd jar, **msc, url, svg htm html**, zip rar 7z iso img vhd vhdx | те саме без `--docscan-disarm` (vendor-правила; документні — лише в JSON) |
 | інше | — | ігнорується |
 
-- **Verdict запису:** verdict із JSON (політика); якщо є `yara_file_matches` — document щонайменше
-  `MEDIUM`, general → `HIGH`. Також `SKIPPED` (> `-MaxSizeMB`), `ERROR` (скан не вдався).
+- **Verdict запису:** verdict із JSON (політика); якщо є `yara_file_matches` (для `document` — разом із
+  `yara_doc_matches`) — document щонайменше `MEDIUM`, general → `HIGH`. Також `SKIPPED` (> `-MaxSizeMB`), `ERROR` (скан не вдався).
 - Vendor-правила бачать байти **до** лікування: yara збирає збіги до `--docscan-disarm`.
 - **Не скануються** (`-ExcludePattern`): `results\`, `*.docscan-bak`, lock-файли Office `~$*`,
   `$Recycle.Bin`, кеші браузерів/Packages/OneDrive/WebCache, `Recent` (там `.lnk` на кожне відкриття).
@@ -621,7 +668,10 @@ general → HIGH); збіг правила з тегом `docscan_info` → `yar
    (до `-ReadyTimeout` с).
 4. Якщо SHA256 збігається з минулим сканом цього шляху — пропуск.
 5. `Scan-File`: SHA256 → `Invoke-Scan` → запис JSON-рядка + рядок у лог.
-6. Ctrl+C / зупинка завдання → `finally`: відписка від подій, `Dispose` watcher-ів.
+6. Переповнення буфера (подія Error): через 60 с вотчер обходить теки `-WatchPath` і ставить у чергу
+   файли, змінені з моменту переповнення (у лозі `доскановування після переповнення`); уже скановані з тим
+   самим SHA256 пропускаються.
+7. Ctrl+C / зупинка завдання → `finally`: відписка від подій, `Dispose` watcher-ів.
 На старті перевіряє, що `yara64.exe` і `-Rules` є та компілюються.
 
 | Функція | Що робить |
@@ -669,7 +719,7 @@ Start-ScheduledTask docscan-watcher          # Stop-ScheduledTask docscan-watche
    "docscan":{"ftype":"ooxml","findings":["MACRO_PRESENT","MACRO_SUSPICIOUS","MACRO_AUTOEXEC","MACRO_NETWORK"],
               "verdict":"HIGH","evidence":{"vba_evidence":"powershell | WScript.Shell | …"},
               "yara_matches":["powershell","VBA_AutoExec_DownloadCradle"],
-              "yara_file_matches":[],"yara_info_matches":["Contains_VBA_macro_code","office_document_vba"],"details":[…]},
+              "yara_file_matches":[],"yara_doc_matches":[],"yara_info_matches":["Contains_VBA_macro_code","office_document_vba"],"details":[…]},
    "yara_file_matches":[],"disarm":null,"errors":[]}
   ```
 - `results\watcher.log` — людський лог. Дивитись наживо:
@@ -1023,7 +1073,10 @@ lnk_target, lnk_args}, yara_matches[], details[]}`. В індексі все ц�
 - Defender у звичайних теках може забрати шкідливий файл раніше → у лозі `зник до скану`, у JSON запису немає.
 - Шумні індикатори (`invalid_trailer_structure`, `invalid_xref_numbers`, `powershell`, `Contains_VBA_macro_code`, …) мають тег `docscan_info` → `yara_info_matches`, вердикт не змінюють (на 476 легітимних локальних документах: 25 хибних MEDIUM → 0). `DS_PDF_OPENACTION` без JS — INFO (усі 35 таких були легітимні).
 - Архіви скануються як є, без розпакування.
-- Переповнення буфера FileSystemWatcher (тисячі файлів разом) → частина подій втрачається (пишеться в лог).
+- Переповнення буфера FileSystemWatcher (тисячі файлів разом) → події втрачаються; вотчер через 60 с
+  доскановує файли, змінені з того моменту (обхід `-WatchPath` — на великих профілях займає час).
+- `.odt/.ods/.odp`, `.scf`, `.library-ms`, `.chm`, `.mht/.mhtml` не скануються — готових правил немає.
+  `GrimResource` (`.msc`) автор позначив INFO — збіг видно в `yara_info_matches`, алерту немає.
 - Тека карантину (`-BackupDir`) росте без обмежень — чистити вручну або політикою зберігання.
 
 **Репозиторій**
@@ -1041,8 +1094,8 @@ git push docscan feature/docscan-module
 ```
 
 **Ніколи не публікується** (`.gitignore`): `docscan-project/test-samples/provided/` (живі семпли
-замовника, внутрішній C2), `attack-vectors`, `docscan-project/reference/` (Mandiant, правила Elastic),
-`.claude/`, `docscan-project/test-range/samples/`, `*.docscan-bak`, `*.docscan-tmp`. Upstream-правило
+замовника, внутрішній C2), `attack-vectors`, `docscan-project/vendor-sources/` (клони джерел правил),
+`.claude/`, `docscan-project/test-range/samples/`, `docscan-project/fuzz/external/`, `docscan-project/dist/`, `*.docscan-bak`, `*.docscan-tmp`. Upstream-правило
 `test-*[^.c]` ховає теки `test-range`/`test-samples` — для них у `.gitignore` є явний виняток.
 Репозиторій публічний: перед кожним пушем перевіряти, що немає внутрішніх IP, імен хостів, облікових даних.
 
@@ -1051,4 +1104,5 @@ Protobuf). Офіційний шлях — лише порт логіки на Y
 
 **Ліцензії:** форк — BSD-3-Clause YARA (`COPYING`); miniz — public domain / MIT;
 `rules/general/` і `rules/maldoc/signature-base/` — Detection Rule License 1.1 (кілька правил — CC BY 4.0,
-Volexity); `rules/maldoc/community/` — GNU GPLv2. Заголовки й поле `license` у правилах не прибирати.
+Volexity); `rules/general/elastic/` — Elastic License 2.0; `rules/maldoc/community/` — GNU GPLv2;
+`rules/*/bartblaze/`, `rules/*/inquest/` — MIT. Тексти ліцензій — `rules/LICENSE-*`. Заголовки й поле `license` у правилах не прибирати.
