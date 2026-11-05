@@ -35,7 +35,8 @@ param(
   [int]$SettleSeconds  = 2,        # скільки чекати тиші після останньої події по файлу
   [int]$ReadyTimeout   = 60,       # скільки чекати, поки файл перестане записуватись
   [int]$RescanCooldown = 60,       # той самий файл повторно — не частіше ніж раз на N с (автозбереження Word/OneDrive)
-  [int]$DisarmRetryMinutes = 60,   # файл відкритий (заблокований) — повторювати лікування до N хв
+  [int]$DisarmRetryMinutes = 60,   # файл відкритий (заблокований): перші N хв повтор кожні 30 с, далі кожні 5 хв (без кінця)
+  [double]$DisarmNoticeHours = 24,   # якщо файл відкритий так довго — окремий запис у Wazuh (DisarmPending), лікування триває
   [string[]]$DocExt = @(
     ".doc",".dot",".docx",".docm",".dotx",".dotm",
     ".xls",".xlt",".xlsx",".xlsm",".xltx",".xltm",".xlsb",
@@ -141,6 +142,7 @@ function Invoke-Scan([string]$path, [bool]$cure) {
 function Get-Summary($rec) {
   $p = @()
   $ds = $rec.docscan
+  if ($rec.event -eq "DisarmPending") { $p += "Лікування не виконано за $DisarmNoticeHours год: файл досі відкритий іншою програмою — потрібна ручна перевірка" }
   if ($ds -and $ds.findings_text) { $p += @($ds.findings_text) }
   # де знайдено: частина документа (другий прохід) або код макросу
   $where = @{}
@@ -313,7 +315,37 @@ $rescanFrom = $null # ... файли, змінені з цього момент�
 $recent  = @{}   # path -> sha256 останнього скану (щоб не дублювати Changed після того ж вмісту)
 $LastScan = @{}  # path -> час останнього скану (пауза -RescanCooldown для повторних змін)
 $LastKey  = @{}  # path -> "вердикт|summary" останнього запису в Wazuh (однакові повтори не пишемо)
-$Retry    = @{}  # path -> @{ next; until } — лікування заблокованого файлу повторюємо пізніше
+$Retry    = @{}  # path -> @{ next; since; noticed } — лікування заблокованого файлу повторюємо пізніше
+$RetryFile = Join-Path $OutDir "retry.json"   # той самий список на диску: переживає перезапуск і перезавантаження
+
+function Save-Retry {
+  $items = @($Retry.Keys | ForEach-Object { [ordered]@{ path = $_; since = $Retry[$_].since.ToString("o"); noticed = [bool]$Retry[$_].noticed } })
+  $tmp = "$RetryFile.tmp"
+  [IO.File]::WriteAllText($tmp, (ConvertTo-Json -InputObject $items -Depth 3 -Compress), $utf8)
+  Move-Item -LiteralPath $tmp $RetryFile -Force
+}
+function Add-Retry([string]$path) {
+  if (-not $Retry.ContainsKey($path)) {
+    $Retry[$path] = @{ next = (Get-Date).AddSeconds(30); since = (Get-Date); noticed = $false }
+    Log "файл відкритий іншою програмою — лікування повториться, щойно його закриють: $path" "WARN"
+  } else { $Retry[$path].next = (Get-Date).AddSeconds(30) }
+  Save-Retry
+}
+function Remove-Retry([string]$path) {
+  if ($Retry.ContainsKey($path)) { $Retry.Remove($path); Save-Retry }
+}
+# незавершені лікування з минулого запуску (перезавантаження: Word уже не тримає файл)
+if (Test-Path -LiteralPath $RetryFile) {
+  try {
+    foreach ($it in @(Get-Content -LiteralPath $RetryFile -Raw -Encoding utf8 | ConvertFrom-Json)) {
+      if ($it.path -and (Test-Path -LiteralPath $it.path -PathType Leaf)) {
+        $Retry[$it.path] = @{ next = Get-Date; since = [datetime]$it.since; noticed = [bool]$it.noticed }
+      }
+    }
+    if ($Retry.Count) { Log ("незавершене лікування з минулого запуску: {0} файл(ів)" -f $Retry.Count) "WARN" }
+    Save-Retry
+  } catch { Log "не вдалося прочитати ${RetryFile}: $_" "ERROR" }
+}
 
 try {
   while ($true) {
@@ -362,28 +394,39 @@ try {
       $r = Scan-File $path $evt
       $LastScan[$path] = Get-Date
       try { $recent[$path] = (Get-FileHash -LiteralPath $path -Algorithm SHA256 -EA Stop).Hash } catch { $recent.Remove($path) }
-      # лікування не вдалося, бо файл відкритий (Word) — повторимо, коли його відпустять
-      if ($r -and "$($r.disarm)" -like 'failed:*' -and (Test-FileLocked $path)) {
-        $Retry[$path] = @{ next = (Get-Date).AddSeconds(30); until = (Get-Date).AddMinutes($DisarmRetryMinutes) }
-        Log "файл відкритий іншою програмою — лікування повториться, щойно його закриють (до $DisarmRetryMinutes хв): $path" "WARN"
-      }
+      # лікування не вдалося, бо файл відкритий (Word) — повторимо, коли його відпустять;
+      # новий скан без невдалого лікування знімає файл зі списку повторів
+      if ($r -and "$($r.disarm)" -like 'failed:*' -and (Test-FileLocked $path)) { Add-Retry $path }
+      elseif ($r) { Remove-Retry $path }
     }
 
     # повторне лікування заблокованих файлів
+    # Без кінцевого терміну: перші -DisarmRetryMinutes — кожні 30 с, далі кожні 5 хв. Після
+    # -DisarmNoticeHours — один запис у Wazuh (DisarmPending): SOC має розібратися вручну.
     foreach ($path in @($Retry.Keys)) {
       $rt = $Retry[$path]
       if ($now -lt $rt.next) { continue }
-      if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { $Retry.Remove($path); continue }
-      if ($now -gt $rt.until) {
-        Log "лікування не вдалося за $DisarmRetryMinutes хв — файл увесь час відкритий: $path" "ERROR"
-        $Retry.Remove($path); continue
+      if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { Remove-Retry $path; continue }
+      $age = ($now - $rt.since)
+      $step = $(if ($age.TotalMinutes -lt $DisarmRetryMinutes) { 30 } else { 300 })
+      if (Test-FileLocked $path) {
+        $rt.next = $now.AddSeconds($step)
+        if (-not $rt.noticed -and $age.TotalHours -ge $DisarmNoticeHours) {
+          $rt.noticed = $true; Save-Retry
+          Log "лікування не виконано за $DisarmNoticeHours год — файл досі відкритий: $path" "ERROR"
+          $null = Scan-File $path "DisarmPending"   # HIGH + failed:replace -> окремий запис у Wazuh
+          $LastScan[$path] = Get-Date
+        }
+        continue
       }
-      if (Test-FileLocked $path) { $rt.next = $now.AddSeconds(30); continue }
       $r = Scan-File $path "DisarmRetry"
       $LastScan[$path] = Get-Date
       try { $recent[$path] = (Get-FileHash -LiteralPath $path -Algorithm SHA256 -EA Stop).Hash } catch { $recent.Remove($path) }
-      if ($r -and "$($r.disarm)" -like 'failed:*' -and (Test-FileLocked $path)) { $rt.next = (Get-Date).AddSeconds(30) }
-      else { $Retry.Remove($path) }
+      if ($r -and "$($r.disarm)" -like 'failed:*' -and (Test-FileLocked $path)) { $rt.next = (Get-Date).AddSeconds($step) }
+      else {
+        if ($r -and "$($r.disarm)" -like 'failed:*') { Log "лікування не вдалося (файл не заблоковано): $path — $($r.disarm)" "ERROR" }
+        Remove-Retry $path
+      }
     }
 
     if ($recent.Count -gt 5000) { $recent.Clear(); $LastScan.Clear(); $LastKey.Clear() }

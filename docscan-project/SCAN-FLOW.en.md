@@ -710,8 +710,13 @@ No `yarac64.exe` or the compile fails — a WARN in the log and scans from the `
    flood Wazuh, while any change of verdict or findings is sent as an event.
 6. **File open in another program** (Word holds the document without write/delete sharing): disarm returns
    `failed:replace`, the file is not changed (the backup exists). Every 30 s the watcher checks whether the
-   file was released and repeats scan + disarm (`event = DisarmRetry`) — up to `-DisarmRetryMinutes` (60 min),
-   then ERROR in the log.
+   file was released and repeats scan + disarm (`event = DisarmRetry`) — **with no deadline**: every 30 s for
+   the first `-DisarmRetryMinutes` (60), then every 5 min. The pending list is kept in `<OutDir>\retry.json`
+   (survives a watcher restart and a reboot: after Windows starts Word no longer holds the file, so the
+   disarm succeeds at once). If the file stays open longer than `-DisarmNoticeHours` (24) — one separate
+   record goes to Wazuh (`event = DisarmPending`, HIGH, `failed:replace`, `summary` says "manual check
+   needed"), the retries continue. A retry ends when the file is cured, deleted, or a new scan (after the
+   file changed) ran without a failed disarm.
 7. Buffer overflow (Error event): after 60 s the watcher walks the `-WatchPath` folders and queues files
    changed since the overflow (log line `доскановування після переповнення`); files already scanned with the
    same SHA256 are skipped.
@@ -733,7 +738,7 @@ On start it checks that `yara64.exe` and `-Rules` exist and compile.
 `-OutDir` (`<Base>\results`), `-BackupDir` (`<Base>\quarantine`; not watched),
 **disarm is always on** (`-NoDisarm` — diagnostics only), `-QuarantineGeneral` (off: exe/scripts/archives
 with a vendor-rule match → quarantine), `-MaxSizeMB` (100), `-SettleSeconds` (2), `-ReadyTimeout` (60),
-`-RescanCooldown` (60), `-DisarmRetryMinutes` (60), `-MaxLogMB` (50) and `-KeepLogs` (5) — rotation of `docscan-results.json` and `watcher.log`
+`-RescanCooldown` (60), `-DisarmRetryMinutes` (60), `-DisarmNoticeHours` (24), `-MaxLogMB` (50) and `-KeepLogs` (5) — rotation of `docscan-results.json` and `watcher.log`
 (`file` → `file.1` … `file.5`), `-DocExt`, `-GenExt`, `-ExcludePattern`.
 
 ### Running

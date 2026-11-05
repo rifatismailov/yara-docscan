@@ -708,7 +708,13 @@ CVE-2017-11882 (signature-base, Yara-Rules), `mhtml:`/CVE-2021-40444 (signature-
    засмічує Wazuh, а будь-яка зміна вердикту чи знахідок іде як подія.
 6. **Файл відкритий іншою програмою** (Word тримає документ без дозволу на запис/видалення): лікування
    повертає `failed:replace`, файл не змінюється (бекап є). Вотчер кожні 30 с перевіряє, чи файл
-   звільнено, і повторює скан+лікування (`event = DisarmRetry`) — до `-DisarmRetryMinutes` (60 хв), потім ERROR у лог.
+   звільнено, і повторює скан+лікування (`event = DisarmRetry`) — **без кінцевого терміну**: перші
+   `-DisarmRetryMinutes` (60) — кожні 30 с, далі кожні 5 хв. Список незавершених лікувань — у
+   `<OutDir>\retry.json` (переживає перезапуск вотчера й перезавантаження: після старту Windows Word файл
+   уже не тримає — лікування спрацьовує одразу). Якщо файл відкритий довше за `-DisarmNoticeHours` (24) —
+   один окремий запис у Wazuh (`event = DisarmPending`, HIGH, `failed:replace`, у `summary` — «потрібна
+   ручна перевірка»), спроби тривають. Повтор знімається, коли файл вилікувано, видалено або новий скан
+   (після зміни файлу) пройшов без невдалого лікування.
 7. Переповнення буфера (подія Error): через 60 с вотчер обходить теки `-WatchPath` і ставить у чергу
    файли, змінені з моменту переповнення (у лозі `доскановування після переповнення`); уже скановані з тим
    самим SHA256 пропускаються.
@@ -730,7 +736,7 @@ CVE-2017-11882 (signature-base, Yara-Rules), `mhtml:`/CVE-2021-40444 (signature-
 `-OutDir` (`<Base>\results`), `-BackupDir` (`<Base>\quarantine`; watcher її не сканує),
 **лікування увімкнене завжди** (`-NoDisarm` — тільки для діагностики), `-QuarantineGeneral` (вимкнено:
 exe/скрипти/архіви зі збігом vendor-правил → у карантин), `-MaxSizeMB` (100), `-SettleSeconds` (2),
-`-ReadyTimeout` (60), `-RescanCooldown` (60), `-DisarmRetryMinutes` (60), `-MaxLogMB` (50) і `-KeepLogs` (5) — ротація `docscan-results.json` і `watcher.log`
+`-ReadyTimeout` (60), `-RescanCooldown` (60), `-DisarmRetryMinutes` (60), `-DisarmNoticeHours` (24), `-MaxLogMB` (50) і `-KeepLogs` (5) — ротація `docscan-results.json` і `watcher.log`
 (`file` → `file.1` … `file.5`), `-DocExt`, `-GenExt`, `-ExcludePattern`.
 
 ### Запуск
