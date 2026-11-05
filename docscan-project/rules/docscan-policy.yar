@@ -274,6 +274,84 @@ rule DS_PDF_EMBEDDED
     docscan.is_pdf == 1 and $emb
 }
 
+// ========================= EMBEDDED OBJECTS ===============================
+// Facts from embedded OLE objects (OOXML embeddings, legacy OLE, RTF \objdata).
+
+// Equation Editor 3.0: removed from Office in January 2018 (CVE-2017-11882 /
+// CVE-2018-0802). A document carrying one today is an exploit attempt.
+rule DS_EQUATION_EDITOR
+{
+  meta:
+    severity = "HIGH"
+    finding  = "EQUATION_EDITOR"
+    disarm   = "embedded"
+    mitre    = "T1203"
+  condition:
+    docscan.equation_objects > 0
+}
+
+// OLE Package carrying an executable, script or shortcut: double-click on the
+// icon runs it.
+rule DS_PACKAGE_EXECUTABLE
+{
+  meta:
+    severity = "HIGH"
+    finding  = "PACKAGE_EXECUTABLE"
+    disarm   = "embedded"
+    mitre    = "T1204.002"
+  condition:
+    for any i in (0..docscan.number_of_packages - 1) : (
+      docscan.packages[i].name matches /\.(exe|scr|com|pif|bat|cmd|ps1|psm1|vbs|vbe|js|jse|wsf|wsh|hta|lnk|dll|cpl|msi|jar|reg|url|chm|iso|img|vhd|vhdx)$/i
+    )
+}
+
+// ActiveX browser controls (Shell.Explorer.1, WebBrowser / Shell.Explorer.2,
+// htmlfile): render remote content or run a shortcut from inside the document.
+rule DS_ACTIVEX_BROWSER
+{
+  meta:
+    severity = "HIGH"
+    finding  = "ACTIVEX_BROWSER"
+    mitre    = "T1203"
+  condition:
+    for any i in (0..docscan.number_of_activex - 1) : (
+      docscan.activex[i] matches /EAB22AC3-30C1-11CF-A7EB-0000C05BAE0B|8856F961-340A-11D0-A96B-00C04FD705A2|25336920-03F9-11CF-8FD0-00AA00686F13/i
+    )
+}
+
+// Any other ActiveX control: forms with controls exist, but they are rare.
+rule DS_ACTIVEX
+{
+  meta:
+    severity = "MEDIUM"
+    finding  = "ACTIVEX"
+  condition:
+    docscan.number_of_activex > 0 and not DS_ACTIVEX_BROWSER
+}
+
+// altChunk: the docx imports another document (RTF / HTML / MHT) at open —
+// used to smuggle an RTF exploit inside a docx (CVE-2023-36884).
+rule DS_ALTCHUNK
+{
+  meta:
+    severity = "MEDIUM"
+    finding  = "ALTCHUNK"
+    mitre    = "T1221"
+  condition:
+    docscan.number_of_altchunks > 0
+}
+
+// Excel 4.0 (XLM) macro sheet: old macro language that runs without VBA.
+rule DS_XLM_MACROSHEET
+{
+  meta:
+    severity = "MEDIUM"
+    finding  = "XLM_MACROSHEET"
+    mitre    = "T1059"
+  condition:
+    docscan.xlm_macrosheets > 0
+}
+
 // ================================= LNK =====================================
 // lnk_target / lnk_args come from a standalone .lnk or from an LNK embedded
 // in an OOXML document.

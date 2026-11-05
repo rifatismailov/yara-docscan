@@ -158,7 +158,7 @@ docscan-project/
     gen_test_range.py               quick synthetic generator (no Office)
   test-samples/                     ORIGINAL test set (never disarm in place!)
     provided/  (7)                  real customer samples (live C2) — NOT in git
-    generated/ (16)                 safe test range, one file per vector
+    generated/ (24)                 safe test range, one file per vector
   vendor-sources/                   git clones of the vendor rule sources at pinned commits — not in git
 ```
 
@@ -237,6 +237,11 @@ document with junk must not silently hide the interesting part):
 | `number_of_embedded` | integer | |
 | `dde[i]` | string array (≤ 32) | every DDE instruction: Word field `DDE…`/`DDEAUTO…` (also split over several `<w:instrText>` — joined), Excel formula `service\|'topic'!…` → `DDE service\|…`, Excel `ddeLink` → `DDE <ddeService> <ddeTopic>` |
 | `number_of_dde` | integer | |
+| `packages[]` (`name`, `source`) / `number_of_packages` | struct array / integer | OLE Package (`Ole10Native`): the carried file name and where it was found (OOXML part, `ole`, `rtf`) |
+| `equation_objects` | integer | number of Equation Editor 3.0 objects |
+| `activex[]` / `number_of_activex` | string array / integer | ActiveX: CLSID from `activeX*.xml` or `ocx` (stream `\x03OCXNAME`) |
+| `altchunks[]` / `number_of_altchunks` | string array / integer | altChunk (`aFChunk`) relationship targets |
+| `xlm_macrosheets` | integer | Excel 4.0 macro sheets |
 | `vba_code`, `lnk_target`, `lnk_args` | string | macro source; LNK target and arguments |
 
 Example in a rule: `for any rel in docscan.external_rels : (rel.target matches /^https?:/i)`.
@@ -350,7 +355,8 @@ size exponents are validated (7–16) before shifting.
 
 | Function | File | What it does |
 |---|---|---|
-| `docscan_inspect_rtf` | `inspect_rtf.c` | `\objupdate` → `rtf_objupdate`; `\objdata`/`\objlink`/`\objhtml` → `rtf_embedded_object`. |
+| `docscan_inspect_rtf` | `inspect_rtf.c` | `\objupdate` → `rtf_objupdate`; `\objdata`/`\objlink`/`\objhtml` → `rtf_embedded_object`; the hex after every `\objdata` is decoded as an OLE1 object: class `Equation…` → `equation_objects`, class `Package` → `packages[]` (file name from the native data); also `\objclass Equation` or hex `Equation` → `equation_objects`. |
+| `docscan_scan_ole_objects` | `oleobj.c` | Walks the CFB streams with their names (`docscan_cfb_foreach_named_stream`): `\x01Ole10Native` → `packages[]`, `Equation Native` → `equation_objects`, `\x03OCXNAME` → `activex[]` (`ocx`), `Workbook`/`Book` → BIFF8 `BOUNDSHEET` (0x0085) records of type 1 → `xlm_macrosheets`. Called for every OOXML `embeddings/oleObject*.bin` and for a whole OLE file. |
 | `docscan_inspect_pdf` | `inspect_pdf.c` | `/Launch` → `pdf_launch`; `/JavaScript` or `/JS` + a dangerous API → `pdf_js_auto`, without one → `pdf_js`; `/OpenAction` or `/AA` without JS → `pdf_openaction`; `/EmbeddedFile` → `pdf_embedded`. |
 | `pdf_has_dangerous_js` | `inspect_pdf.c` | Looks for: `app.launchURL`, `exportDataObject`, `importDataObject`, `getAnnots`, `submitForm`, `Collab.`, `util.printf`, `getIcon`, `media.newPlayer`, `eval(`, `unescape(`, `String.fromCharCode`, `.exe`, `powershell`, `cmd.exe`, `rundll32`, `mshta`, `certutil`, `Net.HTTP`, `SOAP.`, `heapLib`, `shellcode`. Benign viewer JS (`this.print`, `app.alert`) is deliberately not listed. |
 | `docscan_inspect_lnk` | `lnk.c` | MS-SHLLINK parsing (instead of the `WScript.Shell` COM object): HeaderSize=0x4C → LinkFlags → IDList → LinkInfo → StringData (Name, RelativePath, WorkDir, **Arguments**). **Target**, in order: `LocalBasePathUnicode` (if `LinkInfoHeaderSize ≥ 0x24`) → `LocalBasePath` (ANSI) → network: `NetName` + `CommonPathSuffix` (`\\server\share\…`) → `RelativePath` → path rebuilt from the IDList. UTF-16 strings → UTF-8 (Cyrillic preserved); ANSI bytes ≥ 0x80 → U+0080…U+00FF, so the output is always valid UTF-8. Flags `lnk_lolbin` / `lnk_url_args` / `lnk_obfuscated` (lists as in the policy). |
@@ -372,7 +378,7 @@ memory (`mz_zip_writer_init_heap`) and written by our `write_file` — miniz's f
 
 | Function | What it does |
 |---|---|
-| `docscan_disarm(path, info, out_action, sz)` | Dispatcher: no action → `detect-only`; legacy OLE (`.doc/.xls`) with any action → quarantine (cannot be cured in place); PDF without `quarantine` → `detect-only`; **backup** — if it fails the file is not touched (`failed:backup`); `quarantine` or LNK with `lnk_bad` → delete (`quarantined` / `deleted:lnk`); RTF → `cure_rtf`; OOXML → `cure_ooxml`. |
+| `docscan_disarm(path, info, out_action, sz)` | Dispatcher: no action → `detect-only`; legacy OLE (`.doc/.xls`) with any action → quarantine (cannot be cured in place); RTF with `embedded` (Equation, Package) → quarantine; PDF without `quarantine` → `detect-only`; **backup** — if it fails the file is not touched (`failed:backup`); `quarantine` or LNK with `lnk_bad` → delete (`quarantined` / `deleted:lnk`); RTF → `cure_rtf`; OOXML → `cure_ooxml`. |
 | `cure_ooxml(path, info, action, sz)` | Repacks the ZIP with miniz into `<file>.docscan-tmp`: **does not copy** `vbaProject.bin`/`vbaData.xml` (macro) or `embeddings/oleObject*.bin`; in `*.rels` removes `<Relationship>` elements with the markers `vbaProject` / `oleObject` / `attachedTemplate` / every protocol handler (`ms-msdt:`, `search-ms:`, `search:`, `ms-officecmd:`, `mhtml:`, `ms-word:`, `ms-excel:`, `ms-powerpoint:`, `!x-usc:`); in `[Content_Types].xml` the `<Override>` with `vbaProject`; in `word/document.xml`/header/footer `DDEAUTO` → `REMOVED`. Then replaces the original. If any part cannot be read (or is > 64 MB) the cure is aborted, the original is left unchanged and the action is `failed:unreadable-part`. Actions: `removed:vbaProject.bin`, `removed:embeddings`, `removed:remote-template`, `removed:protocol-rel`, `stripped:dde`. |
 | `cure_rtf(path, action, sz)` | `\objupdate` → `\objupdatX` (control word broken, same length) → `stripped:objupdate`. |
 | `remove_elements(in, len, markers, n, &out_len)` | Copies the XML, dropping `<Relationship …>` / `<Override …>` elements that contain any marker. |
@@ -508,6 +514,12 @@ A policy rule must not be `private` (YARA never reports private rules).
 | `DS_LNK_REMOTE_EXEC` | the target is an executable on a network share (`\\server\…\x.exe`, `.ps1`, `.vbs`, `.hta`…) | HIGH | `lnk_delete` |
 | `DS_LNK_REMOTE_TARGET` | the target is on a share but not executable (folder, document) | MEDIUM | — |
 | `DS_LNK_LOLBIN` | the target is a LOLBin | MEDIUM | — (the shortcut is not deleted) |
+| `DS_EQUATION_EDITOR` | `equation_objects > 0` — Equation Editor 3.0 (removed from Office in 2018; CVE-2017-11882/2018-0802) | HIGH | `embedded` (RTF — quarantine) |
+| `DS_PACKAGE_EXECUTABLE` | `packages[].name` — exe/scr/com/pif/bat/cmd/ps1/vbs/vbe/js/jse/wsf/wsh/hta/lnk/dll/cpl/msi/jar/reg/url/chm/iso/img/vhd(x) | HIGH | `embedded` (RTF — quarantine) |
+| `DS_ACTIVEX_BROWSER` | `activex[]` — Shell.Explorer.1 / WebBrowser (Shell.Explorer.2) / htmlfile | HIGH | — |
+| `DS_ACTIVEX` | any other ActiveX control | MEDIUM | — |
+| `DS_ALTCHUNK` | `number_of_altchunks > 0` — the docx imports another document (CVE-2023-36884) | MEDIUM | — |
+| `DS_XLM_MACROSHEET` | `xlm_macrosheets > 0` — Excel 4.0 macro sheet (xlsm/xlsb `xl/macrosheets/`, xls BIFF `BOUNDSHEET` type 1) | MEDIUM | — |
 
 **How to change it:**
 ```yara
@@ -536,7 +548,7 @@ PDF: 2 HIGHs on pdf.js test files made exactly for `/Launch` and `launchURL` —
 | `rules/docscan-policy.yar` | policy | `import "docscan"` + the `DS_*` rules |
 | `rules/docscan.yar` | our detection only | `include "docscan-policy.yar"` |
 | `rules/docscan-index.yar` | **full scan** (watcher, run_tests) | `include "docscan-policy.yar"` + `include "file-index.yar"` |
-| `rules/file-index.yar` | vendor rules (**generated**) | 1364 files, 5560 rules: `general/` (signature-base), `general/elastic/` (Elastic protections-artifacts, Windows/Multi), `general/bartblaze/`, `general/inquest/`, `maldoc/signature-base/`, `maldoc/community/`, `maldoc/bartblaze/`, `maldoc/inquest/` + `maldoc/vba_plaintext.yar` |
+| `rules/file-index.yar` | vendor rules (**generated**) | 1365 files, 5594 rules: `general/` (signature-base), `general/elastic/` (Elastic protections-artifacts, Windows/Multi), `general/bartblaze/`, `general/inquest/`, `maldoc/signature-base/`, `maldoc/community/`, `maldoc/bartblaze/`, `maldoc/inquest/`, `maldoc/ditekshen/` + `maldoc/vba_plaintext.yar` |
 | `rules/general/**`, `rules/maldoc/**` (except `vba_plaintext.yar`) | vendor rules (**generated**, do not edit) | signature-base + Elastic + Yara-Rules + bartblaze + InQuest, filtered per rule |
 | `rules/maldoc/vba_plaintext.yar` | our rules for decompressed VBA | edited by hand |
 | `rules/tools/build_vendor_rules.py` | generator | pinned sources, filter, renames, tags, compile check |
@@ -548,7 +560,7 @@ PDF: 2 HIGHs on pdf.js test files made exactly for `/Launch` and `launchURL` —
 **How the vendor set is built** (`python3 rules/tools/build_vendor_rules.py [--fetch]`):
 1. Sources live in `docscan-project/vendor-sources/` (not in git), commits pinned in `SOURCES`:
    Neo23x0/signature-base, Yara-Rules/rules, elastic/protections-artifacts, bartblaze/Yara-rules,
-   InQuest/yara-rules (**we do not write our own rules — only ready public ones**);
+   InQuest/yara-rules, ditekshen/detection (**we do not write our own rules — only ready public ones**);
    `--fetch` clones/checks them out.
 2. Files from `vendor-selection.txt` are taken; every rule is checked on its own:
    - **dropped** if it cannot fire on a Windows workstation: the condition requires ELF / Mach-O /
@@ -614,6 +626,17 @@ is unique; old, ineffective and non-Windows rules go. Was 7,239 rules, now **5,5
 | false / ineffective on a Windows 10 workstation (whole disk, incl. `C:\Users`) | 3 | InQuest `PE.rule` (any PE), `Embedded_PE.rule` (555 .NET images), `ClamAV_Emotet_String_Aggregrate.rule` (`Microsoft.CSharp.dll`) |
 
 Every dropped rule with its reason is in `rules/tools/vendor-report.md`. The 23-sample regression is unchanged.
+
+**Step 4 (2026-11-05) — techniques in documents.** Ready rules: ditekSHen/detection `indicator_office.yar`
+(BSD-2-Clause; ActiveX, Equation, files embedded in RTF/OLE, Excel 4.0, remote templates) plus what was there:
+CVE-2017-11882 (signature-base, Yara-Rules), `mhtml:`/CVE-2021-40444 (signature-base; in the module `mhtml:` is a
+protocol handler → `DS_PROTOCOL_HANDLER`), XLM (InQuest, signature-base). Removed: `INDICATOR_RTF_MalVer_Objects`
+(a copy of the signature-base rule), `INDICATOR_OLE_ObjectPool_Embedded_Files` (slow). Note: vendor rules see the
+raw file, and OOXML is a ZIP (the XML is compressed), so rules like `EXPL_CVE_2021_40444_Document_Rels_XML` do
+not fire on a `.docx` — for OOXML the module facts (`packages[]`, `equation_objects`, `activex[]`, `altchunks[]`,
+`xlm_macrosheets`) and the policy rules `DS_EQUATION_EDITOR`, `DS_PACKAGE_EXECUTABLE`, `DS_ACTIVEX_BROWSER`,
+`DS_ACTIVEX`, `DS_ALTCHUNK`, `DS_XLM_MACROSHEET` decide (table in 6.1). Check: 476 + 400 benign Office files — 0
+hits of the new rules.
 
 **Step 3 (2026-11-05) — new formats.** Added sources bartblaze/Yara-rules (MIT, `rules/generic/`, 21 files)
 and InQuest/yara-rules (MIT, 25 files; `GlowSpark_Downloader` does not compile — not taken). Coverage:
@@ -868,7 +891,12 @@ For each file: copy → `work.<ext>`; run 1 `--docscan-json --docscan-disarm`; r
 SHA256 before/after. Parameters: `-Yara`, `-Rules`, `-Samples`, `-WorkDir`.
 The file must be **UTF-8 with BOM** (otherwise PowerShell 5.1 garbles Cyrillic).
 
-**Reference result (23 files):** detection HIGH 22 / MEDIUM 1; after disarm INFO 17 / DELETED 5
+**Reference result (31 files, since 2026-11-05):** detection HIGH 27 / MEDIUM 4; after disarm INFO 19 /
+MEDIUM 4 / HIGH 1 (`activex_control.docx` — detect only) / DELETED 7. New samples (step 4):
+`equation_ole.docx`, `package_script.docx`, `activex_control.docx`, `altchunk.docx`, `xlm_macrosheet.xlsm`,
+`equation.rtf`, `package_script.rtf`, `xlm_macrosheet.xls`.
+
+Before (23 files): detection HIGH 22 / MEDIUM 1; after disarm INFO 17 / DELETED 5
 (2 LNK deleted, 3 PDF quarantined) / MEDIUM 1 (`external_ole`); originals unchanged; with
 `docscan-index.yar` `vendor_shellexec.docm` → `yara_matches:["gen_macro_ShellExecute_action"]`.
 Identical on macOS and Windows (MSVC).
@@ -1053,7 +1081,7 @@ agent's `ossec.log` (`localfile` not picked up).
 **Module / policy / disarm**
 - Rules see the whole `vba_code` **including comments**: a commented-out `Shell` also matches.
 - Fact arrays are capped (rels 256, entries 512, embedded 64, dde 32); on overflow `*_truncated = 1`.
-- Legacy OLE (`.doc/.xls`) with a disarm action → **quarantine** (not cured in place); PDF — only `quarantine` or `detect-only`.
+- Legacy OLE (`.doc/.xls`) with a disarm action → **quarantine** (not cured in place); RTF with an embedded object (`embedded`) — quarantine too; PDF — only `quarantine` or `detect-only`.
 - Excel: a DDE formula is removed together with `<f>` (the cached value stays); if it is the "master" of a
   shared formula (`t="shared"`), Excel may offer to repair dependent cells. A `ddeLink` becomes an empty
   external link after disarm (Excel shows it as unavailable).
@@ -1106,5 +1134,5 @@ Upstream will not accept such a module: YARA is in maintenance mode and new work
 **Licensing:** the fork is under YARA's BSD-3-Clause (`COPYING`); miniz — public domain / MIT;
 `rules/general/` and `rules/maldoc/signature-base/` — Detection Rule License 1.1 (a few rules are
 CC BY 4.0 or Volexity); `rules/general/elastic/` — Elastic License 2.0; `rules/maldoc/community/` — GNU GPLv2;
-`rules/*/bartblaze/`, `rules/*/inquest/` — MIT. License texts — `rules/LICENSE-*`. Do not remove rule headers or the
+`rules/*/bartblaze/`, `rules/*/inquest/` — MIT; `rules/maldoc/ditekshen/` — BSD-2-Clause. License texts — `rules/LICENSE-*`. Do not remove rule headers or the
 `license` meta field.

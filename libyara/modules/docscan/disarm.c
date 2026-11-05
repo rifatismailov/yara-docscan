@@ -560,7 +560,10 @@ int docscan_disarm(const char* path, const docscan_disarm_info* info,
   }
 
   // Legacy OLE (.doc/.xls) cannot be cured in place reliably -> quarantine.
-  int quarantine = info->quarantine || (info->type == 2);
+  // RTF: \objupdate can be stripped, an embedded object (Equation, Package)
+  // cannot be cut out reliably -> quarantine.
+  int quarantine = info->quarantine || (info->type == 2) ||
+                   (info->type == 3 && info->embedded);
 
   // PDF: only quarantine is possible.
   if (info->type == 4 && !quarantine)

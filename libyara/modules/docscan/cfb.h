@@ -19,4 +19,18 @@ int docscan_cfb_foreach_stream(
     docscan_cfb_stream_cb cb,
     void* ud);
 
+// Same, but the callback also gets the stream's directory name (UTF-16 name
+// folded to ASCII, non-ASCII chars as '?', control chars kept, e.g. "\x01Ole10Native").
+typedef int (*docscan_cfb_named_cb)(
+    const char* name,
+    const uint8_t* data,
+    size_t size,
+    void* ud);
+
+int docscan_cfb_foreach_named_stream(
+    const uint8_t* data,
+    size_t size,
+    docscan_cfb_named_cb cb,
+    void* ud);
+
 #endif

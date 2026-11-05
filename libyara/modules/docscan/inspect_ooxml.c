@@ -4,7 +4,10 @@
      *.rels                         -> external relationships (rels.c)
      word/vbaProject.bin            -> macro present
      word/document.xml, headers...  -> DDEAUTO
-     word/embeddings/oleObject*.bin -> embedded LNK / PE
+     word/embeddings/oleObject*.bin -> embedded LNK / PE, OLE Package, Equation (oleobj.c)
+     <part>/activeX/activeXN.xml    -> ActiveX control CLSID
+     *.rels aFChunk relationship     -> altChunk (embedded RTF/HTML/MHT document)
+     xl/macrosheets/<sheet>          -> Excel 4.0 (XLM) macro sheets
 */
 
 #include "inspect.h"
@@ -253,6 +256,52 @@ static void scan_dde(const uint8_t* xml, size_t n, docscan_result_t* r)
   }
 }
 
+// <Relationship ... Type=".../aFChunk" Target="afchunk.rtf"/> -> altchunks[]
+static void record_altchunks(const uint8_t* xml, size_t n, docscan_result_t* r)
+{
+  size_t i = 0;
+  while (i < n && r->n_altchunks < DOCSCAN_MAX_ALTCHUNK)
+  {
+    const uint8_t* at = docscan_memmem(xml + i, n - i, "<Relationship ", 14);
+    if (at == NULL)
+      break;
+    size_t s0 = (size_t) (at - xml);
+    const uint8_t* gt = docscan_memmem(at, n - s0, ">", 1);
+    size_t tl = gt ? (size_t) (gt - at) : n - s0;
+    if (docscan_contains(at, tl, "/aFChunk\""))
+    {
+      char tgt[256] = "";
+      const uint8_t* v = docscan_memmem(at, tl, "Target=\"", 8);
+      if (v != NULL)
+      {
+        v += 8;
+        size_t k = 0;
+        while (v < at + tl && *v != '"' && k + 1 < sizeof(tgt))
+          tgt[k++] = (char) *v++;
+        tgt[k] = '\0';
+      }
+      snprintf(r->altchunks[r->n_altchunks++], sizeof(r->altchunks[0]), "%s", tgt);
+    }
+    i = s0 + tl + 1;
+  }
+}
+
+// word/activeX/activeX1.xml: <ax:ocx ax:classid="{8856F961-...}" ...> -> activex[]
+static void record_activex_xml(const uint8_t* xml, size_t n, docscan_result_t* r)
+{
+  const uint8_t* v = docscan_memmem(xml, n, "classid=\"", 9);
+  char id[64] = "ocx";
+  if (v != NULL)
+  {
+    v += 9;
+    size_t k = 0;
+    while (v < xml + n && *v != '"' && k + 1 < sizeof(id))
+      id[k++] = (char) *v++;
+    id[k] = '\0';
+  }
+  docscan_add_activex(r, id);
+}
+
 // Look for an embedded LNK signature or an embedded PE (MZ..PE).
 // Sets the per-object facts in *e and the legacy flags in *r.
 static void scan_embedded_ole(
@@ -328,6 +377,7 @@ void docscan_inspect_ooxml(const uint8_t* data, size_t size, docscan_result_t* r
       if (c != NULL)
       {
         docscan_scan_rels(c, sz, name, r);
+        record_altchunks(c, sz, r);
         docscan_zip_free(c);
       }
     }
@@ -378,8 +428,24 @@ void docscan_inspect_ooxml(const uint8_t* data, size_t size, docscan_result_t* r
       if (c != NULL)
       {
         scan_embedded_ole(c, sz, e, r);
+        docscan_scan_ole_objects(c, sz, name, r);  // Package / Equation / OCX
         docscan_zip_free(c);
       }
+    }
+    else if (strstr(name, "/activeX/activeX") && ends_with(name, ".xml"))
+    {
+      size_t sz;
+      uint8_t* c = docscan_zip_extract(z, i, &sz);
+      if (c != NULL)
+      {
+        record_activex_xml(c, sz, r);
+        docscan_zip_free(c);
+      }
+    }
+    else if (strstr(name, "xl/macrosheets/") && !strstr(name, "/_rels/") &&
+             (ends_with(name, ".xml") || ends_with(name, ".bin")))
+    {
+      r->xlm_macrosheets++;
     }
   }
 

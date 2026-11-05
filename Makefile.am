@@ -108,6 +108,7 @@ MODULES += libyara/modules/docscan/zip.c
 MODULES += libyara/modules/docscan/rels.c
 MODULES += libyara/modules/docscan/inspect_ooxml.c
 MODULES += libyara/modules/docscan/cfb.c
+MODULES += libyara/modules/docscan/oleobj.c
 MODULES += libyara/modules/docscan/msovba.c
 MODULES += libyara/modules/docscan/vba.c
 MODULES += libyara/modules/docscan/inspect_ole.c

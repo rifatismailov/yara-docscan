@@ -88,10 +88,11 @@ static void read_chain(
   }
 }
 
-int docscan_cfb_foreach_stream(
+static int cfb_walk(
     const uint8_t* data,
     size_t size,
     docscan_cfb_stream_cb cb,
+    docscan_cfb_named_cb ncb,
     void* ud)
 {
   if (size < 512 || data[0] != 0xD0 || data[1] != 0xCF || data[2] != 0x11 ||
@@ -236,7 +237,28 @@ int docscan_cfb_foreach_stream(
       used = budget;
     if (sb.p != NULL && used > 0)
     {
-      stop = cb(sb.p, used, ud);
+      if (ncb != NULL)
+      {
+        // directory name: UTF-16LE, length in bytes (incl. the NUL) at +64
+        char name[33];
+        size_t nl = u16(dir.p, dir.len, base + 64) / 2;
+        if (nl > 32)
+          nl = 32;
+        size_t k = 0;
+        for (; k < nl; k++)
+        {
+          uint16_t ch = u16(dir.p, dir.len, base + k * 2);
+          if (ch == 0)
+            break;
+          name[k] = ch < 0x80 ? (char) ch : '?';
+        }
+        name[k] = '\0';
+        stop = ncb(name, sb.p, used, ud);
+      }
+      else
+      {
+        stop = cb(sb.p, used, ud);
+      }
       budget -= used;
     }
     docscan_buf_free(&sb);
@@ -251,4 +273,22 @@ done:
   docscan_buf_free(&dir);
   docscan_buf_free(&mini);
   return rc;
+}
+
+int docscan_cfb_foreach_stream(
+    const uint8_t* data,
+    size_t size,
+    docscan_cfb_stream_cb cb,
+    void* ud)
+{
+  return cfb_walk(data, size, cb, NULL, ud);
+}
+
+int docscan_cfb_foreach_named_stream(
+    const uint8_t* data,
+    size_t size,
+    docscan_cfb_named_cb cb,
+    void* ud)
+{
+  return cfb_walk(data, size, NULL, cb, ud);
 }

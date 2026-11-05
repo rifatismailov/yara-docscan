@@ -157,7 +157,7 @@ docscan-project/
     gen_test_range.py               швидкий синтетичний генератор (без Office)
   test-samples/                     ОРИГІНАЛИ тест-набору (не лікувати напряму!)
     provided/  (7)                  реальні семпли замовника (живий C2) — НЕ в git
-    generated/ (16)                 безпечний полігон, по файлу на вектор
+    generated/ (24)                 безпечний полігон, по файлу на вектор
   vendor-sources/                   git-клони джерел vendor-правил на зафіксованих комітах (не в git)
 ```
 
@@ -236,6 +236,11 @@ docscan-project/
 | `number_of_embedded` | integer | |
 | `dde[i]` | масив рядків (≤ 32) | кожна DDE-інструкція: поле Word `DDE…`/`DDEAUTO…` (і розбите на кілька `<w:instrText>` — склеєне), формула Excel `сервіс\|'тема'!…` → `DDE сервіс\|…`, Excel `ddeLink` → `DDE <ddeService> <ddeTopic>` |
 | `number_of_dde` | integer | |
+| `packages[]` (`name`, `source`) / `number_of_packages` | struct array / integer | OLE Package (`Ole10Native`): ім'я вкладеного файлу і де знайдено (частина OOXML, `ole`, `rtf`) |
+| `equation_objects` | integer | кількість об'єктів Equation Editor 3.0 |
+| `activex[]` / `number_of_activex` | string array / integer | ActiveX: CLSID з `activeX*.xml` або `ocx` (потік `\x03OCXNAME`) |
+| `altchunks[]` / `number_of_altchunks` | string array / integer | цілі зв'язків altChunk (`aFChunk`) |
+| `xlm_macrosheets` | integer | макроаркуші Excel 4.0 |
 | `vba_code`, `lnk_target`, `lnk_args` | string | текст макросу; ціль і аргументи LNK |
 
 Приклад у правилі: `for any rel in docscan.external_rels : (rel.target matches /^https?:/i)`.
@@ -348,7 +353,8 @@ MS-OVBA. Ланцюжок: **CFB → потоки → пошук контейн�
 
 | Функція | Файл | Що робить |
 |---|---|---|
-| `docscan_inspect_rtf` | `inspect_rtf.c` | `\objupdate` → `rtf_objupdate`; `\objdata`/`\objlink`/`\objhtml` → `rtf_embedded_object`. |
+| `docscan_inspect_rtf` | `inspect_rtf.c` | `\objupdate` → `rtf_objupdate`; `\objdata`/`\objlink`/`\objhtml` → `rtf_embedded_object`; hex після кожного `\objdata` розкодовується як OLE1-об'єкт: клас `Equation…` → `equation_objects`, клас `Package` → `packages[]` (ім'я файлу з native-даних); також `\objclass Equation` або hex `Equation` → `equation_objects`. |
+| `docscan_scan_ole_objects` | `oleobj.c` | Обходить потоки CFB з іменами (`docscan_cfb_foreach_named_stream`): `\x01Ole10Native` → `packages[]`, `Equation Native` → `equation_objects`, `\x03OCXNAME` → `activex[]` (`ocx`), `Workbook`/`Book` → записи BIFF8 `BOUNDSHEET` (0x0085) з типом 1 → `xlm_macrosheets`. Викликається для кожного `embeddings/oleObject*.bin` в OOXML і для всього файлу OLE. |
 | `docscan_inspect_pdf` | `inspect_pdf.c` | `/Launch` → `pdf_launch`; `/JavaScript` або `/JS` + небезпечний API → `pdf_js_auto`, без нього → `pdf_js`; `/OpenAction` або `/AA` без JS → `pdf_openaction`; `/EmbeddedFile` → `pdf_embedded`. |
 | `pdf_has_dangerous_js` | `inspect_pdf.c` | Шукає: `app.launchURL`, `exportDataObject`, `importDataObject`, `getAnnots`, `submitForm`, `Collab.`, `util.printf`, `getIcon`, `media.newPlayer`, `eval(`, `unescape(`, `String.fromCharCode`, `.exe`, `powershell`, `cmd.exe`, `rundll32`, `mshta`, `certutil`, `Net.HTTP`, `SOAP.`, `heapLib`, `shellcode`. Безпечний JS переглядача (`this.print`, `app.alert`) навмисно не в списку. |
 | `docscan_inspect_lnk` | `lnk.c` | Розбір MS-SHLLINK (замість COM `WScript.Shell`): HeaderSize=0x4C → LinkFlags → IDList → LinkInfo → StringData (Name, RelativePath, WorkDir, **Arguments**). **Ціль** — по черзі: `LocalBasePathUnicode` (якщо `LinkInfoHeaderSize ≥ 0x24`) → `LocalBasePath` (ANSI) → мережева: `NetName` + `CommonPathSuffix` (`\\сервер\шара\…`) → `RelativePath` → шлях, відновлений з IDList. Рядки UTF-16 → UTF-8 (кирилиця зберігається); ANSI-байти ≥ 0x80 → U+0080…U+00FF, тож вихід — завжди валідний UTF-8. Прапорці `lnk_lolbin` / `lnk_url_args` / `lnk_obfuscated` (списки — як у політиці). |
@@ -371,7 +377,7 @@ MS-OVBA. Ланцюжок: **CFB → потоки → пошук контейн�
 
 | Функція | Що робить |
 |---|---|
-| `docscan_disarm(path, info, out_action, sz)` | Диспетчер: немає жодної дії → `detect-only`; legacy OLE (`.doc/.xls`) з будь-якою дією → карантин (вилікувати на місці неможливо); PDF без `quarantine` → `detect-only`; **бекап** — якщо не вдався, файл не чіпається (`failed:backup`); `quarantine` або LNK з `lnk_bad` → видалення (`quarantined` / `deleted:lnk`); RTF → `cure_rtf`; OOXML → `cure_ooxml`. |
+| `docscan_disarm(path, info, out_action, sz)` | Диспетчер: немає жодної дії → `detect-only`; legacy OLE (`.doc/.xls`) з будь-якою дією → карантин (вилікувати на місці неможливо); RTF з `embedded` (Equation, Package) → карантин; PDF без `quarantine` → `detect-only`; **бекап** — якщо не вдався, файл не чіпається (`failed:backup`); `quarantine` або LNK з `lnk_bad` → видалення (`quarantined` / `deleted:lnk`); RTF → `cure_rtf`; OOXML → `cure_ooxml`. |
 | `cure_ooxml(path, info, action, sz)` | Перепаковує ZIP через miniz у `<file>.docscan-tmp`: **не копіює** `vbaProject.bin`/`vbaData.xml` (макрос) і `embeddings/oleObject*.bin`; у `*.rels` видаляє `<Relationship>` з маркерами `vbaProject` / `oleObject` / `attachedTemplate` / усі обробники протоколів (`ms-msdt:`, `search-ms:`, `search:`, `ms-officecmd:`, `mhtml:`, `ms-word:`, `ms-excel:`, `ms-powerpoint:`, `!x-usc:`); у `[Content_Types].xml` — `<Override>` з `vbaProject`; у `word/document.xml`/header/footer `DDEAUTO` → `REMOVED`. Потім підміняє оригінал. Якщо будь-яку частину не вдалося прочитати (чи вона > 64 МБ) — лікування скасовується, оригінал не змінюється, дія `failed:unreadable-part`. Дії: `removed:vbaProject.bin`, `removed:embeddings`, `removed:remote-template`, `removed:protocol-rel`, `stripped:dde`. |
 | `cure_rtf(path, action, sz)` | `\objupdate` → `\objupdatX` (керуюче слово зламане, довжина та сама) → `stripped:objupdate`. |
 | `remove_elements(in, len, markers, n, &out_len)` | Копіює XML, викидаючи елементи `<Relationship …>` / `<Override …>`, що містять будь-який маркер. |
@@ -507,6 +513,12 @@ MS-OVBA. Ланцюжок: **CFB → потоки → пошук контейн�
 | `DS_LNK_REMOTE_EXEC` | ціль — виконуваний файл на мережевій шарі (`\\сервер\…\x.exe`, `.ps1`, `.vbs`, `.hta`…) | HIGH | `lnk_delete` |
 | `DS_LNK_REMOTE_TARGET` | ціль на шарі, але не виконувана (тека, документ) | MEDIUM | — |
 | `DS_LNK_LOLBIN` | ціль — LOLBin | MEDIUM | — (ярлик не видаляється) |
+| `DS_EQUATION_EDITOR` | `equation_objects > 0` — Equation Editor 3.0 (прибраний з Office у 2018; CVE-2017-11882/2018-0802) | HIGH | `embedded` (RTF — карантин) |
+| `DS_PACKAGE_EXECUTABLE` | `packages[].name` — exe/scr/com/pif/bat/cmd/ps1/vbs/vbe/js/jse/wsf/wsh/hta/lnk/dll/cpl/msi/jar/reg/url/chm/iso/img/vhd(x) | HIGH | `embedded` (RTF — карантин) |
+| `DS_ACTIVEX_BROWSER` | `activex[]` — Shell.Explorer.1 / WebBrowser (Shell.Explorer.2) / htmlfile | HIGH | — |
+| `DS_ACTIVEX` | інший ActiveX-елемент | MEDIUM | — |
+| `DS_ALTCHUNK` | `number_of_altchunks > 0` — docx імпортує інший документ (CVE-2023-36884) | MEDIUM | — |
+| `DS_XLM_MACROSHEET` | `xlm_macrosheets > 0` — макроаркуш Excel 4.0 (xlsm/xlsb `xl/macrosheets/`, xls BIFF `BOUNDSHEET` тип 1) | MEDIUM | — |
 
 **Як змінювати:**
 ```yara
@@ -535,7 +547,7 @@ rule ORG_HUGE_PART { meta: severity = "MEDIUM" finding = "HUGE_PART"
 | `rules/docscan-policy.yar` | політика | `import "docscan"` + правила `DS_*` |
 | `rules/docscan.yar` | тільки наш детект | `include "docscan-policy.yar"` |
 | `rules/docscan-index.yar` | **повний скан** (watcher, run_tests) | `include "docscan-policy.yar"` + `include "file-index.yar"` |
-| `rules/file-index.yar` | vendor-правила (**генерується**) | 1364 файли, 5560 правил: `general/` (signature-base), `general/elastic/` (Elastic protections-artifacts, Windows/Multi), `general/bartblaze/`, `general/inquest/`, `maldoc/signature-base/`, `maldoc/community/`, `maldoc/bartblaze/`, `maldoc/inquest/` + `maldoc/vba_plaintext.yar` |
+| `rules/file-index.yar` | vendor-правила (**генерується**) | 1365 файлів, 5594 правила: `general/` (signature-base), `general/elastic/` (Elastic protections-artifacts, Windows/Multi), `general/bartblaze/`, `general/inquest/`, `maldoc/signature-base/`, `maldoc/community/`, `maldoc/bartblaze/`, `maldoc/inquest/`, `maldoc/ditekshen/` + `maldoc/vba_plaintext.yar` |
 | `rules/general/**`, `rules/maldoc/**` (крім `vba_plaintext.yar`) | vendor-правила (**генеруються**, не правити руками) | signature-base + Elastic + Yara-Rules + bartblaze + InQuest, відфільтровано по кожному правилу |
 | `rules/maldoc/vba_plaintext.yar` | наші правила на розпакований VBA | правиться руками |
 | `rules/tools/build_vendor_rules.py` | генератор | джерела на зафіксованих комітах, фільтр, перейменування, теги, перевірка компіляції |
@@ -547,7 +559,7 @@ rule ORG_HUGE_PART { meta: severity = "MEDIUM" finding = "HUGE_PART"
 **Як збирається vendor-набір** (`python3 rules/tools/build_vendor_rules.py [--fetch]`):
 1. Джерела — `docscan-project/vendor-sources/` (не в git), коміти зафіксовані в `SOURCES`:
    Neo23x0/signature-base, Yara-Rules/rules, elastic/protections-artifacts, bartblaze/Yara-rules,
-   InQuest/yara-rules (**власних правил ми не пишемо — лише готові публічні**);
+   InQuest/yara-rules, ditekshen/detection (**власних правил ми не пишемо — лише готові публічні**);
    `--fetch` клонує/перемикає на них.
 2. Беруться файли з `vendor-selection.txt`; кожне правило перевіряється окремо:
    - **відкидається**, якщо не може спрацювати на робочій станції Windows: умова вимагає ELF / Mach-O /
@@ -613,6 +625,17 @@ Windows 10 вони дали ~2900 хибних HIGH на .NET/Adobe/Acronis/MSI
 | хибні / неефективні на робочій станції Windows 10 (повний диск, з `C:\Users`) | 3 | InQuest `PE.rule` (будь-який PE), `Embedded_PE.rule` (555 .NET-образів), `ClamAV_Emotet_String_Aggregrate.rule` (`Microsoft.CSharp.dll`) |
 
 Кожне видалене правило з причиною — у `rules/tools/vendor-report.md`. Регресія 23 зразків не змінилась.
+
+**Крок 4 (2026-11-05) — техніки в документах.** Готові правила: ditekSHen/detection `indicator_office.yar`
+(BSD-2-Clause; ActiveX, Equation, вбудовані файли в RTF/OLE, Excel 4.0, віддалені шаблони) + те, що вже було:
+CVE-2017-11882 (signature-base, Yara-Rules), `mhtml:`/CVE-2021-40444 (signature-base; у модулі `mhtml:` —
+протокол-хендлер → `DS_PROTOCOL_HANDLER`), XLM (InQuest, signature-base). Прибрано: `INDICATOR_RTF_MalVer_Objects`
+(копія правила signature-base), `INDICATOR_OLE_ObjectPool_Embedded_Files` (повільне). Нюанс: vendor-правила
+бачать сирий файл, а OOXML — це ZIP (XML стиснутий), тому правила на кшталт `EXPL_CVE_2021_40444_Document_Rels_XML`
+по `.docx` не спрацюють — для OOXML вирішують факти модуля (`packages[]`, `equation_objects`, `activex[]`,
+`altchunks[]`, `xlm_macrosheets`) і правила політики `DS_EQUATION_EDITOR`, `DS_PACKAGE_EXECUTABLE`,
+`DS_ACTIVEX_BROWSER`, `DS_ACTIVEX`, `DS_ALTCHUNK`, `DS_XLM_MACROSHEET` (таблиця в 6.1). Перевірка: 476 + 400
+легітимних Office-файлів — 0 спрацювань нових правил.
 
 **Крок 3 (2026-11-05) — нові формати.** Додано джерела bartblaze/Yara-rules (MIT, `rules/generic/`, 21 файл)
 і InQuest/yara-rules (MIT, 25 файлів; `GlowSpark_Downloader` не компілюється — не взято). Покриття:
@@ -866,7 +889,12 @@ make -j8 yara.exe      # PE32+ x64, залежить лише від UCRT (є у
 наприкінці SHA256 оригінали до/після. Параметри: `-Yara`, `-Rules`, `-Samples`, `-WorkDir`.
 Файл має бути **UTF-8 з BOM** (інакше PowerShell 5.1 ламає кирилицю).
 
-**Еталонний результат (23 файли):** детект HIGH 22 / MEDIUM 1; після лікування INFO 17 / DELETED 5
+**Еталонний результат (31 файл, з 2026-11-05):** детект HIGH 27 / MEDIUM 4; після лікування INFO 19 /
+MEDIUM 4 / HIGH 1 (`activex_control.docx` — лише детект) / DELETED 7. Нові зразки (крок 4):
+`equation_ole.docx`, `package_script.docx`, `activex_control.docx`, `altchunk.docx`, `xlm_macrosheet.xlsm`,
+`equation.rtf`, `package_script.rtf`, `xlm_macrosheet.xls`.
+
+Було (23 файли): детект HIGH 22 / MEDIUM 1; після лікування INFO 17 / DELETED 5
 (2 LNK видалено, 3 PDF у карантині) / MEDIUM 1 (`external_ole`); оригінали не змінені; з
 `docscan-index.yar` — `vendor_shellexec.docm` → `yara_matches:["gen_macro_ShellExecute_action"]`.
 Однаковий на macOS і Windows (MSVC).
@@ -1052,7 +1080,7 @@ lnk_target, lnk_args}, yara_matches[], details[]}`. В індексі все ц�
 **Модуль / політика / лікування**
 - Правила бачать `vba_code` повністю, **включно з коментарями**: закоментований `Shell` теж спрацює.
 - Масиви фактів обмежені (rels 256, entries 512, embedded 64, dde 32); при переповненні `*_truncated = 1`.
-- Legacy OLE (`.doc/.xls`) з дією лікування → **карантин** (не лікується на місці); PDF — лише `quarantine` або `detect-only`.
+- Legacy OLE (`.doc/.xls`) з дією лікування → **карантин** (не лікується на місці); RTF з вбудованим об'єктом (`embedded`) — теж карантин; PDF — лише `quarantine` або `detect-only`.
 - Excel: DDE-формула видаляється разом з `<f>` (лишається збережене значення); якщо це «головна» спільна
   формула (`t="shared"`), залежні комірки Excel може попросити відновити. `ddeLink` після лікування —
   порожній зовнішній зв'язок (Excel покаже його як недоступний).
@@ -1105,4 +1133,4 @@ Protobuf). Офіційний шлях — лише порт логіки на Y
 **Ліцензії:** форк — BSD-3-Clause YARA (`COPYING`); miniz — public domain / MIT;
 `rules/general/` і `rules/maldoc/signature-base/` — Detection Rule License 1.1 (кілька правил — CC BY 4.0,
 Volexity); `rules/general/elastic/` — Elastic License 2.0; `rules/maldoc/community/` — GNU GPLv2;
-`rules/*/bartblaze/`, `rules/*/inquest/` — MIT. Тексти ліцензій — `rules/LICENSE-*`. Заголовки й поле `license` у правилах не прибирати.
+`rules/*/bartblaze/`, `rules/*/inquest/` — MIT; `rules/maldoc/ditekshen/` — BSD-2-Clause. Тексти ліцензій — `rules/LICENSE-*`. Заголовки й поле `license` у правилах не прибирати.

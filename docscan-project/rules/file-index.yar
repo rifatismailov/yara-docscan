@@ -1367,6 +1367,7 @@ include "maldoc/inquest/RTF_Byte_Nibble_Obfuscation.rule"
 include "general/inquest/Signed_Executable_With_Custom_Elliptic_Curve_Parameters.rule"
 include "maldoc/inquest/Symbolic_Link_Files_DLL_Reference_Suspicious_Characteristics.rule"
 include "maldoc/inquest/Symbolic_Link_Files_Macros_File_Characteristic.rule"
+include "maldoc/ditekshen/indicator_office.yar"
 
 // DocScan's own rules
 include "maldoc/vba_plaintext.yar"

@@ -1531,3 +1531,5 @@ maldoc/inquest inquest Symbolic_Link_Files_Macros_File_Characteristic.rule
 #   Microsoft_Office_Document_with_Embedded_Flash_File: Flash is obsolete)
 # removed 2026-11-05 after the FP scan of a Windows 10 workstation: InQuest PE.rule (matches every PE),
 #   Embedded_PE.rule (555 hits on .NET images), ClamAV_Emotet_String_Aggregrate.rule (Microsoft.CSharp.dll)
+# step 4 (2026-11-05): ditekSHen/detection (BSD-2-Clause) — document indicators
+maldoc/ditekshen ditekshen yara/indicator_office.yar

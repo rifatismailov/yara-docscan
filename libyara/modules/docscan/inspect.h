@@ -16,6 +16,9 @@
 #define DOCSCAN_MAX_ENTRIES  512
 #define DOCSCAN_MAX_EMBEDDED 64
 #define DOCSCAN_MAX_DDE      32
+#define DOCSCAN_MAX_PACKAGES 32
+#define DOCSCAN_MAX_ACTIVEX  32
+#define DOCSCAN_MAX_ALTCHUNK 16
 
 typedef struct
 {
@@ -38,6 +41,12 @@ typedef struct
   int is_lnk;
 } docscan_embedded_t;
 
+typedef struct
+{
+  char name[256];    // file name carried by the OLE Package (label, else path)
+  char source[192];  // where it was found: embedding part, "ole", "rtf"
+} docscan_package_t;
+
 // All detection results for one document.
 // docscan.c maps these fields onto the module's YARA-visible fields.
 // Large (~250 KB): always heap-allocate it.
@@ -59,6 +68,16 @@ typedef struct
 
   char dde[DOCSCAN_MAX_DDE][512];  // every DDE / DDEAUTO field instruction
   int n_dde;
+
+  // --- embedded objects (OOXML embeddings, legacy OLE, RTF \objdata) ---
+  docscan_package_t packages[DOCSCAN_MAX_PACKAGES];  // OLE Package (Ole10Native) payloads
+  int n_packages;
+  int equation_objects;     // Equation Editor 3.0 objects ("Equation Native" / Equation.3)
+  char activex[DOCSCAN_MAX_ACTIVEX][64];  // ActiveX controls: CLSID ("{...}") or "ocx"
+  int n_activex;
+  char altchunks[DOCSCAN_MAX_ALTCHUNK][256];  // altChunk (aFChunk) relationship targets
+  int n_altchunks;
+  int xlm_macrosheets;      // Excel 4.0 (XLM) macro sheets
 
   // --- RTF ---
   int rtf_objupdate;        // \objupdate — auto-updating OLE object     (HIGH)
@@ -107,5 +126,26 @@ void docscan_inspect_pdf(const uint8_t* data, size_t size, docscan_result_t* r);
 void docscan_inspect_ooxml(const uint8_t* data, size_t size, docscan_result_t* r);
 void docscan_inspect_ole(const uint8_t* data, size_t size, docscan_result_t* r);
 void docscan_inspect_lnk(const uint8_t* data, size_t size, docscan_result_t* r);
+
+// oleobj.c: facts from a CFB (an embedded oleObject*.bin or a whole legacy
+// Office file): OLE Package payloads, Equation Editor objects, ActiveX
+// controls, XLM macro sheets in a BIFF8 workbook.
+void docscan_scan_ole_objects(
+    const uint8_t* data,
+    size_t size,
+    const char* source,
+    docscan_result_t* r);
+
+// Record an ActiveX control id (CLSID "{...}" or "ocx"), deduplicated.
+void docscan_add_activex(docscan_result_t* r, const char* id);
+
+// Parse an OLE Package native stream (Ole10Native layout:
+// [size u32] flags u16, label\0, path\0, ...) and record its file name.
+void docscan_record_package(
+    const uint8_t* d,
+    size_t n,
+    int has_size_prefix,
+    const char* source,
+    docscan_result_t* r);
 
 #endif

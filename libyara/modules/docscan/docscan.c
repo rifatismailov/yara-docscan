@@ -92,6 +92,18 @@ begin_declarations
 
   declare_string_array("dde");          // every DDE / DDEAUTO field instruction
   declare_integer("number_of_dde");
+
+  begin_struct_array("packages");       // OLE Package (Ole10Native) payloads
+    declare_string("name");             //   carried file name (label, else path base)
+    declare_string("source");           //   embedding part, "ole" or "rtf"
+  end_struct_array("packages");
+  declare_integer("number_of_packages");
+  declare_integer("equation_objects");  // Equation Editor 3.0 objects
+  declare_string_array("activex");      // ActiveX controls: CLSID "{...}" or "ocx"
+  declare_integer("number_of_activex");
+  declare_string_array("altchunks");    // altChunk (aFChunk) relationship targets
+  declare_integer("number_of_altchunks");
+  declare_integer("xlm_macrosheets");   // Excel 4.0 (XLM) macro sheets
 end_declarations
 
 int module_initialize(YR_MODULE* module)
@@ -234,6 +246,21 @@ int module_load(
   for (int i = 0; i < r->n_dde; i++)
     yr_set_string(r->dde[i], module_object, "dde[%i]", i);
   yr_set_integer(r->n_dde, module_object, "number_of_dde");
+
+  for (int i = 0; i < r->n_packages; i++)
+  {
+    yr_set_string(r->packages[i].name, module_object, "packages[%i].name", i);
+    yr_set_string(r->packages[i].source, module_object, "packages[%i].source", i);
+  }
+  yr_set_integer(r->n_packages, module_object, "number_of_packages");
+  yr_set_integer(r->equation_objects, module_object, "equation_objects");
+  for (int i = 0; i < r->n_activex; i++)
+    yr_set_string(r->activex[i], module_object, "activex[%i]", i);
+  yr_set_integer(r->n_activex, module_object, "number_of_activex");
+  for (int i = 0; i < r->n_altchunks; i++)
+    yr_set_string(r->altchunks[i], module_object, "altchunks[%i]", i);
+  yr_set_integer(r->n_altchunks, module_object, "number_of_altchunks");
+  yr_set_integer(r->xlm_macrosheets, module_object, "xlm_macrosheets");
 
   free(r);
   return ERROR_SUCCESS;

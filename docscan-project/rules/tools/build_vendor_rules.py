@@ -36,6 +36,8 @@ SOURCES = {
                   "5cc871d82361de8a80d387ec8bbd01fe4258b4a9"),
     "inquest": ("https://github.com/InQuest/yara-rules.git",
                 "922e6a8a24027152935b1a1ec8f07912a57dbf2b"),
+    "ditekshen": ("https://github.com/ditekshen/detection.git",
+                  "e76c93dcdedff04076380ffc60ea54e45b313635"),
 }
 
 # the source's OWN classification of a rule as informational -> docscan_info
@@ -63,6 +65,7 @@ DROP = {
     # exact duplicates (same strings and condition under another name)
     ("maldocs/Maldoc_Dridex.yar", "PHISH_02Dez2015_dropped_p0o6543f"): "duplicate of signature-base PHISH_02Dez2015_dropped_p0o6543f_1",
     ("maldocs/maldoc_somerules.yar", "office_document_vba"): "duplicate of Contains_VBA_macro_code",
+    ("yara/indicator_office.yar", "INDICATOR_RTF_MalVer_Objects"): "duplicate of signature-base SUSP_INDICATOR_RTF_MalVer_Objects (same rule, commented copy)",
     # variants: same strings + an extra condition -> fire only where the base rule already fires
     "PAExec_Cloaked": "variant of PAExec (adds a file-name check)",
     "SUSP_VULN_DRV_PROCEXP152_Renamed_May23": "variant of SUSP_VULN_DRV_PROCEXP152_May23 (adds a file-name check)",
@@ -85,6 +88,7 @@ DROP = {
     "maldoc_indirect_function_call_2": "slow (YARA: string may slow down scanning)",
     "maldoc_indirect_function_call_3": "slow (YARA: string may slow down scanning)",
     "MC_Office_DDE_Command_Execution": "slow (YARA: unbounded regex)",
+    "INDICATOR_OLE_ObjectPool_Embedded_Files": "slow (YARA: strings may slow down scanning)",
 }
 
 # rules whose last change (meta modified / last_modified, else date / creation_date) is this year
@@ -310,7 +314,7 @@ def build(vendor, out, yarac):
         sys.exit("rule name clashes (different rules, same name) — add RENAME entries:\n  " + "\n  ".join(clashes))
     # licenses of the sources
     for src, lic in (("signature-base", "LICENSE"), ("yara-rules-community", "LICENSE"), ("protections-artifacts", "LICENSE.txt"),
-                     ("bartblaze", "LICENSE"), ("inquest", "LICENSE")):
+                     ("bartblaze", "LICENSE"), ("inquest", "LICENSE"), ("ditekshen", "LICENSE.txt")):
         p = vendor / src / lic
         if p.exists():
             shutil.copy(p, out / f"LICENSE-{src}")
@@ -361,7 +365,7 @@ def main():
             r = subprocess.run(["diff", "-rq", "-x", "tools", "-x", "docscan*", "-x", ".DS_Store", str(t), str(RULES)], capture_output=True, text=True)
             print(r.stdout or "rules/ is up to date"); sys.exit(1 if r.stdout else 0)
     # rebuild in place: wipe generated dirs first
-    for d in ("general", "maldoc/signature-base", "maldoc/community", "maldoc/bartblaze", "maldoc/inquest"):
+    for d in ("general", "maldoc/signature-base", "maldoc/community", "maldoc/bartblaze", "maldoc/inquest", "maldoc/ditekshen"):
         shutil.rmtree(RULES / d, ignore_errors=True)
     for f in RULES.glob("LICENSE-*"):
         f.unlink()

@@ -109,7 +109,7 @@ def _dir_entry(name, obj_type, start, size):
     struct.pack_into("<I", e, 120, size & 0xFFFFFFFF)
     return bytes(e)
 
-def build_cfb(stream: bytes) -> bytes:
+def build_cfb(stream: bytes, name: str = "Module1") -> bytes:
     SEC = 512
     data = stream
     if len(data) < 4097:                       # >= mini cutoff -> big sectors
@@ -144,7 +144,7 @@ def build_cfb(stream: bytes) -> bytes:
     fatsec = b"".join(struct.pack("<I", x & 0xFFFFFFFF) for x in fat)
 
     dirsec = (_dir_entry("Root Entry", 5, -2, 0)
-              + _dir_entry("Module1", 2, data_start, len(data))
+              + _dir_entry(name, 2, data_start, len(stream) if len(stream) >= 4097 else len(data))
               + bytes(128) + bytes(128))
 
     return bytes(h) + fatsec + dirsec + data
@@ -268,7 +268,75 @@ def gen():
     write_docx("vendor_shellexec.docm", {"word/vbaProject.bin": vba_project(src2)})
     created.append("vendor_shellexec.docm")
 
+    created += gen_objects()
+
     return created
+
+# ---------- embedded objects (step 4): inert, no exploit, no executable code ----------
+def ole10native(label, path, payload):
+    """OLE Package native data: flags, label, path, 0x0003, temp path, payload."""
+    body = (struct.pack("<H", 2) + label.encode() + b"\x00" + path.encode() + b"\x00"
+            + struct.pack("<H", 3) + struct.pack("<I", len(path) + 1) + path.encode() + b"\x00"
+            + struct.pack("<I", len(payload)) + payload)
+    return struct.pack("<I", len(body)) + body
+
+def ole1_object(class_name, native):
+    """RTF \\objdata: OLE1 object header (embedded) + native data, as hex."""
+    cn = class_name.encode() + b"\x00"
+    b = (struct.pack("<II", 0x0501, 2) + struct.pack("<I", len(cn)) + cn
+         + struct.pack("<I", 0) + struct.pack("<I", 0) + struct.pack("<I", len(native)) + native)
+    return b.hex()
+
+def gen_objects():
+    out = []
+    # 13. Equation Editor 3.0 object in a docx (stream "Equation Native", no exploit bytes)
+    write_docx("equation_ole.docx", {"word/embeddings/oleObject1.bin":
+               build_cfb(b"\x1c\x00" + bytes(30), "Equation Native")})
+    out.append("equation_ole.docx")
+    # 14. OLE Package carrying a .vbs (content is a comment line)
+    pkg = ole10native("invoice.vbs", r"C:\Temp\invoice.vbs", b"' docscan inert test\r\n")
+    write_docx("package_script.docx", {"word/embeddings/oleObject1.bin":
+               build_cfb(pkg, "\x01Ole10Native")})
+    out.append("package_script.docx")
+    # 15. ActiveX control (Shell.Explorer / WebBrowser CLSID) in a docx
+    write_docx("activex_control.docx", {"word/activeX/activeX1.xml":
+               b'<?xml version="1.0"?><ax:ocx ax:classid="{8856F961-340A-11D0-A96B-00C04FD705A2}" '
+               b'ax:persistence="persistPropertyBag" xmlns:ax="http://schemas.microsoft.com/office/2006/activeX"/>'})
+    out.append("activex_control.docx")
+    # 16. altChunk: document.xml.rels -> afchunk.rtf (benign RTF)
+    write_docx("altchunk.docx", {
+        "word/_rels/document.xml.rels": (
+            '<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            '<Relationship Id="rId9" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/aFChunk" '
+            'Target="afchunk.rtf"/></Relationships>').encode(),
+        "word/afchunk.rtf": b"{\\rtf1 DocScan altChunk test}"})
+    out.append("altchunk.docx")
+    # 17. Excel 4.0 macro sheet in an xlsm (no formulas)
+    write_xlsx("xlm_macrosheet.xlsm", sheet_cells='<c r="A1"><v>1</v></c>')
+    p = os.path.join(OUT, "xlm_macrosheet.xlsm")
+    with zipfile.ZipFile(p, "a") as z:
+        z.writestr("xl/macrosheets/sheet1.xml",
+                   '<?xml version="1.0"?><xm:macrosheet xmlns:xm="http://schemas.microsoft.com/office/excel/2006/main"/>')
+    out.append("xlm_macrosheet.xlsm")
+    # 18. RTF with an Equation.3 object (header only)
+    open(os.path.join(OUT, "equation.rtf"), "w").write(
+        "{\\rtf1{\\object\\objemb{\\*\\objclass Equation.3}{\\*\\objdata "
+        + ole1_object("Equation.3", bytes(32)) + "}}}")
+    out.append("equation.rtf")
+    # 19. RTF with an OLE Package carrying a .vbs
+    open(os.path.join(OUT, "package_script.rtf"), "w").write(
+        "{\\rtf1{\\object\\objemb{\\*\\objclass Package}{\\*\\objdata "
+        + ole1_object("Package", pkg[4:]) + "}}}")
+    out.append("package_script.rtf")
+    # 20. legacy .xls with an Excel 4.0 macro sheet (BIFF8 BOF + BOUNDSHEET type 1 + EOF)
+    bof = struct.pack("<HH", 0x0809, 16) + struct.pack("<HHHHII", 0x0600, 0x0005, 0, 0, 0, 0)
+    name = b"Macro1"
+    bs_body = struct.pack("<IBB", 0, 0, 0x01) + bytes([len(name), 0]) + name
+    bs = struct.pack("<HH", 0x0085, len(bs_body)) + bs_body
+    eof = struct.pack("<HH", 0x000A, 0)
+    open(os.path.join(OUT, "xlm_macrosheet.xls"), "wb").write(build_cfb(bof + bs + eof, "Workbook"))
+    out.append("xlm_macrosheet.xls")
+    return out
 
 # ---------- minimal LNK ----------
 def build_lnk(target, args):

@@ -13,4 +13,7 @@ void docscan_inspect_ole(const uint8_t* data, size_t size, docscan_result_t* r)
 
   // The whole file is a CFB — decompress VBA and check for suspicious constructs.
   docscan_scan_vba_container(data, size, r);
+
+  // Package / Equation / ActiveX objects and XLM macro sheets in the file itself.
+  docscan_scan_ole_objects(data, size, "ole", r);
 }
