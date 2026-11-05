@@ -956,6 +956,12 @@ Final runs after the fixes: module — 2.28 M inputs, parsers — 0.96 M inputs 
 - macOS: all vectors.
 - Windows 10 (MSVC): 12 test-range + 7 real samples, detection + disarm, Layer 2 — 2026-10-30.
 - Clean Windows 11 VM (MSVC v143, fresh build): `run_tests.ps1` with both indexes — 2026-11-02.
+- Windows 11 VM (MSVC, 2026-11-06, `7175593b`): `run_tests.ps1` 31/31 as the reference (HIGH 27 / MEDIUM 4 →
+  INFO 19 / MEDIUM 4 / HIGH 1 / DELETED 7); Layer 2 over parts and `findings_text`/`summary` with Cyrillic; package
+  over `0e2a4cdd`; live watcher — documents, new extensions (`.url .svg .html .iqy`), `summary` in the record;
+  **reboot**: the task started by itself, `rules.yarc` recompiled, scanning works after the start.
+  Found and fixed: since `0511a241` `yara64.exe` died on Windows before doing anything (`STATUS_STACK_OVERFLOW`:
+  `THREAD_ARGS[YR_MAX_THREADS]` on the `main` stack > 1 MB) — now on the heap.
 - Policy in rules (2026-11-02, macOS): 19/19 verdicts (with `dde_link.docx` — 20/20) and disarm actions match the reference; false-positive test — see §6.1.
 - Watcher on the VM: 23 files in `inbox`/`Downloads` + documents dropped on the desktop by hand (2
   clean work reports → INFO, 3 samples → HIGH) — 2026-11-02. No false positives.
