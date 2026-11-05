@@ -10,6 +10,7 @@
 #include "cfb.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 typedef struct
@@ -44,6 +45,46 @@ static int take_cstr(const uint8_t* d, size_t n, size_t* p, char* out, size_t ou
   return 0;
 }
 
+void docscan_add_part(docscan_result_t* r, const char* name, const uint8_t* d, size_t n)
+{
+  if (d == NULL || n == 0)
+    return;
+  if (r->n_parts >= DOCSCAN_MAX_PARTS || r->parts_bytes >= DOCSCAN_PARTS_BUDGET)
+  {
+    r->parts_truncated = 1;
+    return;
+  }
+  if (n > DOCSCAN_PART_MAX)
+  {
+    n = DOCSCAN_PART_MAX;
+    r->parts_truncated = 1;
+  }
+  if (n > DOCSCAN_PARTS_BUDGET - r->parts_bytes)
+  {
+    n = DOCSCAN_PARTS_BUDGET - r->parts_bytes;
+    r->parts_truncated = 1;
+  }
+  uint8_t* c = (uint8_t*) malloc(n);
+  if (c == NULL)
+    return;
+  memcpy(c, d, n);
+  docscan_part_t* p = &r->parts[r->n_parts++];
+  snprintf(p->name, sizeof(p->name), "%s", name ? name : "");
+  p->data = c;
+  p->len = n;
+  r->parts_bytes += n;
+}
+
+static uint32_t rd32(const uint8_t* d, size_t n, size_t o)
+{
+  return o + 4 <= n ? (uint32_t) d[o] | ((uint32_t) d[o + 1] << 8) |
+                          ((uint32_t) d[o + 2] << 16) | ((uint32_t) d[o + 3] << 24)
+                    : 0;
+}
+
+// Ole10Native (layout as parsed by oletools' OleNativeStream):
+//   [u32 size] u16 flags, label\0, src_path\0, u32 unknown, u32 unknown,
+//   temp_path\0, u32 data_size, data
 void docscan_record_package(
     const uint8_t* d,
     size_t n,
@@ -75,6 +116,24 @@ void docscan_record_package(
     snprintf(pk->name, sizeof(pk->name), "%s", name);
     snprintf(pk->source, sizeof(pk->source), "%s", source ? source : "");
   }
+
+  // the carried file itself -> second scan
+  char tmp[256];
+  p += 8;  // two u32 of unknown meaning
+  if (p < n && take_cstr(d, n, &p, tmp, sizeof(tmp)) == 0)
+  {
+    uint32_t ds = rd32(d, n, p);
+    p += 4;
+    if (p < n)
+    {
+      size_t avail = n - p;
+      if (ds == 0 || ds > avail)
+        ds = (uint32_t) avail;
+      char pn[256];
+      snprintf(pn, sizeof(pn), "%s!%s", source ? source : "", name);
+      docscan_add_part(r, pn, d + p, ds);
+    }
+  }
 }
 
 // BIFF8 workbook globals: BOUNDSHEET (0x0085) = u32 pos, u8 state, u8 type;
@@ -101,10 +160,21 @@ static void scan_biff(const uint8_t* d, size_t n, docscan_result_t* r)
 static int on_stream(const char* name, const uint8_t* data, size_t size, void* ud)
 {
   ole_ctx* c = (ole_ctx*) ud;
+  char pn[256];
   if (strcmp(name, "\x01Ole10Native") == 0)
     docscan_record_package(data, size, 1, c->source, c->r);
   else if (strcmp(name, "Equation Native") == 0)
+  {
     c->r->equation_objects++;
+    snprintf(pn, sizeof(pn), "%s!Equation Native", c->source);
+    docscan_add_part(c->r, pn, data, size);
+  }
+  else if (strcmp(name, "CONTENTS") == 0 || strcmp(name, "Package") == 0)
+  {
+    // raw object contents (e.g. an embedded file stored as "Package")
+    snprintf(pn, sizeof(pn), "%s!%s", c->source, name);
+    docscan_add_part(c->r, pn, data, size);
+  }
   else if (strcmp(name, "\x03OCXNAME") == 0)
     add_activex(c->r, "ocx");
   else if (strcmp(name, "Workbook") == 0 || strcmp(name, "Book") == 0)

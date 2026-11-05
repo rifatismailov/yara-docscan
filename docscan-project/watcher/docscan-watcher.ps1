@@ -140,12 +140,20 @@ function Get-Summary($rec) {
   $p = @()
   $ds = $rec.docscan
   if ($ds -and $ds.findings_text) { $p += @($ds.findings_text) }
+  # де знайдено: частина документа (другий прохід) або код макросу
+  $where = @{}
+  if ($ds) {
+    foreach ($pm in @($ds.yara_part_matches)) { if ($pm) { foreach ($r in @($pm.rules)) { if (-not $where[$r]) { $where[$r] = $pm.part } } } }
+    foreach ($r in @($ds.yara_matches)) { if ($r -and -not $where[$r]) { $where[$r] = "код макросу" } }
+  }
   foreach ($m in $rec.yara_file_matches) {
     $d = $null
     if ($ds -and $ds.yara_descriptions) { $d = $ds.yara_descriptions.$m }
-    $p += $(if ($d) { "YARA $m — $d" } else { "YARA $m" })
+    $t = "YARA $m"
+    if ($where[$m]) { $t += " (у " + $where[$m] + ")" }
+    if ($d) { $t += " — $d" }
+    $p += $t
   }
-  if ($ds -and $ds.yara_matches -and @($ds.yara_matches).Count) { $p += "YARA (код макросу): " + (@($ds.yara_matches) -join ", ") }
   if ($rec.disarm) { $p += "дія: " + $rec.disarm }
   if ($rec.verdict -eq "SKIPPED" -or $rec.verdict -eq "ERROR") { $p += ($rec.errors -join "; ") }
   $t = ($p -join " | ")
@@ -194,8 +202,14 @@ function Scan-File([string]$path, [string]$evt) {
         $rec.docscan = $ds.docscan
         $rec.disarm  = $ds.disarm
         $rec.yara_file_matches = @($ds.docscan.yara_file_matches)
-        # документні правила (тег docscan_doc) — детект лише для документів
-        if ($cat -eq "document") { $rec.yara_file_matches += @($ds.docscan.yara_doc_matches | ? { $_ }) }
+        # документні правила (тег docscan_doc) — детект лише для документів; так само другий
+        # прохід: збіги в розпакованих частинах документа і в коді макросів
+        if ($cat -eq "document") {
+          $rec.yara_file_matches += @($ds.docscan.yara_doc_matches | ? { $_ })
+          foreach ($pm in @($ds.docscan.yara_part_matches)) { if ($pm) { $rec.yara_file_matches += @($pm.rules) } }
+          $rec.yara_file_matches += @($ds.docscan.yara_matches | ? { $_ })
+          $rec.yara_file_matches = @($rec.yara_file_matches | Select-Object -Unique)
+        }
         $rec.verdict = $ds.docscan.verdict
       }
       # vendor-правило на самому файлі: документ — щонайменше MEDIUM, general — HIGH

@@ -19,6 +19,9 @@
 #define DOCSCAN_MAX_PACKAGES 32
 #define DOCSCAN_MAX_ACTIVEX  32
 #define DOCSCAN_MAX_ALTCHUNK 16
+#define DOCSCAN_MAX_PARTS    64                   // parts handed to the 2nd (vendor) scan
+#define DOCSCAN_PART_MAX     (8u * 1024 * 1024)   // per part
+#define DOCSCAN_PARTS_BUDGET (32u * 1024 * 1024)  // all parts of one document
 
 typedef struct
 {
@@ -46,6 +49,15 @@ typedef struct
   char name[256];    // file name carried by the OLE Package (label, else path)
   char source[192];  // where it was found: embedding part, "ole", "rtf"
 } docscan_package_t;
+
+// A decompressed / decoded piece of the document for the second scan with the
+// vendor rules (raw scans cannot see inside ZIP parts or RTF hex).
+typedef struct
+{
+  char name[256];  // e.g. "word/document.xml", "word/embeddings/oleObject1.bin!invoice.vbs"
+  uint8_t* data;   // malloc'd copy (docscan.c frees it)
+  size_t len;
+} docscan_part_t;
 
 // All detection results for one document.
 // docscan.c maps these fields onto the module's YARA-visible fields.
@@ -78,6 +90,12 @@ typedef struct
   char altchunks[DOCSCAN_MAX_ALTCHUNK][256];  // altChunk (aFChunk) relationship targets
   int n_altchunks;
   int xlm_macrosheets;      // Excel 4.0 (XLM) macro sheets
+
+  // --- parts for the second scan (see docscan_part_t) ---
+  docscan_part_t parts[DOCSCAN_MAX_PARTS];
+  int n_parts;
+  size_t parts_bytes;
+  int parts_truncated;      // more parts / bytes existed than the caps allow
 
   // --- RTF ---
   int rtf_objupdate;        // \objupdate — auto-updating OLE object     (HIGH)
@@ -135,6 +153,9 @@ void docscan_scan_ole_objects(
     size_t size,
     const char* source,
     docscan_result_t* r);
+
+// Copy a piece of the document into r->parts (capped; empty data ignored).
+void docscan_add_part(docscan_result_t* r, const char* name, const uint8_t* d, size_t n);
 
 // Record an ActiveX control id (CLSID "{...}" or "ocx"), deduplicated.
 void docscan_add_activex(docscan_result_t* r, const char* id);

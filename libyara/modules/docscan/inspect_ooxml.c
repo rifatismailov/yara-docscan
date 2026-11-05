@@ -41,6 +41,17 @@ static int is_body_xml(const char* name)
   return 0;
 }
 
+// Parts an altChunk usually points to (word/afchunk.mht, word/afchunk1.rtf ...).
+static int is_altchunk_part(const char* name)
+{
+  if (strncmp(name, "word/", 5) != 0 || strchr(name + 5, '/') != NULL)
+    return 0;
+  return strstr(name, "afchunk") != NULL || strstr(name, "aFChunk") != NULL ||
+         ends_with(name, ".rtf") || ends_with(name, ".mht") ||
+         ends_with(name, ".mhtml") || ends_with(name, ".htm") ||
+         ends_with(name, ".html");
+}
+
 static int is_embedded_ole(const char* name)
 {
   return strstr(name, "embeddings/oleObject") != NULL && ends_with(name, ".bin");
@@ -378,6 +389,7 @@ void docscan_inspect_ooxml(const uint8_t* data, size_t size, docscan_result_t* r
       {
         docscan_scan_rels(c, sz, name, r);
         record_altchunks(c, sz, r);
+        docscan_add_part(r, name, c, sz);
         docscan_zip_free(c);
       }
     }
@@ -401,6 +413,8 @@ void docscan_inspect_ooxml(const uint8_t* data, size_t size, docscan_result_t* r
         scan_dde(c, sz, r);
         if (strstr(name, "xl/worksheets/"))
           record_excel_formulas(c, sz, r);
+        // the body text is NOT handed to the second scan: script rules fire on
+        // documents that merely describe attacks (DDE in the text is parsed above)
         docscan_zip_free(c);
       }
     }
@@ -411,6 +425,7 @@ void docscan_inspect_ooxml(const uint8_t* data, size_t size, docscan_result_t* r
       if (c != NULL)
       {
         record_excel_ddelink(c, sz, r);
+        docscan_add_part(r, name, c, sz);
         docscan_zip_free(c);
       }
     }
@@ -429,16 +444,19 @@ void docscan_inspect_ooxml(const uint8_t* data, size_t size, docscan_result_t* r
       {
         scan_embedded_ole(c, sz, e, r);
         docscan_scan_ole_objects(c, sz, name, r);  // Package / Equation / OCX
+        docscan_add_part(r, name, c, sz);
         docscan_zip_free(c);
       }
     }
-    else if (strstr(name, "/activeX/activeX") && ends_with(name, ".xml"))
+    else if (strstr(name, "/activeX/activeX"))
     {
       size_t sz;
       uint8_t* c = docscan_zip_extract(z, i, &sz);
       if (c != NULL)
       {
-        record_activex_xml(c, sz, r);
+        if (ends_with(name, ".xml"))
+          record_activex_xml(c, sz, r);
+        docscan_add_part(r, name, c, sz);
         docscan_zip_free(c);
       }
     }
@@ -446,6 +464,25 @@ void docscan_inspect_ooxml(const uint8_t* data, size_t size, docscan_result_t* r
              (ends_with(name, ".xml") || ends_with(name, ".bin")))
     {
       r->xlm_macrosheets++;
+      size_t sz;
+      uint8_t* c = docscan_zip_extract(z, i, &sz);
+      if (c != NULL)
+      {
+        docscan_add_part(r, name, c, sz);
+        docscan_zip_free(c);
+      }
+    }
+    else if (strstr(name, "/embeddings/") || is_altchunk_part(name))
+    {
+      // any other embedded file (docx/xlsx/pdf/bin inside the package) and the
+      // documents imported by altChunk (afchunk.rtf / .mht / .htm)
+      size_t sz;
+      uint8_t* c = docscan_zip_extract(z, i, &sz);
+      if (c != NULL)
+      {
+        docscan_add_part(r, name, c, sz);
+        docscan_zip_free(c);
+      }
     }
   }
 

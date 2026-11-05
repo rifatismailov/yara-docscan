@@ -5,6 +5,7 @@
 #include "inspect.h"
 #include "search.h"
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -92,7 +93,12 @@ static void scan_objdata(const uint8_t* d, size_t n, docscan_result_t* r)
       }
     }
     if (bl > 16)
+    {
+      char pn[64];
+      snprintf(pn, sizeof(pn), "rtf:objdata[%d]", objects - 1);
+      docscan_add_part(r, pn, buf, bl);  // decoded object -> second scan
       parse_ole1(buf, bl, r);
+    }
     free(buf);
     i = p;
   }

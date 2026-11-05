@@ -31,7 +31,8 @@ in **one binary**, `yara64.exe`. On top of it, a **watcher** automatically scans
 
 For a document that appears on the system, DocScan must:
 1. **Detect** the attack technique by structural parsing → `findings` + `verdict` + evidence.
-2. **Check** the extracted (decompressed) VBA with vendor rules — "Layer 2".
+2. **Check** what was decompressed with vendor rules — "Layer 2": the VBA code and the document parts
+   (`.rels` relationships, embedded objects and their payloads, ActiveX, macro sheets, altChunk, RTF objects).
 3. **Disarm** the document while keeping it (strip the macro / external template / DDE / embedded
    objects; break `\objupdate`; delete a malicious LNK). The original goes to a backup.
 4. **Report** — JSON that we currently read by hand and that Wazuh will collect later.
@@ -223,6 +224,7 @@ for compatibility and convenience; the policy mostly works with the facts below.
 | | `lnk_lolbin` | MEDIUM* | target is a LOLBin (cmd/powershell/mshta/rundll32/…) |
 | evidence | `template_url` `dde_command` `vba_evidence` `lnk_target` `lnk_args` | — | strings ≤ 511 chars |
 | Layer 2 | `vba_code` | — | the whole decompressed VBA (≤ 2 MB) for re-scanning with vendor rules |
+| Layer 2 | `parts[]` (`name`, `data`), `number_of_parts`, `parts_truncated` | — | decompressed parts for the re-scan: OOXML `*.rels`, `embeddings/*` (+ the OLE Package payload as `<part>!<file name>`, streams `Equation Native`/`CONTENTS`/`Package`), `activeX/*`, `xl/macrosheets/*`, `xl/externalLinks/*`, altChunk parts; RTF — the decoded `\objdata[N]` and the package payload; OLE — package payloads and `Equation Native`. The **body text** (`document.xml`, headers/footers, sheets) is **not** handed over: script rules fire on documents that merely describe attacks. Limits: 64 parts, 8 MB per part, 32 MB per document |
 
 **Facts for policy rules** (arrays are capped; `*_truncated = 1` if there were more — padding a
 document with junk must not silently hide the interesting part):
@@ -450,9 +452,11 @@ or `detect-only`.
 3. **Module.** `module_load`: magic → inspector → facts and flags (see §4). The facts are copied in the CLI.
 4. **Rules on the file.** Policy rules (`meta.severity`) → findings, verdict, disarm actions; other
    rules → `yara_file_matches`, rules tagged `docscan_info` → `yara_info_matches`.
-5. **LAYER 2.** The decompressed VBA is re-scanned with the same rules → `yara_matches`. Ordinary
-   `$string` rules only see the input buffer, and VBA inside a document is compressed — without
-   Layer 2 vendor rules never see the macro.
+5. **LAYER 2.** The decompressed VBA is re-scanned with the same rules → `yara_matches`; so is every
+   part from `parts[]` → `yara_part_matches` (`[{"part": …, "rules": [...]}]`), rule descriptions go to
+   `yara_descriptions`. Ordinary `$string` rules only see the input buffer, OOXML is a compressed ZIP and RTF
+   objects are hex — without Layer 2 vendor rules see neither the macro, nor an embedded script, nor a
+   `.rels` with a remote template. Check on 838 benign documents: only 2 true findings (attack samples).
 6. **STAGE 1 — JSON** at `SCAN_FINISHED`. `verdict`: **HIGH** → respond/disarm; **MEDIUM** → review; **INFO** → clean.
 7. **STAGE 2 — disarm** (`--docscan-disarm`): the actions from `meta.disarm` of the matching rules.
    First a backup `<file>.docscan-bak`, then:
@@ -680,7 +684,7 @@ No `yarac64.exe` or the compile fails — a WARN in the log and scans from the `
 | other | — | ignored |
 
 - **Record verdict:** the verdict from the JSON (policy); if there are `yara_file_matches` (for `document`
-  together with `yara_doc_matches`) — a document
+  together with `yara_doc_matches` and the Layer 2 matches `yara_part_matches`, `yara_matches`) — a document
   is raised to at least `MEDIUM`, a general file becomes `HIGH`. Also `SKIPPED` (> `-MaxSizeMB`) and
   `ERROR` (scan failed).
 - Vendor rules see the bytes **before** disarm: yara collects the matches before `--docscan-disarm` runs.

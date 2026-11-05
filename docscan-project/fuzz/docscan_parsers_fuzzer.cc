@@ -121,6 +121,8 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size)
   }
 
   free(r.vba_code);
+  for (int i = 0; i < r.n_parts; i++)
+    free(r.parts[i].data);
   free(rp);
   return 0;
 }

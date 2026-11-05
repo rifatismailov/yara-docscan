@@ -88,6 +88,14 @@ typedef struct _MODULE_DATA
 
 } MODULE_DATA;
 
+// A decompressed piece of a document (docscan.parts[]), rescanned with the vendor rules.
+struct ds_part
+{
+  char name[256];
+  uint8_t* data;
+  size_t len;
+};
+
 // Per-file docscan state. The module is unloaded before rule callbacks run,
 // so its facts are copied at CALLBACK_MSG_MODULE_IMPORTED; matching policy
 // rules (meta.severity) are collected at CALLBACK_MSG_RULE_MATCHING; the JSON
@@ -102,6 +110,8 @@ typedef struct _DOCSCAN_STATE
   char lnk_target[512];
   char lnk_args[512];
   char* vba;                 // copy of docscan.vba_code (Layer-2 re-scan)
+  struct ds_part* parts;     // copies of docscan.parts[] (Layer-2 re-scan of document pieces)
+  int n_parts;
   size_t vba_len;
   int max_severity;          // 0 INFO, 1 MEDIUM, 2 HIGH
   char findings[2048];       // JSON tokens: "A","B"
@@ -1461,13 +1471,16 @@ static int docscan_list_has(const char* list, const char* token)
 
 static void docscan_state_reset(DOCSCAN_STATE* st)
 {
+  for (int i = 0; i < st->n_parts; i++)
+    free(st->parts[i].data);
+  free(st->parts);
   free(st->vba);
   memset(st, 0, sizeof(*st));
 }
 
 static void docscan_copy_string(YR_OBJECT* m, const char* field, char* out, size_t sz)
 {
-  SIZED_STRING* s = yr_object_get_string(m, field);
+  SIZED_STRING* s = yr_object_get_string(m, "%s", field);
   size_t n = (s == NULL) ? 0 : (size_t) s->length;
   if (n >= sz)
     n = sz - 1;
@@ -1495,6 +1508,27 @@ static void docscan_capture(YR_OBJECT* m, DOCSCAN_STATE* st)
   docscan_copy_string(m, "vba_evidence", st->vba_evidence, sizeof(st->vba_evidence));
   docscan_copy_string(m, "lnk_target", st->lnk_target, sizeof(st->lnk_target));
   docscan_copy_string(m, "lnk_args", st->lnk_args, sizeof(st->lnk_args));
+
+  int np = (int) yr_object_get_integer(m, "number_of_parts");
+  if (np > 0 && np <= 1024)
+  {
+    st->parts = (struct ds_part*) calloc((size_t) np, sizeof(struct ds_part));
+    for (int i = 0; st->parts != NULL && i < np; i++)
+    {
+      SIZED_STRING* nm = yr_object_get_string(m, "parts[%i].name", i);
+      SIZED_STRING* dt = yr_object_get_string(m, "parts[%i].data", i);
+      if (dt == NULL || dt->length == 0)
+        continue;
+      struct ds_part* p = &st->parts[st->n_parts];
+      p->data = (uint8_t*) malloc((size_t) dt->length);
+      if (p->data == NULL)
+        continue;
+      memcpy(p->data, dt->c_string, (size_t) dt->length);
+      p->len = (size_t) dt->length;
+      snprintf(p->name, sizeof(p->name), "%s", nm ? nm->c_string : "");
+      st->n_parts++;
+    }
+  }
 
   SIZED_STRING* vba = yr_object_get_string(m, "vba_code");
   if (vba != NULL && vba->length > 0)
@@ -1633,6 +1667,8 @@ typedef struct
 {
   char* buf;
   size_t sz;
+  char* desc;       // JSON object body "rule":"description" (may be NULL)
+  size_t desc_sz;
 } vmatch_collect;
 
 static int vendor_match_cb(
@@ -1650,6 +1686,14 @@ static int vendor_match_cb(
     {
       vmatch_collect* v = (vmatch_collect*) user_data;
       docscan_list_add(v->buf, v->sz, r->identifier);
+      if (v->desc != NULL && !strstr(v->desc, r->identifier))
+      {
+        const char* d = docscan_meta(r, "description");
+        if (d == NULL)
+          d = docscan_meta(r, "Description");
+        if (d != NULL)
+          docscan_obj_add(v->desc, v->desc_sz, r->identifier, d);
+      }
     }
   }
   return CALLBACK_CONTINUE;
@@ -1680,14 +1724,44 @@ static void print_docscan_json(DOCSCAN_STATE* st)
     YR_SCANNER* sc2 = NULL;
     if (yr_scanner_create(g_rules, &sc2) == ERROR_SUCCESS)
     {
-      vmatch_collect vm = {vmatches, sizeof(vmatches)};
+      vmatch_collect vm = {vmatches, sizeof(vmatches), st->descriptions, sizeof(st->descriptions)};
       yr_scanner_set_callback(sc2, vendor_match_cb, &vm);
       yr_scanner_scan_mem(sc2, (const uint8_t*) st->vba, st->vba_len);
       yr_scanner_destroy(sc2);
     }
   }
 
+  // Layer-2: re-scan every decompressed part of the document (XML, embeddings,
+  // OLE Package payloads, RTF objects) -> [{"part":..,"rules":[..]}, ...]
+  char* pmatches = (char*) calloc(1, 16384);
+  if (g_rules != NULL && pmatches != NULL && st->n_parts > 0)
+  {
+    YR_SCANNER* sc3 = NULL;
+    if (yr_scanner_create(g_rules, &sc3) == ERROR_SUCCESS)
+    {
+      for (int i = 0; i < st->n_parts; i++)
+      {
+        char rules_found[2048] = "";
+        vmatch_collect pm = {rules_found, sizeof(rules_found), st->descriptions, sizeof(st->descriptions)};
+        yr_scanner_set_callback(sc3, vendor_match_cb, &pm);
+        yr_scanner_scan_mem(sc3, st->parts[i].data, st->parts[i].len);
+        if (rules_found[0] == '\0')
+          continue;
+        size_t l = strlen(pmatches);
+        char pname[600];
+        pname[0] = '\0';
+        docscan_list_add(pname, sizeof(pname), st->parts[i].name);  // "escaped name"
+        if (l + strlen(pname) + strlen(rules_found) + 32 < 16384)
+          snprintf(pmatches + l, 16384 - l, "%s{\"part\":%s,\"rules\":[%s]}",
+                   l ? "," : "", pname, rules_found);
+      }
+      yr_scanner_destroy(sc3);
+    }
+  }
+
   printf(",\"yara_matches\":[%s]", vmatches);
+  printf(",\"yara_part_matches\":[%s]", pmatches ? pmatches : "");
+  free(pmatches);
   printf(",\"yara_file_matches\":[%s]", st->file_matches);
   printf(",\"yara_doc_matches\":[%s]", st->doc_matches);
   printf(",\"yara_info_matches\":[%s]", st->info_matches);

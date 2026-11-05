@@ -104,6 +104,14 @@ begin_declarations
   declare_string_array("altchunks");    // altChunk (aFChunk) relationship targets
   declare_integer("number_of_altchunks");
   declare_integer("xlm_macrosheets");   // Excel 4.0 (XLM) macro sheets
+
+  // --- parts for the second scan (the CLI rescans them with the vendor rules) ---
+  begin_struct_array("parts");          // decompressed XML / embeddings / payloads
+    declare_string("name");             //   e.g. word/embeddings/oleObject1.bin!invoice.vbs
+    declare_string("data");             //   bytes (sized string)
+  end_struct_array("parts");
+  declare_integer("number_of_parts");
+  declare_integer("parts_truncated");   // caps reached: some parts were not handed over
 end_declarations
 
 int module_initialize(YR_MODULE* module)
@@ -261,6 +269,17 @@ int module_load(
     yr_set_string(r->altchunks[i], module_object, "altchunks[%i]", i);
   yr_set_integer(r->n_altchunks, module_object, "number_of_altchunks");
   yr_set_integer(r->xlm_macrosheets, module_object, "xlm_macrosheets");
+
+  for (int i = 0; i < r->n_parts; i++)
+  {
+    yr_set_string(r->parts[i].name, module_object, "parts[%i].name", i);
+    yr_set_sized_string(
+        (const char*) r->parts[i].data, r->parts[i].len, module_object, "parts[%i].data", i);
+    free(r->parts[i].data);
+    r->parts[i].data = NULL;
+  }
+  yr_set_integer(r->n_parts, module_object, "number_of_parts");
+  yr_set_integer(r->parts_truncated, module_object, "parts_truncated");
 
   free(r);
   return ERROR_SUCCESS;
