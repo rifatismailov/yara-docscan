@@ -165,7 +165,7 @@ static int cure_rtf(const char* path, char* action, size_t asz)
   if (changed)
   {
     rc = write_file(path, b, n);
-    append(action, asz, "stripped:objupdate");
+    append(action, asz, rc == 0 ? "stripped:objupdate" : "failed:write");
   }
   free(b);
   return rc;
@@ -512,8 +512,9 @@ static int cure_ooxml(const char* path, const docscan_disarm_info* info,
   size_t zsize = 0;
   if (!failed)
     failed = !mz_zip_writer_finalize_heap_archive(&zout, &zbuf, &zsize);
+  int write_failed = 0;
   if (!failed)
-    failed = write_file(tmp, zbuf, zsize) != 0;
+    failed = write_failed = write_file(tmp, zbuf, zsize) != 0;
   if (zbuf)
     mz_free(zbuf);
   mz_zip_writer_end(&zout);
@@ -523,14 +524,25 @@ static int cure_ooxml(const char* path, const docscan_disarm_info* info,
   if (failed)
   {
     ds_remove(tmp);
-    append(action, asz, "failed:unreadable-part");
+    append(action, asz, write_failed ? "failed:write" : "failed:unreadable-part");
     return -1;
   }
 
-  // replace original with cured temp
-  ds_remove(path);
-  if (ds_rename(tmp, path) != 0)
+  // replace original with cured temp. If the original cannot be removed (open
+  // in another program, e.g. Word holds it) leave it untouched and report it,
+  // so the caller can retry later; the backup already exists.
+  if (ds_remove(path) != 0)
+  {
+    ds_remove(tmp);  // original still in place
+    append(action, asz, "failed:replace");
     return -1;
+  }
+  if (ds_rename(tmp, path) != 0)
+  {
+    // original gone, rename failed: keep the cured copy as <file>.docscan-tmp
+    append(action, asz, "failed:replace");
+    return -1;
+  }
 
   if (info->macro) append(action, asz, "removed:vbaProject.bin");
   if (info->embedded) append(action, asz, "removed:embeddings");

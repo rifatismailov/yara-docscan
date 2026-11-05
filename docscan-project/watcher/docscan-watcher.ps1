@@ -34,6 +34,8 @@ param(
   [int]$MaxSizeMB      = 100,      # більші файли пропускаємо (запис у лог)
   [int]$SettleSeconds  = 2,        # скільки чекати тиші після останньої події по файлу
   [int]$ReadyTimeout   = 60,       # скільки чекати, поки файл перестане записуватись
+  [int]$RescanCooldown = 60,       # той самий файл повторно — не частіше ніж раз на N с (автозбереження Word/OneDrive)
+  [int]$DisarmRetryMinutes = 60,   # файл відкритий (заблокований) — повторювати лікування до N хв
   [string[]]$DocExt = @(
     ".doc",".dot",".docx",".docm",".dotx",".dotm",
     ".xls",".xlt",".xlsx",".xlsm",".xltx",".xltm",".xlsb",
@@ -167,7 +169,7 @@ function Max-Verdict($a, $b) { if ($Rank[$b] -gt $Rank[$a]) { $b } else { $a } }
 function Scan-File([string]$path, [string]$evt) {
   $cat = Get-Category $path
   $state = Wait-FileReady $path
-  if ($state -eq "gone") { Log "зник до скану: $path" "WARN"; return }
+  if ($state -eq "gone") { Log "зник до скану: $path" "WARN"; return $null }
 
   $rec = [ordered]@{
     timestamp = (Get-Date).ToString("yyyy-MM-ddTHH:mm:ss.fffzzz")
@@ -233,16 +235,31 @@ function Scan-File([string]$path, [string]$evt) {
   }
   $rec.summary = Get-Summary $rec
 
-  $json = $rec | ConvertTo-Json -Depth 8 -Compress
-  Rotate-IfBig $Result
-  [IO.File]::AppendAllText($Result, $json + "`n", $utf8)
+  # Той самий результат, що й минулого разу для цього шляху (користувач зберігає документ, вміст
+  # змінився, а вердикт і знахідки ні) — у Wazuh не пишемо, лише в локальний лог. HIGH пишеться завжди.
+  $key = "$($rec.verdict)|$($rec.summary)"
+  $repeat = ($rec.verdict -ne "HIGH" -and $LastKey[$path] -eq $key)
+  if (-not $repeat) {
+    $json = $rec | ConvertTo-Json -Depth 8 -Compress
+    Rotate-IfBig $Result
+    [IO.File]::AppendAllText($Result, $json + "`n", $utf8)
+    $LastKey[$path] = $key
+  }
 
   $what = @()
   if ($rec.docscan) { $what += ($rec.docscan.findings -join ",") }
   if ($rec.yara_file_matches.Count) { $what += "yara:" + ($rec.yara_file_matches -join ",") }
   if ($rec.disarm) { $what += "disarm:" + $rec.disarm }
   $lvl = switch ($rec.verdict) { "HIGH" { "HIT" } "MEDIUM" { "HIT" } "ERROR" { "ERROR" } "SKIPPED" { "WARN" } default { "OK" } }
+  if ($repeat) { $what += "(без змін — у Wazuh не пишеться)" }
   Log ("{0,-7} {1,-8} {2}  {3}" -f $rec.verdict, $cat, $path, ($what -join " | ")) $lvl
+  return $rec
+}
+
+# Файл відкрито іншим процесом без спільного запису (Word тримає документ) — лікувати зараз не вийде.
+function Test-FileLocked([string]$path) {
+  try { $fs = [IO.File]::Open($path, 'Open', 'ReadWrite', 'None'); $fs.Close(); return $false }
+  catch { return (Test-Path -LiteralPath $path -PathType Leaf) }
 }
 
 # ---------- старт ----------
@@ -294,6 +311,9 @@ $pending = @{}   # path -> @{ t = час останньої події; evt = т
 $rescanAt = $null   # після переповнення буфера: коли доскановувати
 $rescanFrom = $null # ... файли, змінені з цього моменту
 $recent  = @{}   # path -> sha256 останнього скану (щоб не дублювати Changed після того ж вмісту)
+$LastScan = @{}  # path -> час останнього скану (пауза -RescanCooldown для повторних змін)
+$LastKey  = @{}  # path -> "вердикт|summary" останнього запису в Wazuh (однакові повтори не пишемо)
+$Retry    = @{}  # path -> @{ next; until } — лікування заблокованого файлу повторюємо пізніше
 
 try {
   while ($true) {
@@ -330,16 +350,43 @@ try {
     }
     foreach ($path in @($pending.Keys)) {
       if (($now - $pending[$path].t).TotalSeconds -lt $SettleSeconds) { continue }
+      # цей файл уже сканували недавно (редагування з автозбереженням) — чекаємо паузу, потім один скан
+      # останньої версії. Новий файл (ще не сканувався) — одразу.
+      if ($LastScan.ContainsKey($path) -and ($now - $LastScan[$path]).TotalSeconds -lt $RescanCooldown) { continue }
       $evt = $pending[$path].evt
       $pending.Remove($path)
       if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { continue }
       # той самий вміст уже скановано — пропускаємо (Word/провідник шлють кілька Changed поспіль)
       try { $h = (Get-FileHash -LiteralPath $path -Algorithm SHA256 -EA Stop).Hash } catch { $h = $null }
       if ($h -and $recent[$path] -eq $h) { continue }
-      Scan-File $path $evt
+      $r = Scan-File $path $evt
+      $LastScan[$path] = Get-Date
       try { $recent[$path] = (Get-FileHash -LiteralPath $path -Algorithm SHA256 -EA Stop).Hash } catch { $recent.Remove($path) }
+      # лікування не вдалося, бо файл відкритий (Word) — повторимо, коли його відпустять
+      if ($r -and "$($r.disarm)" -like 'failed:*' -and (Test-FileLocked $path)) {
+        $Retry[$path] = @{ next = (Get-Date).AddSeconds(30); until = (Get-Date).AddMinutes($DisarmRetryMinutes) }
+        Log "файл відкритий іншою програмою — лікування повториться, щойно його закриють (до $DisarmRetryMinutes хв): $path" "WARN"
+      }
     }
-    if ($recent.Count -gt 5000) { $recent.Clear() }
+
+    # повторне лікування заблокованих файлів
+    foreach ($path in @($Retry.Keys)) {
+      $rt = $Retry[$path]
+      if ($now -lt $rt.next) { continue }
+      if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { $Retry.Remove($path); continue }
+      if ($now -gt $rt.until) {
+        Log "лікування не вдалося за $DisarmRetryMinutes хв — файл увесь час відкритий: $path" "ERROR"
+        $Retry.Remove($path); continue
+      }
+      if (Test-FileLocked $path) { $rt.next = $now.AddSeconds(30); continue }
+      $r = Scan-File $path "DisarmRetry"
+      $LastScan[$path] = Get-Date
+      try { $recent[$path] = (Get-FileHash -LiteralPath $path -Algorithm SHA256 -EA Stop).Hash } catch { $recent.Remove($path) }
+      if ($r -and "$($r.disarm)" -like 'failed:*' -and (Test-FileLocked $path)) { $rt.next = (Get-Date).AddSeconds(30) }
+      else { $Retry.Remove($path) }
+    }
+
+    if ($recent.Count -gt 5000) { $recent.Clear(); $LastScan.Clear(); $LastKey.Clear() }
   }
 } finally {
   Get-EventSubscriber | Where-Object SourceIdentifier -like "docscan.*" | Unregister-Event

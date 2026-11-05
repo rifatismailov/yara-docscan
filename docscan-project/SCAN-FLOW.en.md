@@ -475,6 +475,8 @@ or `detect-only`.
    | any | legacy OLE (`.doc/.xls`) | cannot be cured in place → quarantine | `quarantined` |
    | — (HIGH without actions, e.g. PDF) | any | nothing | `detect-only` |
    | any | OOXML with an unreadable / > 64 MB part | cure aborted | `failed:unreadable-part` |
+   | any | OOXML: the original could not be replaced (file open in Word) | original untouched, temp file removed; the watcher retries later | `failed:replace` |
+   | any | the cured file could not be written (OOXML temp / RTF) | original untouched | `failed:write` |
 
    Any action: if the backup fails → `failed:backup`, the file is not changed. An action that does not fit the file type is ignored.
 8. **Check.** Re-scan the disarmed copy → expect `INFO` (LNK gone, PDF stays HIGH).
@@ -698,11 +700,22 @@ No `yarac64.exe` or the compile fails — a WARN in the log and scans from the `
 3. After `-SettleSeconds` of quiet — `Wait-FileReady`: the file opens for reading and its size is
    stable (up to `-ReadyTimeout` s).
 4. If the SHA256 equals the last scan of that path — skip.
-5. `Scan-File`: SHA256 → `Invoke-Scan` → write the JSON line + a log line.
-6. Buffer overflow (Error event): after 60 s the watcher walks the `-WatchPath` folders and queues files
+   **Repeated changes** (someone edits a document, Word/OneDrive auto-saves): the same path is scanned at
+   most once per `-RescanCooldown` (60 s) — a new file at once, then one scan of the latest version after the
+   pause. A Word save (temp file → delete → rename) gives several events but one scan; `~WRL*.tmp` and `~$*`
+   are not scanned.
+5. `Scan-File`: SHA256 → `Invoke-Scan` → write the JSON line + a log line. **The same result** (the same
+   verdict and `summary` as the last record for that path; HIGH excepted) is not written to
+   `docscan-results.json` — only to the log, marked "без змін — у Wazuh не пишеться": saving a document does not
+   flood Wazuh, while any change of verdict or findings is sent as an event.
+6. **File open in another program** (Word holds the document without write/delete sharing): disarm returns
+   `failed:replace`, the file is not changed (the backup exists). Every 30 s the watcher checks whether the
+   file was released and repeats scan + disarm (`event = DisarmRetry`) — up to `-DisarmRetryMinutes` (60 min),
+   then ERROR in the log.
+7. Buffer overflow (Error event): after 60 s the watcher walks the `-WatchPath` folders and queues files
    changed since the overflow (log line `доскановування після переповнення`); files already scanned with the
    same SHA256 are skipped.
-7. Ctrl+C / task stop → `finally`: unregister events, `Dispose` the watchers.
+8. Ctrl+C / task stop → `finally`: unregister events, `Dispose` the watchers.
 On start it checks that `yara64.exe` and `-Rules` exist and compile.
 
 | Function | What it does |
@@ -720,7 +733,7 @@ On start it checks that `yara64.exe` and `-Rules` exist and compile.
 `-OutDir` (`<Base>\results`), `-BackupDir` (`<Base>\quarantine`; not watched),
 **disarm is always on** (`-NoDisarm` — diagnostics only), `-QuarantineGeneral` (off: exe/scripts/archives
 with a vendor-rule match → quarantine), `-MaxSizeMB` (100), `-SettleSeconds` (2), `-ReadyTimeout` (60),
-`-MaxLogMB` (50) and `-KeepLogs` (5) — rotation of `docscan-results.json` and `watcher.log`
+`-RescanCooldown` (60), `-DisarmRetryMinutes` (60), `-MaxLogMB` (50) and `-KeepLogs` (5) — rotation of `docscan-results.json` and `watcher.log`
 (`file` → `file.1` … `file.5`), `-DocExt`, `-GenExt`, `-ExcludePattern`.
 
 ### Running
@@ -1115,6 +1128,11 @@ agent's `ossec.log` (`localfile` not picked up).
 
 **Watcher**
 - Defender in ordinary folders may remove a malicious file first → the log says the file vanished before the scan, and there is no JSON record.
+- Scans happen only when a file **appears or changes** (Created / Changed / Renamed), not when it is opened or run.
+  Files that were on disk before the installation are not scanned until they are changed or copied (there is
+  no initial or scheduled full scan).
+- A document being edited is scanned at most once per `-RescanCooldown`; intermediate versions between scans
+  are not checked (the latest one is).
 - Noisy indicators (`invalid_trailer_structure`, `invalid_xref_numbers`, `powershell`, `Contains_VBA_macro_code`, …) are tagged `docscan_info` → `yara_info_matches`, no verdict change (on 476 benign local documents: 25 false MEDIUM → 0). `DS_PDF_OPENACTION` without JS is INFO (35 of them were benign).
 - Archives are scanned as-is, not unpacked.
 - FileSystemWatcher buffer overflow (thousands of files at once) → events are lost; after 60 s the watcher
