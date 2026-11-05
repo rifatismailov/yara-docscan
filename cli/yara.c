@@ -120,7 +120,8 @@ typedef struct _DOCSCAN_STATE
   char info_matches[4096];   // JSON tokens: vendor rules tagged docscan_info (indicators)
   char doc_matches[4096];    // JSON tokens: vendor rules tagged docscan_doc (document rules)
   char findings_text[4096];  // JSON tokens: meta.text of matching policy rules (human-readable)
-  char descriptions[8192];   // JSON members "rule":"meta.description" of matching vendor rules
+  char descriptions[8192];   // JSON objects {"rule":..,"description":..} of matching vendor rules
+                             // (fixed keys: rule names as keys would add an index field per rule)
   docscan_disarm_info ds;    // what --docscan-disarm should remove
 } DOCSCAN_STATE;
 
@@ -1438,7 +1439,9 @@ static void docscan_list_add(char* list, size_t sz, const char* token)
     snprintf(list + l, sz - l, "%s\"%s\"", l ? "," : "", esc);
 }
 
-// Append "key":"value" to a JSON object body (escaped, silently capped).
+// Append {"rule":"key","description":"value"} to a JSON array body (escaped,
+// silently capped). Fixed keys: Wazuh/OpenSearch maps every distinct object key
+// to a field, so rule names must be values, never keys.
 static void docscan_obj_add(char* obj, size_t sz, const char* key, const char* val)
 {
   char k[256], v[512];
@@ -1459,7 +1462,7 @@ static void docscan_obj_add(char* obj, size_t sz, const char* key, const char* v
   v[b] = '\0';
   size_t l = strlen(obj);
   if (l + a + b + 8 < sz)
-    snprintf(obj + l, sz - l, "%s\"%s\":\"%s\"", l ? "," : "", k, v);
+    snprintf(obj + l, sz - l, "%s{\"rule\":\"%s\",\"description\":\"%s\"}", l ? "," : "", k, v);
 }
 
 static int docscan_list_has(const char* list, const char* token)
@@ -1686,7 +1689,9 @@ static int vendor_match_cb(
     {
       vmatch_collect* v = (vmatch_collect*) user_data;
       docscan_list_add(v->buf, v->sz, r->identifier);
-      if (v->desc != NULL && !strstr(v->desc, r->identifier))
+      char needle[300];
+      snprintf(needle, sizeof(needle), "\"rule\":\"%s\"", r->identifier);
+      if (v->desc != NULL && !strstr(v->desc, needle))
       {
         const char* d = docscan_meta(r, "description");
         if (d == NULL)
@@ -1766,7 +1771,7 @@ static void print_docscan_json(DOCSCAN_STATE* st)
   printf(",\"yara_doc_matches\":[%s]", st->doc_matches);
   printf(",\"yara_info_matches\":[%s]", st->info_matches);
   printf(",\"findings_text\":[%s]", st->findings_text);
-  printf(",\"yara_descriptions\":{%s}", st->descriptions);
+  printf(",\"yara_descriptions\":[%s]", st->descriptions);
   printf(",\"details\":[%s]", st->details);
   printf("}\n");  // close root object
   fflush(stdout);

@@ -152,7 +152,7 @@ function Get-Summary($rec) {
   }
   foreach ($m in $rec.yara_file_matches) {
     $d = $null
-    if ($ds -and $ds.yara_descriptions) { $d = $ds.yara_descriptions.$m }
+    if ($ds -and $ds.yara_descriptions) { $d = (@($ds.yara_descriptions) | Where-Object { $_.rule -eq $m } | Select-Object -First 1).description }
     $t = "YARA $m"
     if ($where[$m]) { $t += " (у " + $where[$m] + ")" }
     if ($d) { $t += " — $d" }

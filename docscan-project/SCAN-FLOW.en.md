@@ -1086,7 +1086,12 @@ for every counted vendor match + rules on the macro code + "дія: <disarm>" (�
 101091/101092 show it in their description (`$(summary)`).
 Document analysis: `docscan.{ftype, findings[], findings_text[], verdict, evidence.{template_url, dde_command,
 vba_evidence, lnk_target, lnk_args}, yara_matches[], yara_file_matches[], yara_doc_matches[], yara_info_matches[],
-yara_descriptions{rule: description}, details[]}`. In the index all of it sits under `data.`.
+yara_descriptions[{rule, description}], details[]}`. In the index all of it sits under `data.`.
+
+> **Rule names are values, never keys.** The indexer creates a field per object key: `{"Rule_name":
+> "description"}` would add a field for every rule that ever fires, up to the index field limit — after which
+> alerts are rejected. So `yara_descriptions` is an array of `{"rule", "description"}`, `yara_part_matches` an
+> array of `{"part", "rules"}`.
 
 > **Do not rename `docfile` to `file`.** In `wazuh-alerts-*` indices `data.file` is already a `keyword`
 > (other sources write it); an object there makes the indexer drop the whole event

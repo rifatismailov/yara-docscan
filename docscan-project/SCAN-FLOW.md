@@ -1086,7 +1086,12 @@ watcher → C:\ProgramData\DocScan\results\docscan-results.json (JSON Lines)
 показують описи правил менеджера 101091/101092 (`$(summary)`).
 Розбір документа: `docscan.{ftype, findings[], findings_text[], verdict, evidence.{template_url, dde_command,
 vba_evidence, lnk_target, lnk_args}, yara_matches[], yara_file_matches[], yara_doc_matches[], yara_info_matches[],
-yara_descriptions{правило: опис}, details[]}`. В індексі все це — під `data.`.
+yara_descriptions[{rule, description}], details[]}`. В індексі все це — під `data.`.
+
+> **Імена правил — тільки значення, ніколи ключі.** Індексатор створює окреме поле на кожен ключ
+> об'єкта: `{"Ім'я_правила": "опис"}` додавав би поле на кожне правило, що колись спрацює, до ліміту полів
+> індексу — після чого алерти відкидаються. Тому `yara_descriptions` — масив `{"rule", "description"}`,
+> `yara_part_matches` — масив `{"part", "rules"}`.
 
 > **Не перейменовувати `docfile` на `file`.** В індексах `wazuh-alerts-*` поле `data.file` уже має тип
 > `keyword` (його пишуть інші джерела); об'єкт там індексатор відкидає цілою подією
