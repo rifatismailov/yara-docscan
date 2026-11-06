@@ -1054,6 +1054,8 @@ With centrally managed agents (`agent.conf` in a manager group) the same `<local
    | 101091 | 12 | `verdict = HIGH` | generic HIGH (incl. vendor YARA hits on exe/dll) |
    | 101092 | 7 | `verdict = MEDIUM` | MEDIUM |
    | 101097 | 3 | `verdict = ERROR` | file could not be scanned — indexed only |
+   | 101098 | 3 | `event = DisarmRetry` (child of 101091/101092/101101–101108) | disarm done after the file was closed — a confirmation, not a new alarm |
+   | 101099 | 12 | `event = DisarmPending` | file open for 24 h, not cured — manual check |
    | 101101 | 12 | `REMOTE_TEMPLATE` | remote template (T1221) |
    | 101102 | 12 | `PROTOCOL_HANDLER` | ms-msdt / protocol handler (T1203) |
    | 101103 | 12 | `DDE_AUTO`, `DDE_LINK` | DDE (T1559.002) |

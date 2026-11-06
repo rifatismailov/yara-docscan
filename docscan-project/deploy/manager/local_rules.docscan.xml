@@ -67,7 +67,7 @@
   <rule id="101104" level="12">
     <if_sid>101091</if_sid>
     <field name="docscan.findings" type="pcre2">RTF_OBJUPDATE</field>
-    <description>DocScan HIGH — Автооновлення RTF OLE (objupdate) | $(docfile.path) | лікування: $(disarm)</description>
+    <description>DocScan HIGH — Автооновлення RTF OLE (objupdate) | $(summary) | $(docfile.path)</description>
     <mitre><id>T1203</id></mitre>
     <group>docscan_high,</group>
   </rule>
@@ -83,7 +83,7 @@
   <rule id="101106" level="12">
     <if_sid>101091</if_sid>
     <field name="docscan.findings" type="pcre2">PDF_JS_AUTO|PDF_LAUNCH</field>
-    <description>DocScan HIGH — Шкідливий PDF ($(docscan.findings)) | $(docfile.path) | лікування: $(disarm)</description>
+    <description>DocScan HIGH — Шкідливий PDF | $(summary) | $(docfile.path)</description>
     <mitre><id>T1204.002</id><id>T1203</id></mitre>
     <group>docscan_high,</group>
   </rule>
@@ -91,17 +91,35 @@
   <rule id="101107" level="12">
     <if_sid>101091</if_sid>
     <field name="docscan.findings" type="pcre2">EMBEDDED_PE</field>
-    <description>DocScan HIGH — Вкладений виконуваний файл PE | $(docfile.path) | лікування: $(disarm)</description>
+    <description>DocScan HIGH — Вкладений виконуваний файл PE | $(summary) | $(docfile.path)</description>
     <mitre><id>T1204.002</id></mitre>
     <group>docscan_high,</group>
   </rule>
 
   <rule id="101108" level="12">
     <if_sid>101091</if_sid>
-    <field name="docscan.findings" type="pcre2">MACRO_SUSPICIOUS|YARA_STRICT|MACRO_PRESENT</field>
+    <field name="docscan.findings" type="pcre2">MACRO_SUSPICIOUS</field>
     <description>DocScan HIGH — Підозрілий VBA/YARA: $(docscan.evidence.vba_evidence) | $(docfile.path) | лікування: $(disarm)</description>
     <mitre><id>T1204.002</id><id>T1059.005</id></mitre>
     <group>docscan_high,</group>
+  </rule>
+
+  <!-- лікування виконано після того, як файл звільнили (вотчер повторював, поки документ був відкритий):
+       це підтвердження, а не нова загроза — не дублюємо HIGH-тривогу -->
+  <rule id="101098" level="3">
+    <if_sid>101091, 101092, 101101, 101102, 101103, 101104, 101105, 101106, 101107, 101108</if_sid>
+    <field name="event">^DisarmRetry$</field>
+    <description>DocScan: лікування виконано після закриття файлу — $(disarm) | $(docfile.path)</description>
+    <group>docscan_disarm_retry,</group>
+  </rule>
+
+  <!-- файл увесь час відкритий: за 24 год вилікувати не вдалося — потрібна ручна перевірка -->
+  <rule id="101099" level="12">
+    <if_sid>101091, 101101, 101102, 101103, 101104, 101105, 101106, 101107, 101108</if_sid>
+    <field name="event">^DisarmPending$</field>
+    <description>DocScan HIGH — файл 24 год відкритий, не вилікувано, потрібна ручна перевірка | $(summary) | $(docfile.path)</description>
+    <mitre><id>T1204.002</id></mitre>
+    <group>docscan_high,docscan_disarm_pending,</group>
   </rule>
 
 </group>

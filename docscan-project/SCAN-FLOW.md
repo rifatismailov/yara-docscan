@@ -1054,6 +1054,8 @@ watcher → C:\ProgramData\DocScan\results\docscan-results.json (JSON Lines)
    | 101091 | 12 | `verdict = HIGH` | загальний HIGH (у т.ч. збіг вендорних YARA на exe/dll) |
    | 101092 | 7 | `verdict = MEDIUM` | MEDIUM |
    | 101097 | 3 | `verdict = ERROR` | файл не вдалось просканувати — лише в індекс |
+   | 101098 | 3 | `event = DisarmRetry` (нащадок 101091/101092/101101–101108) | лікування виконано після закриття файлу — підтвердження, не нова тривога |
+   | 101099 | 12 | `event = DisarmPending` | файл 24 год відкритий, не вилікувано — ручна перевірка |
    | 101101 | 12 | `REMOTE_TEMPLATE` | віддалений шаблон (T1221) |
    | 101102 | 12 | `PROTOCOL_HANDLER` | ms-msdt / протокол-хендлер (T1203) |
    | 101103 | 12 | `DDE_AUTO`, `DDE_LINK` | DDE (T1559.002) |
