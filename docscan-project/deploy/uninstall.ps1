@@ -2,7 +2,7 @@
 #   powershell -ExecutionPolicy Bypass -File "C:\Program Files\DocScan\uninstall.ps1"           # data is kept
 #   powershell -ExecutionPolicy Bypass -File "C:\Program Files\DocScan\uninstall.ps1" -Purge    # + results and quarantine
 param(
-  [string]$InstallDir = "$env:ProgramFiles\DocScan",
+  [string]$InstallDir = "$(if ($env:ProgramW6432) { $env:ProgramW6432 } else { $env:ProgramFiles })\DocScan",
   [string]$DataDir    = "$env:ProgramData\DocScan",
   [switch]$Purge
 )

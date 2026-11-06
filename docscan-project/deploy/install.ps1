@@ -25,7 +25,8 @@
 # Running it again = update (the previous rules are kept in rules.prev\).
 
 param(
-  [string]  $InstallDir = "$env:ProgramFiles\DocScan",
+  # ProgramW6432 = the 64-bit Program Files even when this runs in a 32-bit PowerShell (from a 32-bit cmd / SysWOW64)
+  [string]  $InstallDir = "$(if ($env:ProgramW6432) { $env:ProgramW6432 } else { $env:ProgramFiles })\DocScan",
   [string]  $DataDir    = "$env:ProgramData\DocScan",
   [string[]]$WatchPath  = @("C:\Users"),
   [switch]  $QuarantineGeneral,   # exe/scripts/archives matching vendor rules -> quarantine
@@ -127,6 +128,14 @@ foreach ($d in "bin", "rules", "watcher") {
 }
 Copy-Item (Join-Path $Pkg "uninstall.ps1") $InstallDir -Force
 Copy-Item (Join-Path $Pkg "VERSION.txt") $InstallDir -Force -EA SilentlyContinue
+
+# a stray copy from an earlier run in a 32-bit PowerShell (installed to Program Files (x86)) - remove it
+$x86Dir = "${env:ProgramFiles(x86)}\DocScan"
+if (${env:ProgramFiles(x86)} -and $x86Dir -ne $InstallDir -and (Test-Path -LiteralPath "$x86Dir\watcher\docscan-watcher.ps1")) {
+  Remove-Item -LiteralPath $x86Dir -Recurse -Force -EA SilentlyContinue
+  if (Get-Command Remove-MpPreference -ErrorAction SilentlyContinue) { Remove-MpPreference -ExclusionPath $x86Dir -EA SilentlyContinue }
+  Write-Host "  removed the old copy in $x86Dir"
+}
 
 # --- 4. data: results and quarantine (SYSTEM + Administrators only) ---
 Step "data folders in $DataDir"
@@ -256,12 +265,24 @@ Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Pr
   -Settings $settings -Description "DocScan: auto-scan and disarm of new documents (yara64 + docscan)" -Force | Out-Null
 
 if (-not $NoStart) {
-  Start-ScheduledTask -TaskName $TaskName
-  Start-Sleep 8
-  $state = (Get-ScheduledTask -TaskName $TaskName).State
+  # On start the watcher compiles thousands of rules - on a slow PC that takes a minute or more.
+  # Wait for ITS OWN "start: watching" line (only text written after this point), up to 180 s.
   $log = "$DataDir\results\watcher.log"
-  $started = (Test-Path $log) -and (Select-String -Path $log -Pattern "disarm=True" -Quiet -Encoding UTF8)
-  if ($state -ne "Running" -or -not $started) { Fail "the watcher did not start (state: $state). See $log" }
+  $mark = if (Test-Path $log) { (Get-Item $log).Length } else { 0 }
+  Start-ScheduledTask -TaskName $TaskName
+  Write-Host "  waiting for the watcher to compile the rules (up to 3 min)..."
+  $started = $false; $state = ""
+  for ($t = 0; $t -lt 180 -and -not $started; $t += 3) {
+    Start-Sleep 3
+    $state = "$((Get-ScheduledTask -TaskName $TaskName).State)"
+    if ($state -ne "Running") { break }
+    if (Test-Path $log) {
+      $fs = [IO.File]::Open($log, 'Open', 'Read', 'ReadWrite'); [void]$fs.Seek($mark, 'Begin')
+      $tail = (New-Object IO.StreamReader($fs, [Text.Encoding]::UTF8)).ReadToEnd(); $fs.Close()
+      $started = $tail -match "start: watching"
+    }
+  }
+  if (-not $started) { Fail "the watcher did not start (state: $state). See $log" }
   Write-Host "  watcher is running"
 }
 

@@ -13,7 +13,10 @@
   $f = Join-Path $env:TEMP ('DocScan-Install-' + [guid]::NewGuid().ToString('N').Substring(0, 8) + '.ps1')
   try {
     Invoke-WebRequest -UseBasicParsing "$BaseUrl/DocScan-Install.ps1" -OutFile $f
-    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $f -BaseUrl $BaseUrl @InstallArg
+    # 64-bit PowerShell even when started from a 32-bit console (sysnative exists only for 32-bit processes)
+    $ps = Join-Path $env:windir 'sysnative\WindowsPowerShell\v1.0\powershell.exe'
+    if (-not (Test-Path $ps)) { $ps = 'powershell.exe' }
+    & $ps -NoProfile -ExecutionPolicy Bypass -File $f -BaseUrl $BaseUrl @InstallArg
     if ($LASTEXITCODE -ne 0) { Write-Host "DocScan setup failed (exit code $LASTEXITCODE)" -ForegroundColor Red }
   } catch {
     Write-Host ('DocScan setup: ' + $_.Exception.Message) -ForegroundColor Red
