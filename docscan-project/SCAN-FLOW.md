@@ -166,13 +166,15 @@ docscan-project/
 
 ## 4. Доопрацювання YARA — код, функція за функцією
 
+> Навчальний путівник по коду (шлях одного файлу, мінімум C, кожна функція, рецепти «як додати», пастки) — [`CODE-GUIDE.md`](CODE-GUIDE.md) (українською). Нижче — довідкові таблиці.
+
 ### 4.1 Як модуль вбудовано в YARA
 
 **Реєстрація** (три місця):
 - `libyara/modules/module_list` — рядок `MODULE(docscan)`. `modules.c` інклудить цей файл двічі
   (X-macro) і будує таблицю `yr_modules_table[]` з покажчиками на функції модуля.
-- `Makefile.am` — 15 рядків `MODULES += libyara/modules/docscan/*.c` (macOS/Linux, autotools).
-- `windows/vs20{15,17,19}/libyara/libyara.vcxproj` — ті самі 15 файлів як `<ClCompile>` (MSVC).
+- `Makefile.am` — 16 рядків `MODULES += libyara/modules/docscan/*.c` (macOS/Linux, autotools).
+- `windows/vs20{15,17,19}/libyara/libyara.vcxproj` — ті самі 16 файлів як `<ClCompile>` (MSVC).
   **Новий `.c` треба додавати в обидві системи збірки.**
 
 **Трюк з іменами.** На початку `docscan.c` стоїть `#define MODULE_NAME docscan`; макроси з

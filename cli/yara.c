@@ -1670,7 +1670,7 @@ typedef struct
 {
   char* buf;
   size_t sz;
-  char* desc;       // JSON object body "rule":"description" (may be NULL)
+  char* desc;       // JSON array body {"rule":..,"description":..} (may be NULL)
   size_t desc_sz;
 } vmatch_collect;
 
