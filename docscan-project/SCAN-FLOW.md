@@ -1068,14 +1068,21 @@ watcher → C:\ProgramData\DocScan\results\docscan-results.json (JSON Lines)
    | 101301 | 12 | `PACKAGE_EXECUTABLE` | OLE Package з exe/скриптом (T1204.002) |
    | 101302 | 12 | `ACTIVEX_BROWSER` | ActiveX-браузер (T1203) |
    | 101303 | 12 | `category = general` | шкідливий exe/dll/скрипт/архів (вендорні YARA) |
-   | 101310 | 7 | `EXTERNAL_OLE`, `EXTERNAL_FRAME` | зовнішній вміст (T1221) |
+   | 101310 | **12** | `EXTERNAL_OLE`, `EXTERNAL_FRAME` | зовнішній вміст (T1221) |
    | 101311 | 7 | `MACRO_AUTOEXEC`, `MACRO_NETWORK`, `MACRO_PRESENT` | макроси (T1059.005) |
    | 101312 | 7 | `PDF_JS`, `PDF_EMBEDDED` | PDF з JS / вкладенням |
    | 101313 | 7 | `LNK_REMOTE_TARGET`, `LNK_LOLBIN` | ярлик (T1204.001) |
-   | 101314 | 7 | `ACTIVEX` | ActiveX-елемент |
-   | 101315 | 7 | `ALTCHUNK` | altChunk (T1221) |
-   | 101316 | 7 | `XLM_MACROSHEET` | макроаркуш Excel 4.0 |
-   | 101317 | 7 | `yara_file_matches` не порожній | вендорна YARA-сигнатура в документі |
+   | 101314 | **12** | `ACTIVEX` | ActiveX-елемент |
+   | 101315 | **12** | `ALTCHUNK` | altChunk (T1221) |
+   | 101316 | **12** | `XLM_MACROSHEET` | макроаркуш Excel 4.0 |
+   | 101317 | **12** | `yara_file_matches` не порожній | вендорна YARA-сигнатура в документі |
+   | 101318 | 12 | 3+ подій `docscan_medium_low` з одного `host` за 10 хв | серія підозрілих документів (кореляція) |
+
+   **Рівні під Telegram (поріг 12+).** MEDIUM ділиться на два кошики: напрямки, майже ніколи не легітимні
+   в профілі користувача (зовнішній вміст, ActiveX, altChunk, XLM, вендорна сигнатура в документі), мають
+   рівень **12** і групу `docscan_medium_alert` — опис «DocScan MEDIUM (тривога)»; шумніші (макроси, PDF з
+   JS/вкладенням, ярлики, загальний MEDIUM) — рівень 7 і група `docscan_medium_low`, а серію з 3+ таких
+   подій на одній машині за 10 хв ловить кореляція 101318 (рівень 12).
 
    Кожне правило має групу напрямку (`docscan_remote_template`, `docscan_dde`, `docscan_lnk`, `docscan_pdf`,
    `docscan_macro`, `docscan_equation`, `docscan_package`, `docscan_activex`, `docscan_general`,

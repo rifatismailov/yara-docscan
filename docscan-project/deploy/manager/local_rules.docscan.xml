@@ -28,7 +28,7 @@
     <field name="verdict">^MEDIUM$</field>
     <description>DocScan MEDIUM — $(summary) | $(docfile.path) | SHA256 $(docfile.sha256)</description>
     <mitre><id>T1204.002</id></mitre>
-    <group>docscan_medium,</group>
+    <group>docscan_medium,docscan_medium_low,</group>
   </rule>
 
   <!-- watcher не зміг просканувати файл (зайнятий/пошкоджений) — тільки в індекс -->
@@ -139,12 +139,12 @@
   </rule>
 
   <!-- ===== MEDIUM: напрямки (нащадки 101092) ===== -->
-  <rule id="101310" level="7">
+  <rule id="101310" level="12">
     <if_sid>101092</if_sid>
     <field name="docscan.findings" type="pcre2">EXTERNAL_OLE|EXTERNAL_FRAME</field>
-    <description>DocScan MEDIUM — документ підтягує зовнішній вміст (OLE/фрейм): $(summary) | $(docfile.path)</description>
+    <description>DocScan MEDIUM (тривога) — документ підтягує зовнішній вміст (OLE/фрейм): $(summary) | $(docfile.path)</description>
     <mitre><id>T1221</id></mitre>
-    <group>docscan_medium,docscan_external,</group>
+    <group>docscan_medium,docscan_medium_alert,docscan_external,</group>
   </rule>
 
   <rule id="101311" level="7">
@@ -152,7 +152,7 @@
     <field name="docscan.findings" type="pcre2">MACRO_AUTOEXEC|MACRO_NETWORK|MACRO_PRESENT</field>
     <description>DocScan MEDIUM — макроси VBA: $(summary) | $(docfile.path)</description>
     <mitre><id>T1059.005</id></mitre>
-    <group>docscan_medium,docscan_macro,</group>
+    <group>docscan_medium,docscan_medium_low,docscan_macro,</group>
   </rule>
 
   <rule id="101312" level="7">
@@ -160,7 +160,7 @@
     <field name="docscan.findings" type="pcre2">PDF_JS|PDF_EMBEDDED</field>
     <description>DocScan MEDIUM — PDF з JavaScript / вкладеним файлом: $(summary) | $(docfile.path)</description>
     <mitre><id>T1204.002</id></mitre>
-    <group>docscan_medium,docscan_pdf,</group>
+    <group>docscan_medium,docscan_medium_low,docscan_pdf,</group>
   </rule>
 
   <rule id="101313" level="7">
@@ -168,40 +168,50 @@
     <field name="docscan.findings" type="pcre2">LNK_REMOTE_TARGET|LNK_LOLBIN</field>
     <description>DocScan MEDIUM — ярлик на мережеву теку / системну утиліту: $(summary) | $(docfile.path)</description>
     <mitre><id>T1204.001</id></mitre>
-    <group>docscan_medium,docscan_lnk,</group>
+    <group>docscan_medium,docscan_medium_low,docscan_lnk,</group>
   </rule>
 
-  <rule id="101314" level="7">
+  <rule id="101314" level="12">
     <if_sid>101092</if_sid>
     <field name="docscan.findings" type="pcre2">ACTIVEX</field>
-    <description>DocScan MEDIUM — ActiveX-елемент у документі: $(summary) | $(docfile.path)</description>
+    <description>DocScan MEDIUM (тривога) — ActiveX-елемент у документі: $(summary) | $(docfile.path)</description>
     <mitre><id>T1203</id></mitre>
-    <group>docscan_medium,docscan_activex,</group>
+    <group>docscan_medium,docscan_medium_alert,docscan_activex,</group>
   </rule>
 
-  <rule id="101315" level="7">
+  <rule id="101315" level="12">
     <if_sid>101092</if_sid>
     <field name="docscan.findings" type="pcre2">ALTCHUNK</field>
-    <description>DocScan MEDIUM — altChunk: docx імпортує інший документ (CVE-2023-36884): $(summary) | $(docfile.path)</description>
+    <description>DocScan MEDIUM (тривога) — altChunk: docx імпортує інший документ (CVE-2023-36884): $(summary) | $(docfile.path)</description>
     <mitre><id>T1221</id></mitre>
-    <group>docscan_medium,docscan_altchunk,</group>
+    <group>docscan_medium,docscan_medium_alert,docscan_altchunk,</group>
   </rule>
 
-  <rule id="101316" level="7">
+  <rule id="101316" level="12">
     <if_sid>101092</if_sid>
     <field name="docscan.findings" type="pcre2">XLM_MACROSHEET</field>
-    <description>DocScan MEDIUM — макроаркуш Excel 4.0 (XLM): $(summary) | $(docfile.path)</description>
+    <description>DocScan MEDIUM (тривога) — макроаркуш Excel 4.0 (XLM): $(summary) | $(docfile.path)</description>
     <mitre><id>T1059</id></mitre>
-    <group>docscan_medium,docscan_xlm,</group>
+    <group>docscan_medium,docscan_medium_alert,docscan_xlm,</group>
   </rule>
 
   <!-- документ без знахідок політики, але зі збігом вендорної YARA-сигнатури (файл або 2-й прохід) -->
-  <rule id="101317" level="7">
+  <rule id="101317" level="12">
     <if_sid>101092</if_sid>
     <field name="yara_file_matches" type="pcre2">\w</field>
-    <description>DocScan MEDIUM — YARA-сигнатура в документі: $(summary) | $(docfile.path)</description>
+    <description>DocScan MEDIUM (тривога) — YARA-сигнатура в документі: $(summary) | $(docfile.path)</description>
     <mitre><id>T1204.002</id></mitre>
-    <group>docscan_medium,docscan_yara,</group>
+    <group>docscan_medium,docscan_medium_alert,docscan_yara,</group>
+  </rule>
+
+  <!-- кореляція: кілька MEDIUM низького рівня (макроси / PDF / ярлики / загальний MEDIUM) на одній машині
+       за короткий час — вже не випадковий робочий документ: піднімаємо до 12 (потрапляє в Telegram) -->
+  <rule id="101318" level="12" frequency="3" timeframe="600">
+    <if_matched_group>docscan_medium_low</if_matched_group>
+    <same_field>host</same_field>
+    <description>DocScan — серія підозрілих документів на $(host): 3+ MEDIUM за 10 хв (останній: $(summary) | $(docfile.path))</description>
+    <mitre><id>T1204.002</id></mitre>
+    <group>docscan_high,docscan_correlation,</group>
   </rule>
 
   <!-- лікування виконано після того, як файл звільнили (вотчер повторював, поки документ був відкритий):
