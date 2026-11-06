@@ -1,6 +1,12 @@
 ﻿DocScan — встановлення на Windows 10/11 (x64)
 =============================================
 
+Найпростіше — DocScan-Setup.ps1 з HTTP-сервера (сам завантажує пакет, звіряє SHA256, запускає install.ps1):
+     powershell -ExecutionPolicy Bypass -File .\DocScan-Setup.ps1 -BaseUrl http://<сервер>:8080 [-DetectOnly]
+   На сервері поруч мають лежати: DocScan-<версія>.zip, DocScan-<версія>.zip.sha256 і DocScan-latest.txt
+   (один рядок — ім'я поточного пакета). Нова версія: покласти zip + .sha256 і змінити DocScan-latest.txt.
+
+Вручну:
 1. Розпакуйте DocScan-<версія>.zip у будь-яку теку (напр. C:\Temp\DocScan).
 2. Відкрийте PowerShell ВІД ІМЕНІ АДМІНІСТРАТОРА і виконайте:
 
