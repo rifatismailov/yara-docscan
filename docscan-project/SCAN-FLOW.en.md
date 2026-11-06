@@ -1063,7 +1063,7 @@ With centrally managed agents (`agent.conf` in a manager group) the same `<local
    | 101105 | 12 | `LNK_*`, `EMBEDDED_LNK` | malicious shortcut (T1204.001, T1059.001) |
    | 101106 | 12 | `PDF_JS_AUTO`, `PDF_LAUNCH` | malicious PDF |
    | 101107 | 12 | `EMBEDDED_PE` | embedded executable |
-   | 101108 | 12 | `MACRO_SUSPICIOUS`, `MACRO_PRESENT` | VBA macro (T1059.005) |
+   | 101108 | 12 | `MACRO_SUSPICIOUS` | VBA macro (T1059.005) |
 
    101101–101108 are children of 101091, i.e. HIGH only; the description carries the evidence (URL, DDE
    command, LNK target, VBA strings) and the disarm result `$(disarm)`.

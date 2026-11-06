@@ -1063,7 +1063,7 @@ watcher → C:\ProgramData\DocScan\results\docscan-results.json (JSON Lines)
    | 101105 | 12 | `LNK_*`, `EMBEDDED_LNK` | шкідливий ярлик (T1204.001, T1059.001) |
    | 101106 | 12 | `PDF_JS_AUTO`, `PDF_LAUNCH` | шкідливий PDF |
    | 101107 | 12 | `EMBEDDED_PE` | вкладений виконуваний файл |
-   | 101108 | 12 | `MACRO_SUSPICIOUS`, `MACRO_PRESENT` | VBA-макрос (T1059.005) |
+   | 101108 | 12 | `MACRO_SUSPICIOUS` | VBA-макрос (T1059.005) |
 
    101101–101108 — дочірні до 101091, тобто лише для HIGH; в описі — доказ (URL, команда DDE, ціль LNK,
    рядки VBA) і результат лікування `$(disarm)`.
