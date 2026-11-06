@@ -1483,7 +1483,9 @@ static void docscan_state_reset(DOCSCAN_STATE* st)
 
 static void docscan_copy_string(YR_OBJECT* m, const char* field, char* out, size_t sz)
 {
-  SIZED_STRING* s = yr_object_get_string(m, "%s", field);
+  // field is always one of our literal names; do NOT wrap it as ("%s", field):
+  // libyara's lookup only expands %s / %i inside [...] (array index / dict key)
+  SIZED_STRING* s = yr_object_get_string(m, field);
   size_t n = (s == NULL) ? 0 : (size_t) s->length;
   if (n >= sz)
     n = sz - 1;
