@@ -1,13 +1,13 @@
 # DocScan setup bootstrap. Run in PowerShell as Administrator:
-#   irm http://<server>:8080/DocScan-Setup.ps1 | iex          # full mode (detection + disarm)
-#   irm http://<server>:8080/DocScan-Setup-Pilot.ps1 | iex    # pilot: detection and alerts only
+#   irm http://<server>:8080/docscan/DocScan-Setup.ps1 | iex          # full mode (detection + disarm)
+#   irm http://<server>:8080/docscan/DocScan-Setup-Pilot.ps1 | iex    # pilot: detection and alerts only
 #
 # ASCII only, no BOM: "irm | iex" decodes the text without a charset. Everything runs inside one
 # script block, so nothing leaks into the calling session. It downloads DocScan-Install.ps1 (the
 # real, UTF-8 installer script) and runs it in a separate powershell.exe: errors never close this
 # window, and the output is readable.
 & {
-  $BaseUrl    = 'http://<server>:8080'   # where DocScan-Install.ps1, DocScan-latest.txt and the package are
+  $BaseUrl    = 'http://<server>:8080/docscan'   # where DocScan-Install.ps1, DocScan-latest.txt and the package are
   $InstallArg = @()                      # pilot copy: @('-DetectOnly')
   $ProgressPreference = 'SilentlyContinue'
   $f = Join-Path $env:TEMP ('DocScan-Install-' + [guid]::NewGuid().ToString('N').Substring(0, 8) + '.ps1')

@@ -2,13 +2,13 @@
 =============================================
 
 Найпростіше — з HTTP-сервера одним рядком (PowerShell від адміністратора):
-     irm http://<сервер>:8080/DocScan-Setup.ps1 | iex          # повний режим (детект + лікування)
-     irm http://<сервер>:8080/DocScan-Setup-Pilot.ps1 | iex    # пілот: лише детект і алерти
+     irm http://<сервер>:8080/docscan/DocScan-Setup.ps1 | iex          # повний режим (детект + лікування)
+     irm http://<сервер>:8080/docscan/DocScan-Setup-Pilot.ps1 | iex    # пілот: лише детект і алерти
    DocScan-Setup.ps1 — маленький ASCII-завантажувач: бере DocScan-Install.ps1 і запускає його в окремому
    powershell.exe (помилка не закриває вікно). DocScan-Install.ps1 сам завантажує пакет, звіряє SHA256,
    запускає install.ps1. Напряму:
      powershell -ExecutionPolicy Bypass -File .\DocScan-Install.ps1 -BaseUrl http://<сервер>:8080 [-DetectOnly]
-   На сервері поруч мають лежати: DocScan-Setup.ps1 і DocScan-Setup-Pilot.ps1 (з адресою сервера в $BaseUrl;
+   На сервері (тека scripts/docscan/, URL http://<сервер>:8080/docscan/) поруч мають лежати: DocScan-Setup.ps1 і DocScan-Setup-Pilot.ps1 (з адресою сервера в $BaseUrl;
    у пілотній копії $InstallArg = @('-DetectOnly')), DocScan-Install.ps1, DocScan-<версія>.zip,
    DocScan-<версія>.zip.sha256 і DocScan-latest.txt (один рядок — ім'я поточного пакета).
    Нова версія: покласти zip + .sha256 і змінити DocScan-latest.txt; скрипти не міняються.

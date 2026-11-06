@@ -150,8 +150,9 @@ function Invoke-Scan([string]$path, [bool]$cure, [bool]$extract) {
 # ---- macro store: <MacroDir>\<document sha256>.vba.txt (one file per document content) ----
 # The file starts with a short header (VBA comment lines, UTF-8): host, document path, sha256, findings,
 # time - so a copy on the collector is self-describing. Then the VBA code as yara extracted it (the
-# project's code page, usually 1251). The Archive attribute marks "not uploaded yet": it is cleared
-# after a successful upload, so failed uploads are retried later (Sync-Macros) without a state file.
+# project's code page, usually 1251). Sent files are listed in <MacroDir>\sent.txt (one sha256 per line);
+# the rest is retried hourly by Sync-Macros. (Not the Archive attribute: re-applying the folder ACL on a
+# reinstall sets it again, and every macro would be sent again.)
 function Save-Macro([string]$docSha, $rec, $ds) {
   if (-not (Test-Path -LiteralPath $MacroTmp)) { return $null }
   $len = (Get-Item -LiteralPath $MacroTmp).Length
@@ -163,7 +164,7 @@ function Save-Macro([string]$docSha, $rec, $ds) {
     $hdr = "' DocScan macro`r`n' host: $env:COMPUTERNAME`r`n' file: $($rec.docfile.path)`r`n' sha256: $docSha`r`n" +
            "' findings: $(@($ds.findings) -join ', ')`r`n' saved: $((Get-Date).ToString('yyyy-MM-ddTHH:mm:sszzz'))`r`n'`r`n"
     $bytes = [byte[]]($utf8.GetBytes($hdr) + [IO.File]::ReadAllBytes($MacroTmp))
-    [IO.File]::WriteAllBytes($dst, $bytes)   # a new file gets the Archive attribute
+    [IO.File]::WriteAllBytes($dst, $bytes)
     Remove-Item -LiteralPath $MacroTmp -Force -EA SilentlyContinue
   }
   return [ordered]@{ file = $dst; size = $len; uploaded = $false }
@@ -174,11 +175,13 @@ function Send-Macro([string]$file) {
   if (-not $MacroUpload) { return $false }
   $fi = Get-Item -LiteralPath $file -EA SilentlyContinue
   if (-not $fi) { return $false }
-  if (-not ($fi.Attributes -band [IO.FileAttributes]::Archive)) { return $true }   # already uploaded
+  $sha = $fi.Name -replace '\.vba\.txt$', ''
+  if ($MacroSentSet.ContainsKey($sha)) { return $true }   # already sent
   try {
     $null = Invoke-WebRequest -UseBasicParsing -Method Post -Uri "$MacroUpload/" -Body ([IO.File]::ReadAllBytes($file)) `
               -ContentType "application/octet-stream" -TimeoutSec 15 -ErrorAction Stop
-    $fi.Attributes = $fi.Attributes -band (-bnot [IO.FileAttributes]::Archive)
+    $MacroSentSet[$sha] = 1
+    [IO.File]::AppendAllText($MacroSent, "$sha`r`n", $utf8)
     return $true
   } catch {
     Log "macro upload failed (will retry): $($fi.Name) - $($_.Exception.Message)" "WARN"
@@ -197,9 +200,20 @@ function Sync-Macros {
       $total -= $f.Length; Remove-Item -LiteralPath $f.FullName -Force -EA SilentlyContinue
     } else { $kept += $f }
   }
+  # sent.txt keeps only the files that are still in the store
+  $keep = @{}; foreach ($f in $kept) { $keep[($f.Name -replace '\.vba\.txt$', '')] = 1 }
+  $stale = @($MacroSentSet.Keys | Where-Object { -not $keep.ContainsKey($_) })
+  if ($stale.Count) {
+    foreach ($k in $stale) { $MacroSentSet.Remove($k) }
+    [IO.File]::WriteAllText($MacroSent, (($MacroSentSet.Keys | ForEach-Object { "$_`r`n" }) -join ""), $utf8)
+  }
   if ($MacroUpload) {
     # one per second at most: the collector names files <ip>_<yyyyMMdd_HHmmss>.txt
-    foreach ($f in $kept) { if ($f.Attributes -band [IO.FileAttributes]::Archive) { if (-not (Send-Macro $f.FullName)) { break }; Start-Sleep -Milliseconds 1100 } }
+    foreach ($f in $kept) {
+      if ($MacroSentSet.ContainsKey(($f.Name -replace '\.vba\.txt$', ''))) { continue }
+      if (-not (Send-Macro $f.FullName)) { break }
+      Start-Sleep -Milliseconds 1100
+    }
   }
 }
 
@@ -340,6 +354,17 @@ New-Item -ItemType Directory -Force $OutDir | Out-Null
 New-Item -ItemType Directory -Force $BackupDir | Out-Null
 New-Item -ItemType Directory -Force $MacroDir | Out-Null
 $MacroTmp = Join-Path $MacroDir "extract.tmp"
+$MacroSent = Join-Path $MacroDir "sent.txt"
+$MacroSentSet = @{}
+if (Test-Path -LiteralPath $MacroSent) {
+  foreach ($l in [IO.File]::ReadAllLines($MacroSent, $utf8)) { if ($l -match '^[0-9a-f]{64}$') { $MacroSentSet[$l] = 1 } }
+} elseif (Test-Path -LiteralPath $MacroDir) {
+  # first start of this version: files the previous version already sent (Archive cleared) count as sent
+  foreach ($f in Get-ChildItem -LiteralPath $MacroDir -Filter *.vba.txt -File -EA SilentlyContinue) {
+    if (-not ($f.Attributes -band [IO.FileAttributes]::Archive)) { $MacroSentSet[($f.Name -replace '\.vba\.txt$', '')] = 1 }
+  }
+  [IO.File]::WriteAllText($MacroSent, (($MacroSentSet.Keys | ForEach-Object { "$_`r`n" }) -join ""), $utf8)
+}
 foreach ($p in $Yara, $Rules) {
   if (-not (Test-Path $p)) { Write-Host "NOT FOUND: $p" -ForegroundColor Red; exit 1 }
 }
