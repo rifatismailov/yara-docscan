@@ -45,7 +45,7 @@
     <field name="docscan.findings" type="pcre2">REMOTE_TEMPLATE</field>
     <description>DocScan HIGH — Віддалений шаблон: $(docscan.evidence.template_url) | $(docfile.path) | лікування: $(disarm)</description>
     <mitre><id>T1221</id></mitre>
-    <group>docscan_high,</group>
+    <group>docscan_high,docscan_remote_template,</group>
   </rule>
 
   <rule id="101102" level="12">
@@ -53,7 +53,7 @@
     <field name="docscan.findings" type="pcre2">PROTOCOL_HANDLER</field>
     <description>DocScan HIGH — Обробник протоколу / ms-msdt: $(docscan.evidence.template_url) | $(docfile.path) | лікування: $(disarm)</description>
     <mitre><id>T1203</id></mitre>
-    <group>docscan_high,</group>
+    <group>docscan_high,docscan_protocol_handler,</group>
   </rule>
 
   <rule id="101103" level="12">
@@ -61,7 +61,7 @@
     <field name="docscan.findings" type="pcre2">DDE_AUTO|DDE_LINK</field>
     <description>DocScan HIGH — Команда DDE/DDEAUTO: $(docscan.evidence.dde_command) | $(docfile.path) | лікування: $(disarm)</description>
     <mitre><id>T1559.002</id></mitre>
-    <group>docscan_high,</group>
+    <group>docscan_high,docscan_dde,</group>
   </rule>
 
   <rule id="101104" level="12">
@@ -69,7 +69,7 @@
     <field name="docscan.findings" type="pcre2">RTF_OBJUPDATE</field>
     <description>DocScan HIGH — Автооновлення RTF OLE (objupdate) | $(summary) | $(docfile.path)</description>
     <mitre><id>T1203</id></mitre>
-    <group>docscan_high,</group>
+    <group>docscan_high,docscan_rtf,</group>
   </rule>
 
   <rule id="101105" level="12">
@@ -77,7 +77,7 @@
     <field name="docscan.findings" type="pcre2">LNK_LOLBIN|LNK_URL_ARGS|LNK_OBFUSCATED|LNK_REMOTE_EXEC|EMBEDDED_LNK</field>
     <description>DocScan HIGH — Шкідливий ярлик LNK: $(docscan.evidence.lnk_target) $(docscan.evidence.lnk_args) | $(docfile.path) | лікування: $(disarm)</description>
     <mitre><id>T1204.001</id><id>T1059.001</id></mitre>
-    <group>docscan_high,</group>
+    <group>docscan_high,docscan_lnk,</group>
   </rule>
 
   <rule id="101106" level="12">
@@ -85,7 +85,7 @@
     <field name="docscan.findings" type="pcre2">PDF_JS_AUTO|PDF_LAUNCH</field>
     <description>DocScan HIGH — Шкідливий PDF | $(summary) | $(docfile.path)</description>
     <mitre><id>T1204.002</id><id>T1203</id></mitre>
-    <group>docscan_high,</group>
+    <group>docscan_high,docscan_pdf,</group>
   </rule>
 
   <rule id="101107" level="12">
@@ -93,7 +93,7 @@
     <field name="docscan.findings" type="pcre2">EMBEDDED_PE</field>
     <description>DocScan HIGH — Вкладений виконуваний файл PE | $(summary) | $(docfile.path)</description>
     <mitre><id>T1204.002</id></mitre>
-    <group>docscan_high,</group>
+    <group>docscan_high,docscan_embedded_pe,</group>
   </rule>
 
   <rule id="101108" level="12">
@@ -101,13 +101,113 @@
     <field name="docscan.findings" type="pcre2">MACRO_SUSPICIOUS</field>
     <description>DocScan HIGH — Підозрілий VBA/YARA: $(docscan.evidence.vba_evidence) | $(docfile.path) | лікування: $(disarm)</description>
     <mitre><id>T1204.002</id><id>T1059.005</id></mitre>
-    <group>docscan_high,</group>
+    <group>docscan_high,docscan_macro,</group>
+  </rule>
+
+  <!-- ===== HIGH: інші напрямки (нащадки 101091) ===== -->
+  <rule id="101300" level="12">
+    <if_sid>101091</if_sid>
+    <field name="docscan.findings" type="pcre2">EQUATION_EDITOR</field>
+    <description>DocScan HIGH — Equation Editor (CVE-2017-11882/2018-0802): $(summary) | $(docfile.path)</description>
+    <mitre><id>T1203</id></mitre>
+    <group>docscan_high,docscan_equation,</group>
+  </rule>
+
+  <rule id="101301" level="12">
+    <if_sid>101091</if_sid>
+    <field name="docscan.findings" type="pcre2">PACKAGE_EXECUTABLE</field>
+    <description>DocScan HIGH — OLE Package з виконуваним файлом/скриптом: $(summary) | $(docfile.path)</description>
+    <mitre><id>T1204.002</id></mitre>
+    <group>docscan_high,docscan_package,</group>
+  </rule>
+
+  <rule id="101302" level="12">
+    <if_sid>101091</if_sid>
+    <field name="docscan.findings" type="pcre2">ACTIVEX_BROWSER</field>
+    <description>DocScan HIGH — ActiveX-браузер у документі: $(summary) | $(docfile.path)</description>
+    <mitre><id>T1203</id></mitre>
+    <group>docscan_high,docscan_activex,</group>
+  </rule>
+
+  <!-- exe / dll / скрипти / архіви: збіг вендорних YARA-правил -->
+  <rule id="101303" level="12">
+    <if_sid>101091</if_sid>
+    <field name="category">^general$</field>
+    <description>DocScan HIGH — шкідливий файл (exe/dll/скрипт/архів): $(summary) | $(docfile.path) | SHA256 $(docfile.sha256)</description>
+    <mitre><id>T1204.002</id></mitre>
+    <group>docscan_high,docscan_general,</group>
+  </rule>
+
+  <!-- ===== MEDIUM: напрямки (нащадки 101092) ===== -->
+  <rule id="101310" level="7">
+    <if_sid>101092</if_sid>
+    <field name="docscan.findings" type="pcre2">EXTERNAL_OLE|EXTERNAL_FRAME</field>
+    <description>DocScan MEDIUM — документ підтягує зовнішній вміст (OLE/фрейм): $(summary) | $(docfile.path)</description>
+    <mitre><id>T1221</id></mitre>
+    <group>docscan_medium,docscan_external,</group>
+  </rule>
+
+  <rule id="101311" level="7">
+    <if_sid>101092</if_sid>
+    <field name="docscan.findings" type="pcre2">MACRO_AUTOEXEC|MACRO_NETWORK|MACRO_PRESENT</field>
+    <description>DocScan MEDIUM — макроси VBA: $(summary) | $(docfile.path)</description>
+    <mitre><id>T1059.005</id></mitre>
+    <group>docscan_medium,docscan_macro,</group>
+  </rule>
+
+  <rule id="101312" level="7">
+    <if_sid>101092</if_sid>
+    <field name="docscan.findings" type="pcre2">PDF_JS|PDF_EMBEDDED</field>
+    <description>DocScan MEDIUM — PDF з JavaScript / вкладеним файлом: $(summary) | $(docfile.path)</description>
+    <mitre><id>T1204.002</id></mitre>
+    <group>docscan_medium,docscan_pdf,</group>
+  </rule>
+
+  <rule id="101313" level="7">
+    <if_sid>101092</if_sid>
+    <field name="docscan.findings" type="pcre2">LNK_REMOTE_TARGET|LNK_LOLBIN</field>
+    <description>DocScan MEDIUM — ярлик на мережеву теку / системну утиліту: $(summary) | $(docfile.path)</description>
+    <mitre><id>T1204.001</id></mitre>
+    <group>docscan_medium,docscan_lnk,</group>
+  </rule>
+
+  <rule id="101314" level="7">
+    <if_sid>101092</if_sid>
+    <field name="docscan.findings" type="pcre2">ACTIVEX</field>
+    <description>DocScan MEDIUM — ActiveX-елемент у документі: $(summary) | $(docfile.path)</description>
+    <mitre><id>T1203</id></mitre>
+    <group>docscan_medium,docscan_activex,</group>
+  </rule>
+
+  <rule id="101315" level="7">
+    <if_sid>101092</if_sid>
+    <field name="docscan.findings" type="pcre2">ALTCHUNK</field>
+    <description>DocScan MEDIUM — altChunk: docx імпортує інший документ (CVE-2023-36884): $(summary) | $(docfile.path)</description>
+    <mitre><id>T1221</id></mitre>
+    <group>docscan_medium,docscan_altchunk,</group>
+  </rule>
+
+  <rule id="101316" level="7">
+    <if_sid>101092</if_sid>
+    <field name="docscan.findings" type="pcre2">XLM_MACROSHEET</field>
+    <description>DocScan MEDIUM — макроаркуш Excel 4.0 (XLM): $(summary) | $(docfile.path)</description>
+    <mitre><id>T1059</id></mitre>
+    <group>docscan_medium,docscan_xlm,</group>
+  </rule>
+
+  <!-- документ без знахідок політики, але зі збігом вендорної YARA-сигнатури (файл або 2-й прохід) -->
+  <rule id="101317" level="7">
+    <if_sid>101092</if_sid>
+    <field name="yara_file_matches" type="pcre2">\w</field>
+    <description>DocScan MEDIUM — YARA-сигнатура в документі: $(summary) | $(docfile.path)</description>
+    <mitre><id>T1204.002</id></mitre>
+    <group>docscan_medium,docscan_yara,</group>
   </rule>
 
   <!-- лікування виконано після того, як файл звільнили (вотчер повторював, поки документ був відкритий):
        це підтвердження, а не нова загроза — не дублюємо HIGH-тривогу -->
   <rule id="101098" level="3">
-    <if_sid>101091, 101092, 101101, 101102, 101103, 101104, 101105, 101106, 101107, 101108</if_sid>
+    <if_sid>101091, 101101, 101102, 101103, 101104, 101105, 101106, 101107, 101108, 101300, 101301, 101302, 101303, 101092, 101310, 101311, 101312, 101313, 101314, 101315, 101316, 101317</if_sid>
     <field name="event">^DisarmRetry$</field>
     <description>DocScan: лікування виконано після закриття файлу — $(disarm) | $(docfile.path)</description>
     <group>docscan_disarm_retry,</group>
@@ -115,7 +215,7 @@
 
   <!-- файл увесь час відкритий: за 24 год вилікувати не вдалося — потрібна ручна перевірка -->
   <rule id="101099" level="12">
-    <if_sid>101091, 101101, 101102, 101103, 101104, 101105, 101106, 101107, 101108</if_sid>
+    <if_sid>101091, 101101, 101102, 101103, 101104, 101105, 101106, 101107, 101108, 101300, 101301, 101302, 101303</if_sid>
     <field name="event">^DisarmPending$</field>
     <description>DocScan HIGH — файл 24 год відкритий, не вилікувано, потрібна ручна перевірка | $(summary) | $(docfile.path)</description>
     <mitre><id>T1204.002</id></mitre>

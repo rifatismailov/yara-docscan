@@ -1064,6 +1064,22 @@ With centrally managed agents (`agent.conf` in a manager group) the same `<local
    | 101106 | 12 | `PDF_JS_AUTO`, `PDF_LAUNCH` | malicious PDF |
    | 101107 | 12 | `EMBEDDED_PE` | embedded executable |
    | 101108 | 12 | `MACRO_SUSPICIOUS` | VBA macro (T1059.005) |
+   | 101300 | 12 | `EQUATION_EDITOR` | Equation Editor (T1203) |
+   | 101301 | 12 | `PACKAGE_EXECUTABLE` | OLE Package with an exe/script (T1204.002) |
+   | 101302 | 12 | `ACTIVEX_BROWSER` | ActiveX browser (T1203) |
+   | 101303 | 12 | `category = general` | malicious exe/dll/script/archive (vendor YARA) |
+   | 101310 | 7 | `EXTERNAL_OLE`, `EXTERNAL_FRAME` | external content (T1221) |
+   | 101311 | 7 | `MACRO_AUTOEXEC`, `MACRO_NETWORK`, `MACRO_PRESENT` | macros (T1059.005) |
+   | 101312 | 7 | `PDF_JS`, `PDF_EMBEDDED` | PDF with JS / attachment |
+   | 101313 | 7 | `LNK_REMOTE_TARGET`, `LNK_LOLBIN` | shortcut (T1204.001) |
+   | 101314 | 7 | `ACTIVEX` | ActiveX control |
+   | 101315 | 7 | `ALTCHUNK` | altChunk (T1221) |
+   | 101316 | 7 | `XLM_MACROSHEET` | Excel 4.0 macro sheet |
+   | 101317 | 7 | `yara_file_matches` not empty | vendor YARA signature in a document |
+
+   Every rule has a direction group (`docscan_remote_template`, `docscan_dde`, `docscan_lnk`, `docscan_pdf`,
+   `docscan_macro`, `docscan_equation`, `docscan_package`, `docscan_activex`, `docscan_general`,
+   `docscan_external`, `docscan_altchunk`, `docscan_xlm`, `docscan_yara`…) — dashboard filter: `rule.groups`.
 
    101101–101108 are children of 101091, i.e. HIGH only; the description carries the evidence (URL, DDE
    command, LNK target, VBA strings) and the disarm result `$(disarm)`.
