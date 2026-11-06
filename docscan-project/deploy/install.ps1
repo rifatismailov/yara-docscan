@@ -4,9 +4,11 @@
 #   powershell -ExecutionPolicy Bypass -File .\install.ps1
 #   powershell -ExecutionPolicy Bypass -File .\install.ps1 -WatchPath 'C:\Users','D:\Shares'
 #   powershell -ExecutionPolicy Bypass -File .\install.ps1 -DetectOnly       # пілот: лише алерти, файли не змінюються
+#   ... -NoAvExclusion   — не додавати винятки Microsoft Defender (за замовчуванням додаються)
 #
 # Що робить:
 #   1) перевіряє SHA256SUMS.txt пакета;
+#   1b) винятки Microsoft Defender для -InstallDir і -DataDir (-NoAvExclusion — пропустити); ESET — лише попередження;
 #   2) копіює bin\, rules\, watcher\ у -InstallDir (за замовч. C:\Program Files\DocScan);
 #   3) створює -DataDir (C:\ProgramData\DocScan): results\ і quarantine\ — доступ лише SYSTEM + Administrators;
 #   4) самоперевірка: yara64 запускається, правила компілюються, тестовий скан дає JSON;
@@ -27,6 +29,7 @@ param(
   [string]  $DataDir    = "$env:ProgramData\DocScan",
   [string[]]$WatchPath  = @("C:\Users"),
   [switch]  $QuarantineGeneral,   # exe/скрипти/архіви зі збігом vendor-правил -> карантин
+  [switch]  $NoAvExclusion,       # НЕ додавати винятки Defender (якщо їх задає центральна політика)
   [switch]  $DetectOnly,          # лише детект і алерти: файли НЕ лікуються й не переносяться в карантин (пілот)
   [switch]  $NoStart,             # зареєструвати, але не запускати зараз
   [string]  $OssecDir = "${env:ProgramFiles(x86)}\ossec-agent",
@@ -86,6 +89,29 @@ if ($old) {
   Start-Sleep 2
   Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" |
     ? { $_.CommandLine -like "*docscan-watcher.ps1*" } | % { Stop-Process -Id $_.ProcessId -Force -EA SilentlyContinue }
+}
+
+# --- 2b. антивірус: винятки (ДО копіювання — файли правил містять рядки зі шкідливих зразків) ---
+# Defender: Add-MpPreference -ExclusionPath. Ризик винятку малий: $DataDir закрито для всіх, крім SYSTEM і
+# Administrators (крок 4), $InstallDir — звичайні права Program Files. ESET з локального скрипта не
+# налаштовується (налаштування під паролем / ESET PROTECT) — лише попередження.
+if (-not $NoAvExclusion) {
+  Step "антивірус: винятки для $InstallDir і $DataDir"
+  if (Get-Command Add-MpPreference -ErrorAction SilentlyContinue) {
+    try {
+      Add-MpPreference -ExclusionPath $InstallDir, $DataDir -ErrorAction Stop
+      $ex = @((Get-MpPreference -ErrorAction Stop).ExclusionPath)
+      if ($ex -contains $InstallDir -and $ex -contains $DataDir) { Write-Host "  Microsoft Defender: винятки додано" }
+      else { Write-Host "  Microsoft Defender: винятків не видно — ймовірно, ними керує політика (GPO/Intune); додайте там" -ForegroundColor Yellow }
+    } catch {
+      Write-Host "  Microsoft Defender: не вдалося додати винятки ($($_.Exception.Message)) — додайте політикою" -ForegroundColor Yellow
+    }
+  } else {
+    Write-Host "  Microsoft Defender недоступний на цій машині — пропускаю" -ForegroundColor Yellow
+  }
+  if (Get-Service -Name ekrn -ErrorAction SilentlyContinue) {
+    Write-Host "  ESET виявлено: винятки для $InstallDir і $DataDir додайте політикою в ESET PROTECT" -ForegroundColor Yellow
+  }
 }
 
 # --- 3. файли програми ---

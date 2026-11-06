@@ -42,3 +42,11 @@ if ($Purge) {
 } else {
   Write-Host "дані збережено: $DataDir (results, quarantine). Видалити: -Purge"
 }
+
+# винятки Microsoft Defender, додані install.ps1: програми — завжди; даних — лише з -Purge
+# (без -Purge у карантині лишаються оригінали шкідливих документів — Defender не має їх чистити)
+if (Get-Command Remove-MpPreference -ErrorAction SilentlyContinue) {
+  $paths = @($InstallDir) + $(if ($Purge) { @($DataDir) } else { @() })
+  try { Remove-MpPreference -ExclusionPath $paths -ErrorAction Stop; Write-Host ("Defender: винятки прибрано: " + ($paths -join ", ")) }
+  catch { Write-Host "Defender: не вдалося прибрати винятки ($($_.Exception.Message))" -ForegroundColor Yellow }
+}

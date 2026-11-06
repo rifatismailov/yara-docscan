@@ -14,9 +14,11 @@
      powershell -ExecutionPolicy Bypass -File .\install.ps1 -DetectOnly
    Увімкнути лікування після пілоту — запустити install.ps1 ще раз без -DetectOnly.
 
-   Перед масовим розгортанням додайте в антивірус (ESET тощо) винятки:
+   Антивірус. Microsoft Defender: install.ps1 сам додає винятки для
      C:\Program Files\DocScan   і   C:\ProgramData\DocScan
-   інакше він може видаляти бекапи з карантину DocScan (там оригінали шкідливих документів).
+   (якщо Defender керується централізовано — GPO/Intune — додайте їх у політиці; -NoAvExclusion не додає).
+   ESET: з локального скрипта не налаштовується — додайте ті самі винятки політикою в ESET PROTECT.
+   Без винятків антивірус може видаляти бекапи з карантину DocScan (там оригінали шкідливих документів).
 
 Стара реалізація (Wazuh active-response) прибирається автоматично і повністю:
   doc-scan.ps1, doc-scan.cmd, ossec-agent\tmp\docscan, старий YARA (active-response\bin\yara, yara-scan.*).
