@@ -12,6 +12,8 @@
    у пілотній копії $InstallArg = @('-DetectOnly')), DocScan-Install.ps1, DocScan-<версія>.zip,
    DocScan-<версія>.zip.sha256 і DocScan-latest.txt (один рядок — ім'я поточного пакета).
    Нова версія: покласти zip + .sha256 і змінити DocScan-latest.txt; скрипти не міняються.
+   Код макросів кожного документа з VBA зберігається в C:\ProgramData\DocScan\macros\ (90 днів / 500 МБ)
+   і копія надсилається POST-ом на той самий сервер (-NoMacroUpload у DocScan-Install.ps1 — лише локально).
    Вивід усіх скриптів PowerShell — англійською (ASCII: без проблем з кодуванням консолі та irm).
 
 Вручну:

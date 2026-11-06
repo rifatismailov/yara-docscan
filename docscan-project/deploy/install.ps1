@@ -10,7 +10,8 @@
 #   1) verifies the package SHA256SUMS.txt;
 #   1b) Microsoft Defender exclusions for -InstallDir and -DataDir (-NoAvExclusion skips); ESET - warning only;
 #   2) copies bin\, rules\, watcher\ to -InstallDir (default C:\Program Files\DocScan);
-#   3) creates -DataDir (C:\ProgramData\DocScan): results\ and quarantine\ - access for SYSTEM + Administrators only;
+#   3) creates -DataDir (C:\ProgramData\DocScan): results\, quarantine\, macros\ - access for SYSTEM + Administrators only;
+#      macros\ = the VBA code of every document with macros (-MacroUpload: also POSTed to a collector);
 #   4) self-test: yara64 starts, the rules compile, a test scan returns JSON;
 #   5) FULLY removes the old DocScan (Wazuh active-response): doc-scan.ps1, doc-scan.cmd,
 #      <ossec-agent>\tmp\docscan; the old quarantine <ossec-agent>\quarantine is moved to
@@ -32,6 +33,7 @@ param(
   [switch]  $QuarantineGeneral,   # exe/scripts/archives matching vendor rules -> quarantine
   [switch]  $NoAvExclusion,       # do NOT add Defender exclusions (if a central policy sets them)
   [switch]  $DetectOnly,          # detection and alerts only: files are NOT disarmed or quarantined (pilot)
+  [string]  $MacroUpload = "",    # collector URL for the extracted macro code (POST), e.g. http://<server>:8080; empty - local only
   [switch]  $NoStart,             # register, but do not start now
   [string]  $OssecDir = "${env:ProgramFiles(x86)}\ossec-agent",
   [switch]  $KeepLegacy,          # do not remove the old DocScan (active-response)
@@ -254,7 +256,8 @@ $wp = ($WatchPath | % { "'" + ($_ -replace "'", "''") + "'" }) -join ","
 $taskArgs = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command `"& '$InstallDir\watcher\docscan-watcher.ps1'" +
         " -WatchPath $wp -Yara '$yara' -Rules '$rules' -OutDir '$DataDir\results' -BackupDir '$DataDir\quarantine'" +
         ($(if ($QuarantineGeneral) { " -QuarantineGeneral" } else { "" })) +
-        ($(if ($DetectOnly) { " -NoDisarm" } else { "" })) + "`""
+        ($(if ($DetectOnly) { " -NoDisarm" } else { "" })) +
+        ($(if ($MacroUpload) { " -MacroUpload '" + ($MacroUpload -replace "'", "''") + "'" } else { "" })) + "`""
 $action    = New-ScheduledTaskAction -Execute "powershell.exe" -Argument $taskArgs
 $trigger   = New-ScheduledTaskTrigger -AtStartup
 $principal = New-ScheduledTaskPrincipal -UserId "S-1-5-18" -LogonType ServiceAccount -RunLevel Highest
@@ -292,6 +295,7 @@ Write-Host "  program:    $InstallDir"
 Write-Host ("  watching:   $($WatchPath -join ', ')   " + $(if ($DetectOnly) { "(DETECT ONLY: files are not changed)" } else { "(disarm enabled)" }))
 Write-Host "  results:    $DataDir\results\docscan-results.json  (log: watcher.log)"
 Write-Host "  quarantine: $DataDir\quarantine"
+Write-Host ("  macros:     $DataDir\macros  (90 days / 500 MB)" + $(if ($MacroUpload) { "; copy -> $MacroUpload" } else { "" }))
 if ($legacyRemoved.Count) { Write-Host "  old DocScan (Wazuh active-response) fully removed" }
 if ($wazuhDone) { Write-Host "  Wazuh:      the agent reads results\docscan-results.json (json); on the manager - deploy\manager\cleanup_manager.sh" }
 Write-Host "  policy:     $InstallDir\rules\docscan-policy.yar  (after a change: Restart-ScheduledTask '$TaskName')"

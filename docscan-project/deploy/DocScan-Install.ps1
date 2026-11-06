@@ -18,7 +18,8 @@ param(
   [switch]  $DetectOnly,            # -> install.ps1 -DetectOnly
   [switch]  $NoAvExclusion,         # -> install.ps1 -NoAvExclusion
   [switch]  $QuarantineGeneral,     # -> install.ps1 -QuarantineGeneral
-  [string[]]$WatchPath              # -> install.ps1 -WatchPath
+  [string[]]$WatchPath,             # -> install.ps1 -WatchPath
+  [switch]  $NoMacroUpload          # do not send macro code to <BaseUrl> (keep it on the PC only)
 )
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"   # without it Invoke-WebRequest in PS 5.1 is very slow
@@ -77,6 +78,7 @@ try {
   if ($NoAvExclusion)     { $p.NoAvExclusion = $true }
   if ($QuarantineGeneral) { $p.QuarantineGeneral = $true }
   if ($WatchPath)         { $p.WatchPath = $WatchPath }
+  if (-not $NoMacroUpload) { $p.MacroUpload = $BaseUrl }   # macro code copies go to the same server
   Write-Host ("==> install.ps1 " + (($p.Keys | ForEach-Object { "-$_" }) -join " ")) -ForegroundColor Cyan
   $global:LASTEXITCODE = 0
   & $inst @p

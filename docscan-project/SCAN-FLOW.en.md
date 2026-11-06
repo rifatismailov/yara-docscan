@@ -1114,6 +1114,13 @@ Top level: `timestamp`, `source` (= `docscan`), `host`, `event`, `category` (`do
 for every counted vendor match + rules on the macro code + "action: <disarm>" (≤ 600 chars; the glue words are English,
 `findings_text` comes from the policy `meta.text`); the manager rules
 101091/101092 show it in their description (`$(summary)`).
+`macro` — **the saved macro code** (documents with VBA only): `{file, size, uploaded}`. The watcher passes yara64
+`--docscan-extract`; the code (before disarm) goes to `C:\ProgramData\DocScan\macros\<document sha256>.vba.txt`:
+a header (VBA comment lines, UTF-8: host, path, sha256, findings, time), then the code in the project code page
+(usually 1251). One file per document content. Retention: `-MacroKeepDays` 90 / `-MacroMaxMB` 500 (oldest first),
+checked hourly. `-MacroUpload <url>` — a copy is POSTed to a collector (`DocScan-Install.ps1` uses the server it
+installs from; `-NoMacroUpload` turns it off); the Archive attribute means "not sent yet", failed uploads are
+retried hourly. The folder is inside the Defender exclusion (otherwise it would delete malicious macro texts).
 Document analysis: `docscan.{ftype, findings[], findings_text[], verdict, evidence.{template_url, dde_command,
 vba_evidence, lnk_target, lnk_args}, yara_matches[], yara_file_matches[], yara_doc_matches[], yara_info_matches[],
 yara_descriptions[{rule, description}], details[]}`. In the index all of it sits under `data.`.

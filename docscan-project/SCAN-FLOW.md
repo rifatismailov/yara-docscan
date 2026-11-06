@@ -1114,6 +1114,13 @@ watcher → C:\ProgramData\DocScan\results\docscan-results.json (JSON Lines)
 кожного vendor-збігу, що рахується + правила по коду макросу + «action: <лікування>» (≤ 600 символів; службові
 слова англійською, `findings_text` — з `meta.text` політики); його
 показують описи правил менеджера 101091/101092 (`$(summary)`).
+`macro` — **збережений код макросів** (лише документи з VBA): `{file, size, uploaded}`. Watcher передає yara64
+`--docscan-extract`, код (до лікування) лягає в `C:\ProgramData\DocScan\macros\<sha256 документа>.vba.txt`:
+заголовок (рядки-коментарі VBA, UTF-8: ПК, шлях, sha256, знахідки, час), далі код у кодуванні проєкту (зазвичай 1251).
+Один файл на вміст документа. Зберігання: `-MacroKeepDays` 90 / `-MacroMaxMB` 500 (найстаріші видаляються першими),
+перевірка раз на годину. `-MacroUpload <url>` — копія POST-ом на сервер-колектор (через `DocScan-Install.ps1` — той
+самий сервер, звідки встановлення; `-NoMacroUpload` вимикає); атрибут Archive = «ще не надіслано», невдале
+надсилання повторюється щогодини. Тека входить у винятки Defender (інакше він видаляв би тексти шкідливих макросів).
 Розбір документа: `docscan.{ftype, findings[], findings_text[], verdict, evidence.{template_url, dde_command,
 vba_evidence, lnk_target, lnk_args}, yara_matches[], yara_file_matches[], yara_doc_matches[], yara_info_matches[],
 yara_descriptions[{rule, description}], details[]}`. В індексі все це — під `data.`.

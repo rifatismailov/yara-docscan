@@ -37,6 +37,10 @@ param(
   [int]$RescanCooldown = 60,       # the same file again - at most once per N s (Word/OneDrive autosave)
   [int]$DisarmRetryMinutes = 60,   # file open (locked): retry every 30 s for the first N min, then every 5 min (no end)
   [double]$DisarmNoticeHours = 24,   # file open this long - a separate Wazuh record (DisarmPending), retries go on
+  [string]$MacroDir    = "",       # extracted VBA code of documents with macros (default <OutDir>\..\macros)
+  [string]$MacroUpload = "",       # also upload it: POST to this collector URL (e.g. http://<server>:8080)
+  [int]$MacroKeepDays  = 90,       # local retention of the macro store: older files are deleted ...
+  [int]$MacroMaxMB     = 500,      # ... and the oldest go first when the store is bigger than this
   [string[]]$DocExt = @(
     ".doc",".dot",".docx",".docm",".dotx",".dotm",
     ".xls",".xlt",".xlsx",".xlsm",".xltx",".xltm",".xlsb",
@@ -67,6 +71,8 @@ if (-not $Yarac)     { $Yarac     = Join-Path (Split-Path $Yara) "yarac64.exe" }
 if (-not $Rules)     { $Rules     = "$Base\yara\docscan-project\rules\docscan-index.yar" }
 if (-not $OutDir)    { $OutDir    = "$Base\results" }
 if (-not $BackupDir) { $BackupDir = "$Base\quarantine" }
+if (-not $MacroDir)  { $MacroDir  = Join-Path (Split-Path $OutDir) "macros" }
+$MacroUpload = $MacroUpload.TrimEnd('/')
 
 [Console]::OutputEncoding = [Text.Encoding]::UTF8   # yara64 output (paths, evidence) is UTF-8
 $utf8   = New-Object Text.UTF8Encoding($false)
@@ -102,6 +108,7 @@ function Get-Category([string]$path) {
 function Test-Excluded([string]$path) {
   if ($path.StartsWith($OutDir, [StringComparison]::OrdinalIgnoreCase)) { return $true }
   if ($path.StartsWith($BackupDir, [StringComparison]::OrdinalIgnoreCase)) { return $true }
+  if ($path.StartsWith($MacroDir, [StringComparison]::OrdinalIgnoreCase)) { return $true }
   foreach ($p in $ExcludePattern) { if ($path -match $p) { return $true } }
   return $false
 }
@@ -124,9 +131,12 @@ function Wait-FileReady([string]$path) {
 }
 
 # One yara64 run: JSON (policy + vendor) and, for documents, the disarm action.
-function Invoke-Scan([string]$path, [bool]$cure) {
+# For a document the decompressed VBA is written to $MacroTmp (yara writes it only when there are macros,
+# and before any disarm, so the original code is kept).
+function Invoke-Scan([string]$path, [bool]$cure, [bool]$extract) {
   $yargs = @("-w", "--docscan-json")
   if ($cure) { $yargs += @("--docscan-disarm", "--docscan-backup-dir=$BackupDir") }
+  if ($extract) { Remove-Item -LiteralPath $MacroTmp -Force -EA SilentlyContinue; $yargs += "--docscan-extract=$MacroTmp" }
   $out = & $Yara @yargs @RuleArgs $path 2>&1 | ForEach-Object { "$_" }
   $json = $out | Where-Object { $_ -like '{*' } | Select-Object -First 1
   $act  = $out | Where-Object { $_ -like 'docscan-disarm:*' } | Select-Object -First 1
@@ -135,6 +145,62 @@ function Invoke-Scan([string]$path, [bool]$cure) {
   if ($json) { try { $obj = $json | ConvertFrom-Json } catch { $errs += "bad docscan json: $json" } }
   if ($act) { $act = $act -replace '^docscan-disarm: .* -> ', '' }
   return @{ docscan = $obj; disarm = $act; errors = $errs }
+}
+
+# ---- macro store: <MacroDir>\<document sha256>.vba.txt (one file per document content) ----
+# The file starts with a short header (VBA comment lines, UTF-8): host, document path, sha256, findings,
+# time - so a copy on the collector is self-describing. Then the VBA code as yara extracted it (the
+# project's code page, usually 1251). The Archive attribute marks "not uploaded yet": it is cleared
+# after a successful upload, so failed uploads are retried later (Sync-Macros) without a state file.
+function Save-Macro([string]$docSha, $rec, $ds) {
+  if (-not (Test-Path -LiteralPath $MacroTmp)) { return $null }
+  $len = (Get-Item -LiteralPath $MacroTmp).Length
+  $dst = Join-Path $MacroDir "$docSha.vba.txt"
+  if ($len -eq 0 -or (Test-Path -LiteralPath $dst)) {
+    Remove-Item -LiteralPath $MacroTmp -Force -EA SilentlyContinue
+    if ($len -eq 0) { return $null }
+  } else {
+    $hdr = "' DocScan macro`r`n' host: $env:COMPUTERNAME`r`n' file: $($rec.docfile.path)`r`n' sha256: $docSha`r`n" +
+           "' findings: $(@($ds.findings) -join ', ')`r`n' saved: $((Get-Date).ToString('yyyy-MM-ddTHH:mm:sszzz'))`r`n'`r`n"
+    $bytes = [byte[]]($utf8.GetBytes($hdr) + [IO.File]::ReadAllBytes($MacroTmp))
+    [IO.File]::WriteAllBytes($dst, $bytes)   # a new file gets the Archive attribute
+    Remove-Item -LiteralPath $MacroTmp -Force -EA SilentlyContinue
+  }
+  return [ordered]@{ file = $dst; size = $len; uploaded = $false }
+}
+
+# POST the stored file (header + code) to the collector, e.g. http://<server>:8080/
+function Send-Macro([string]$file) {
+  if (-not $MacroUpload) { return $false }
+  $fi = Get-Item -LiteralPath $file -EA SilentlyContinue
+  if (-not $fi) { return $false }
+  if (-not ($fi.Attributes -band [IO.FileAttributes]::Archive)) { return $true }   # already uploaded
+  try {
+    $null = Invoke-WebRequest -UseBasicParsing -Method Post -Uri "$MacroUpload/" -Body ([IO.File]::ReadAllBytes($file)) `
+              -ContentType "application/octet-stream" -TimeoutSec 15 -ErrorAction Stop
+    $fi.Attributes = $fi.Attributes -band (-bnot [IO.FileAttributes]::Archive)
+    return $true
+  } catch {
+    Log "macro upload failed (will retry): $($fi.Name) - $($_.Exception.Message)" "WARN"
+    return $false
+  }
+}
+
+# Retention + upload retry. Runs at start and then once an hour.
+function Sync-Macros {
+  $files = @(Get-ChildItem -LiteralPath $MacroDir -Filter *.vba.txt -File -EA SilentlyContinue | Sort-Object LastWriteTime)
+  $limit = (Get-Date).AddDays(-$MacroKeepDays)
+  $total = ($files | Measure-Object Length -Sum).Sum
+  $kept = @()
+  foreach ($f in $files) {
+    if ($f.LastWriteTime -lt $limit -or $total -gt $MacroMaxMB * 1MB) {
+      $total -= $f.Length; Remove-Item -LiteralPath $f.FullName -Force -EA SilentlyContinue
+    } else { $kept += $f }
+  }
+  if ($MacroUpload) {
+    # one per second at most: the collector names files <ip>_<yyyyMMdd_HHmmss>.txt
+    foreach ($f in $kept) { if ($f.Attributes -band [IO.FileAttributes]::Archive) { if (-not (Send-Macro $f.FullName)) { break }; Start-Sleep -Milliseconds 1100 } }
+  }
 }
 
 # Human-readable description: policy rule texts (meta.text), vendor rule descriptions (meta.description),
@@ -186,6 +252,7 @@ function Scan-File([string]$path, [string]$evt) {
     docscan   = $null
     yara_file_matches = @()
     disarm    = $null
+    macro     = $null  # saved VBA code: @{ file; size; uploaded } (documents with macros)
     summary   = ""     # human-readable: what was found and what was done (for the Wazuh alert description)
     errors    = @()
   }
@@ -200,8 +267,12 @@ function Scan-File([string]$path, [string]$evt) {
       $rec.docfile.sha256 = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLower()
 
       # vendor rules see the bytes BEFORE disarm: yara collects the matches before --docscan-disarm
-      $ds = Invoke-Scan $path ((-not $NoDisarm) -and $cat -eq "document")
+      $ds = Invoke-Scan $path ((-not $NoDisarm) -and $cat -eq "document") ($cat -eq "document")
       $rec.errors += $ds.errors
+      if ($cat -eq "document") {
+        $mc = Save-Macro $rec.docfile.sha256 $rec $ds.docscan
+        if ($mc) { $mc.uploaded = Send-Macro $mc.file; $rec.macro = $mc }
+      }
       if ($ds.docscan) {
         $rec.docscan = $ds.docscan
         $rec.disarm  = $ds.disarm
@@ -267,6 +338,8 @@ function Test-FileLocked([string]$path) {
 # ---------- start ----------
 New-Item -ItemType Directory -Force $OutDir | Out-Null
 New-Item -ItemType Directory -Force $BackupDir | Out-Null
+New-Item -ItemType Directory -Force $MacroDir | Out-Null
+$MacroTmp = Join-Path $MacroDir "extract.tmp"
 foreach ($p in $Yara, $Rules) {
   if (-not (Test-Path $p)) { Write-Host "NOT FOUND: $p" -ForegroundColor Red; exit 1 }
 }
@@ -308,6 +381,9 @@ foreach ($wp in $WatchPath) {
 if (-not $watchers.Count) { Log "no folder to watch" "ERROR"; exit 1 }
 
 Log ("start: watching {0} | disarm={1} | quarantine: {2} | results: {3}" -f ($WatchPath -join ", "), (-not $NoDisarm), $BackupDir, $Result)
+Log ("macros: {0} (keep {1} days / {2} MB) | upload: {3}" -f $MacroDir, $MacroKeepDays, $MacroMaxMB, $(if ($MacroUpload) { $MacroUpload } else { "off" }))
+Sync-Macros
+$nextMacroSync = (Get-Date).AddHours(1)
 
 $pending = @{}   # path -> @{ t = time of the last event; evt = type of the first event }
 $rescanAt = $null   # after a buffer overflow: when to rescan
@@ -428,6 +504,8 @@ try {
         Remove-Retry $path
       }
     }
+
+    if ($now -ge $nextMacroSync) { Sync-Macros; $nextMacroSync = (Get-Date).AddHours(1) }
 
     if ($recent.Count -gt 5000) { $recent.Clear(); $LastScan.Clear(); $LastKey.Clear() }
   }
