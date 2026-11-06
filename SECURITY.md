@@ -1,16 +1,40 @@
 Reporting security issues
 =========================
 
-The YARA authors try their best to keep this software free of security issues,
-but 100% secure software does not exist. We appreciate all kinds of bug reports,
-but those that constitute a security vulnerability are specially welcomed and
-they will be prioritized and publicly acknowledged.
+This repository is a fork of [VirusTotal/yara](https://github.com/VirusTotal/yara) that adds the
+`docscan` module and its tooling (DocScan).
 
- Please do not open a GitHub issue to report a security vulnerability. If you
- believe you have found a security vulnerability, please submit your report to
+**Please do not open a public GitHub issue for a security vulnerability** — everybody would see it
+before it is fixed.
 
- ```
- vmalvarez@virustotal.com
- ```
+Where to report
+---------------
 
-We'll get back to you as soon as possible (usually in 1-2 days).
+| The problem is in… | Report it to |
+|---|---|
+| DocScan: the `docscan` module (`libyara/modules/docscan/`), the DocScan parts of `cli/yara.c` (`--docscan-*`, `--file-vars`), disarm, the watcher, the installer, the rule tooling (`docscan-project/`) | this repository, privately: **Security → Report a vulnerability** ([direct link](https://github.com/rifatismailov/yara-docscan/security/advisories/new)) |
+| YARA itself (the scanning engine, other modules, upstream code) | the YARA maintainers, as described in the [upstream security policy](https://github.com/VirusTotal/yara/security/policy) |
+
+If you are not sure which one it is, report it here; it will be forwarded upstream if needed.
+
+What to include
+---------------
+
+- the commit or package version (`VERSION.txt` in a DocScan package);
+- what happens and what you expected;
+- a way to reproduce it — a minimal input file if possible. Please do not attach live malware;
+  a description or a hash is enough, a safe sample can be arranged privately.
+
+Third-party rules
+-----------------
+
+The vendor YARA rules under `docscan-project/rules/general/` and `rules/maldoc/` come from public
+sources (signature-base, Elastic, Yara-Rules, bartblaze, InQuest, ditekSHen). A false positive or a
+broken rule there is not a vulnerability: open a normal issue, and for problems in a rule itself
+consider reporting it to its source as well.
+
+---
+
+**Українською.** Про вразливості в DocScan (модуль `docscan`, вотчер, інсталятор, інструменти правил)
+повідомляйте приватно: вкладка **Security → Report a vulnerability** цього репозиторію. Не відкривайте
+публічний issue. Вразливості в самій YARA — авторам YARA за їхньою політикою безпеки.
