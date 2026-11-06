@@ -3,6 +3,7 @@
 # Запуск (PowerShell ВІД АДМІНІСТРАТОРА, з розпакованої теки пакета):
 #   powershell -ExecutionPolicy Bypass -File .\install.ps1
 #   powershell -ExecutionPolicy Bypass -File .\install.ps1 -WatchPath 'C:\Users','D:\Shares'
+#   powershell -ExecutionPolicy Bypass -File .\install.ps1 -DetectOnly       # пілот: лише алерти, файли не змінюються
 #
 # Що робить:
 #   1) перевіряє SHA256SUMS.txt пакета;
@@ -26,6 +27,7 @@ param(
   [string]  $DataDir    = "$env:ProgramData\DocScan",
   [string[]]$WatchPath  = @("C:\Users"),
   [switch]  $QuarantineGeneral,   # exe/скрипти/архіви зі збігом vendor-правил -> карантин
+  [switch]  $DetectOnly,          # лише детект і алерти: файли НЕ лікуються й не переносяться в карантин (пілот)
   [switch]  $NoStart,             # зареєструвати, але не запускати зараз
   [string]  $OssecDir = "${env:ProgramFiles(x86)}\ossec-agent",
   [switch]  $KeepLegacy,          # не прибирати старий DocScan (active-response)
@@ -216,7 +218,8 @@ Step "реєстрація завдання '$TaskName' (старт при за�
 $wp = ($WatchPath | % { "'" + ($_ -replace "'", "''") + "'" }) -join ","
 $taskArgs = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command `"& '$InstallDir\watcher\docscan-watcher.ps1'" +
         " -WatchPath $wp -Yara '$yara' -Rules '$rules' -OutDir '$DataDir\results' -BackupDir '$DataDir\quarantine'" +
-        ($(if ($QuarantineGeneral) { " -QuarantineGeneral" } else { "" })) + "`""
+        ($(if ($QuarantineGeneral) { " -QuarantineGeneral" } else { "" })) +
+        ($(if ($DetectOnly) { " -NoDisarm" } else { "" })) + "`""
 $action    = New-ScheduledTaskAction -Execute "powershell.exe" -Argument $taskArgs
 $trigger   = New-ScheduledTaskTrigger -AtStartup
 $principal = New-ScheduledTaskPrincipal -UserId "S-1-5-18" -LogonType ServiceAccount -RunLevel Highest
@@ -239,7 +242,7 @@ if (-not $NoStart) {
 Write-Host ""
 Write-Host "DocScan встановлено." -ForegroundColor Green
 Write-Host "  програма:   $InstallDir"
-Write-Host "  стежить за: $($WatchPath -join ', ')   (лікування увімкнене)"
+Write-Host ("  стежить за: $($WatchPath -join ', ')   " + $(if ($DetectOnly) { "(ЛИШЕ ДЕТЕКТ: файли не змінюються)" } else { "(лікування увімкнене)" }))
 Write-Host "  результати: $DataDir\results\docscan-results.json  (лог: watcher.log)"
 Write-Host "  карантин:   $DataDir\quarantine"
 if ($legacyRemoved.Count) { Write-Host "  старий DocScan (Wazuh active-response) прибрано повністю" }

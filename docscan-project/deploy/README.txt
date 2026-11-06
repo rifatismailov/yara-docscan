@@ -10,6 +10,14 @@
    Інші теки для спостереження:
      powershell -ExecutionPolicy Bypass -File .\install.ps1 -WatchPath 'C:\Users','D:\Shares'
 
+   Пілот (лише детект і алерти, файли користувачів НЕ змінюються й не переносяться в карантин):
+     powershell -ExecutionPolicy Bypass -File .\install.ps1 -DetectOnly
+   Увімкнути лікування після пілоту — запустити install.ps1 ще раз без -DetectOnly.
+
+   Перед масовим розгортанням додайте в антивірус (ESET тощо) винятки:
+     C:\Program Files\DocScan   і   C:\ProgramData\DocScan
+   інакше він може видаляти бекапи з карантину DocScan (там оригінали шкідливих документів).
+
 Стара реалізація (Wazuh active-response) прибирається автоматично і повністю:
   doc-scan.ps1, doc-scan.cmd, ossec-agent\tmp\docscan, старий YARA (active-response\bin\yara, yara-scan.*).
   Старий карантин (ossec-agent\quarantine) переноситься в C:\ProgramData\DocScan\quarantine\legacy.
@@ -26,8 +34,9 @@
                 C:\ProgramData\DocScan\results\watcher.log         (лог для людини)
   - карантин:   C:\ProgramData\DocScan\quarantine   (оригінали вилікуваних/видалених файлів)
   - завдання планувальника "DocScan Watcher": стартує з Windows від SYSTEM, перезапускається при збої.
-  - Лікування увімкнене: документи з HIGH-вектором лікуються за політикою (rules\docscan-policy.yar),
-    LNK/небезпечні PDF/старі .doc,.xls з макросами — у карантин.
+  - Лікування увімкнене (якщо не -DetectOnly): документи з HIGH-вектором лікуються за політикою
+    (rules\docscan-policy.yar), LNK/небезпечні PDF/старі .doc,.xls з макросами — у карантин.
+    Файл, відкритий у Word, лікується, щойно його закриють (повтор, переживає перезавантаження).
 
 Перевірити стан:
   Get-ScheduledTask "DocScan Watcher"
@@ -38,6 +47,9 @@
 
 Оновлення: розпакуйте новий пакет і знову запустіть install.ps1 (попередні правила -> rules.prev\).
 Видалення: powershell -ExecutionPolicy Bypass -File "C:\Program Files\DocScan\uninstall.ps1" [-Purge]
+
+Режим зараз: Get-Content C:\ProgramData\DocScan\results\watcher.log -Encoding UTF8 | Select-String "старт:" | Select -Last 1
+  (disarm=True — лікування, disarm=False — лише детект)
 
 Вимоги: Windows 10/11 x64, PowerShell 5.1 (є в системі), права адміністратора. Інтернет не потрібен.
 Повна документація: docscan-project/SCAN-FLOW.md у репозиторії.
