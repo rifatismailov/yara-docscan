@@ -1,10 +1,18 @@
 ﻿DocScan — встановлення на Windows 10/11 (x64)
 =============================================
 
-Найпростіше — DocScan-Setup.ps1 з HTTP-сервера (сам завантажує пакет, звіряє SHA256, запускає install.ps1):
-     powershell -ExecutionPolicy Bypass -File .\DocScan-Setup.ps1 -BaseUrl http://<сервер>:8080 [-DetectOnly]
-   На сервері поруч мають лежати: DocScan-<версія>.zip, DocScan-<версія>.zip.sha256 і DocScan-latest.txt
-   (один рядок — ім'я поточного пакета). Нова версія: покласти zip + .sha256 і змінити DocScan-latest.txt.
+Найпростіше — з HTTP-сервера одним рядком (PowerShell від адміністратора):
+     irm http://<сервер>:8080/DocScan-Setup.ps1 | iex          # повний режим (детект + лікування)
+     irm http://<сервер>:8080/DocScan-Setup-Pilot.ps1 | iex    # пілот: лише детект і алерти
+   DocScan-Setup.ps1 — маленький ASCII-завантажувач: бере DocScan-Install.ps1 і запускає його в окремому
+   powershell.exe (помилка не закриває вікно). DocScan-Install.ps1 сам завантажує пакет, звіряє SHA256,
+   запускає install.ps1. Напряму:
+     powershell -ExecutionPolicy Bypass -File .\DocScan-Install.ps1 -BaseUrl http://<сервер>:8080 [-DetectOnly]
+   На сервері поруч мають лежати: DocScan-Setup.ps1 і DocScan-Setup-Pilot.ps1 (з адресою сервера в $BaseUrl;
+   у пілотній копії $InstallArg = @('-DetectOnly')), DocScan-Install.ps1, DocScan-<версія>.zip,
+   DocScan-<версія>.zip.sha256 і DocScan-latest.txt (один рядок — ім'я поточного пакета).
+   Нова версія: покласти zip + .sha256 і змінити DocScan-latest.txt; скрипти не міняються.
+   Вивід усіх скриптів PowerShell — англійською (ASCII: без проблем з кодуванням консолі та irm).
 
 Вручну:
 1. Розпакуйте DocScan-<версія>.zip у будь-яку теку (напр. C:\Temp\DocScan).

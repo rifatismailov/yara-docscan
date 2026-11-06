@@ -1,41 +1,41 @@
-﻿# DocScan — встановлення / оновлення на Windows.
+﻿# DocScan - install / update on Windows.
 #
-# Запуск (PowerShell ВІД АДМІНІСТРАТОРА, з розпакованої теки пакета):
+# Run (PowerShell AS ADMINISTRATOR, from the unpacked package folder):
 #   powershell -ExecutionPolicy Bypass -File .\install.ps1
 #   powershell -ExecutionPolicy Bypass -File .\install.ps1 -WatchPath 'C:\Users','D:\Shares'
-#   powershell -ExecutionPolicy Bypass -File .\install.ps1 -DetectOnly       # пілот: лише алерти, файли не змінюються
-#   ... -NoAvExclusion   — не додавати винятки Microsoft Defender (за замовчуванням додаються)
+#   powershell -ExecutionPolicy Bypass -File .\install.ps1 -DetectOnly       # pilot: alerts only, files are not changed
+#   ... -NoAvExclusion   - do not add Microsoft Defender exclusions (added by default)
 #
-# Що робить:
-#   1) перевіряє SHA256SUMS.txt пакета;
-#   1b) винятки Microsoft Defender для -InstallDir і -DataDir (-NoAvExclusion — пропустити); ESET — лише попередження;
-#   2) копіює bin\, rules\, watcher\ у -InstallDir (за замовч. C:\Program Files\DocScan);
-#   3) створює -DataDir (C:\ProgramData\DocScan): results\ і quarantine\ — доступ лише SYSTEM + Administrators;
-#   4) самоперевірка: yara64 запускається, правила компілюються, тестовий скан дає JSON;
-#   5) ПОВНІСТЮ прибирає старий DocScan (Wazuh active-response): doc-scan.ps1, doc-scan.cmd,
-#      <ossec-agent>\tmp\docscan; старий карантин <ossec-agent>\quarantine переноситься в
-#      <DataDir>\quarantine\legacy\ (докази не губляться); і старий YARA для active-response
-#      (active-response\bin\yara, yara-scan.*) — його замінює yara64 DocScan. На менеджері Wazuh
-#      приберіть <command>/<active-response> для doc-scan і yara-scan;
-#   6) агент Wazuh: ossec.conf (бекап) — прибирає <command>/<active-response> doc-scan/yara-scan,
-#      додає <localfile> (json) на results\docscan-results.json; перезапускає WazuhSvc, при помилці
-#      конфігурації повертає старий ossec.conf;
-#   7) реєструє завдання планувальника "DocScan Watcher": при старті Windows, від SYSTEM,
-#      перезапуск при збої; і запускає його.
-# Повторний запуск = оновлення (попередні правила зберігаються в rules.prev\).
+# What it does:
+#   1) verifies the package SHA256SUMS.txt;
+#   1b) Microsoft Defender exclusions for -InstallDir and -DataDir (-NoAvExclusion skips); ESET - warning only;
+#   2) copies bin\, rules\, watcher\ to -InstallDir (default C:\Program Files\DocScan);
+#   3) creates -DataDir (C:\ProgramData\DocScan): results\ and quarantine\ - access for SYSTEM + Administrators only;
+#   4) self-test: yara64 starts, the rules compile, a test scan returns JSON;
+#   5) FULLY removes the old DocScan (Wazuh active-response): doc-scan.ps1, doc-scan.cmd,
+#      <ossec-agent>\tmp\docscan; the old quarantine <ossec-agent>\quarantine is moved to
+#      <DataDir>\quarantine\legacy\ (evidence is kept); and the old YARA for active-response
+#      (active-response\bin\yara, yara-scan.*) - DocScan's yara64 replaces it. On the Wazuh manager
+#      remove <command>/<active-response> for doc-scan and yara-scan;
+#   6) Wazuh agent: ossec.conf (backup) - removes <command>/<active-response> doc-scan/yara-scan,
+#      adds <localfile> (json) for results\docscan-results.json; restarts WazuhSvc, restores the old
+#      ossec.conf on a configuration error;
+#   7) registers the scheduled task "DocScan Watcher": at Windows startup, as SYSTEM,
+#      restart on failure; and starts it.
+# Running it again = update (the previous rules are kept in rules.prev\).
 
 param(
   [string]  $InstallDir = "$env:ProgramFiles\DocScan",
   [string]  $DataDir    = "$env:ProgramData\DocScan",
   [string[]]$WatchPath  = @("C:\Users"),
-  [switch]  $QuarantineGeneral,   # exe/скрипти/архіви зі збігом vendor-правил -> карантин
-  [switch]  $NoAvExclusion,       # НЕ додавати винятки Defender (якщо їх задає центральна політика)
-  [switch]  $DetectOnly,          # лише детект і алерти: файли НЕ лікуються й не переносяться в карантин (пілот)
-  [switch]  $NoStart,             # зареєструвати, але не запускати зараз
+  [switch]  $QuarantineGeneral,   # exe/scripts/archives matching vendor rules -> quarantine
+  [switch]  $NoAvExclusion,       # do NOT add Defender exclusions (if a central policy sets them)
+  [switch]  $DetectOnly,          # detection and alerts only: files are NOT disarmed or quarantined (pilot)
+  [switch]  $NoStart,             # register, but do not start now
   [string]  $OssecDir = "${env:ProgramFiles(x86)}\ossec-agent",
-  [switch]  $KeepLegacy,          # не прибирати старий DocScan (active-response)
-  [switch]  $KeepLegacyYara,      # НЕ видаляти старий YARA active-response (yara-scan + yara\)
-  [switch]  $NoWazuhConfig        # не чіпати ossec.conf агента і не перезапускати WazuhSvc
+  [switch]  $KeepLegacy,          # do not remove the old DocScan (active-response)
+  [switch]  $KeepLegacyYara,      # do NOT remove the old active-response YARA (yara-scan + yara\)
+  [switch]  $NoWazuhConfig        # do not touch the agent's ossec.conf and do not restart WazuhSvc
 )
 
 $ErrorActionPreference = "Stop"
@@ -43,17 +43,17 @@ $TaskName = "DocScan Watcher"
 $Pkg = $PSScriptRoot
 
 function Step($m) { Write-Host "==> $m" -ForegroundColor Cyan }
-function Fail($m) { Write-Host "ПОМИЛКА: $m" -ForegroundColor Red; exit 1 }
+function Fail($m) { Write-Host "ERROR: $m" -ForegroundColor Red; exit 1 }
 
-# ---- ossec.conf агента (текстові правки: файл має кілька <ossec_config>, це не один XML) ----
+# ---- agent ossec.conf (text edits: the file has several <ossec_config> blocks, it is not one XML document) ----
 $DsBegin = "<!-- DocScan: managed by DocScan install.ps1 -->"
 $DsEnd   = "<!-- /DocScan -->"
 function Remove-DocScanBlock([string]$c) {
   return [regex]::Replace($c, "(?s)[ \t]*" + [regex]::Escape($DsBegin) + ".*?" + [regex]::Escape($DsEnd) + "\r?\n?", "")
 }
 function Remove-LegacyArBlocks([string]$c) {
-  # лише блоки старого DocScan/YARA; загальний <active-response><disabled>..</active-response> лишається
-  # спершу <active-response> (усередині є вкладений <command>ім'я</command>), потім визначення <command> з <name>
+  # only the old DocScan/YARA blocks; a generic <active-response><disabled>..</active-response> stays
+  # <active-response> first (it contains a nested <command>name</command>), then the <command> definitions with <name>
   $c = [regex]::Replace($c, "(?s)[ \t]*<active-response>(?:(?!</active-response>).)*?(doc-scan|yara-scan)(?:(?!</active-response>).)*?</active-response>\r?\n?", "")
   $c = [regex]::Replace($c, "(?s)[ \t]*<command>(?:(?!</command>).)*?<name>\s*(doc-scan|yara-scan)\s*</name>(?:(?!</command>).)*?</command>\r?\n?", "")
   return $c
@@ -62,60 +62,60 @@ function Read-Text([string]$p) { return [IO.File]::ReadAllText($p, (New-Object T
 function Write-Text([string]$p, [string]$t) { [IO.File]::WriteAllText($p, $t, (New-Object Text.UTF8Encoding($false))) }
 
 
-# --- 0. права адміністратора ---
+# --- 0. administrator rights ---
 $admin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
   [Security.Principal.WindowsBuiltInRole]::Administrator)
-if (-not $admin) { Fail "запустіть PowerShell від імені адміністратора" }
+if (-not $admin) { Fail "run PowerShell as Administrator" }
 
-# --- 1. цілісність пакета ---
-Step "перевірка цілісності пакета"
+# --- 1. package integrity ---
+Step "checking package integrity"
 $sums = Join-Path $Pkg "SHA256SUMS.txt"
-if (-not (Test-Path $sums)) { Fail "немає SHA256SUMS.txt — пакет неповний" }
+if (-not (Test-Path $sums)) { Fail "SHA256SUMS.txt is missing - the package is incomplete" }
 $bad = @()
 foreach ($l in Get-Content $sums) {
   if ($l -notmatch '^([0-9a-f]{64})\s+(.+)$') { continue }
   $f = Join-Path $Pkg $Matches[2]
-  if (-not (Test-Path -LiteralPath $f)) { $bad += "немає: $($Matches[2])"; continue }
-  if ((Get-FileHash -LiteralPath $f -Algorithm SHA256).Hash.ToLower() -ne $Matches[1]) { $bad += "змінено: $($Matches[2])" }
+  if (-not (Test-Path -LiteralPath $f)) { $bad += "missing: $($Matches[2])"; continue }
+  if ((Get-FileHash -LiteralPath $f -Algorithm SHA256).Hash.ToLower() -ne $Matches[1]) { $bad += "modified: $($Matches[2])" }
 }
-if ($bad.Count) { $bad | % { Write-Host "  $_" -ForegroundColor Red }; Fail "пакет пошкоджений або змінений" }
-Write-Host "  ok ($((Get-Content $sums).Count) файлів)"
+if ($bad.Count) { $bad | % { Write-Host "  $_" -ForegroundColor Red }; Fail "the package is damaged or modified" }
+Write-Host "  ok ($((Get-Content $sums).Count) files)"
 
-# --- 2. зупинити попередню версію ---
+# --- 2. stop the previous version ---
 $old = Get-ScheduledTask -TaskName $TaskName -EA SilentlyContinue
 if ($old) {
-  Step "зупинка попередньої версії"
+  Step "stopping the previous version"
   Stop-ScheduledTask -TaskName $TaskName -EA SilentlyContinue
   Start-Sleep 2
   Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" |
     ? { $_.CommandLine -like "*docscan-watcher.ps1*" } | % { Stop-Process -Id $_.ProcessId -Force -EA SilentlyContinue }
 }
 
-# --- 2b. антивірус: винятки (ДО копіювання — файли правил містять рядки зі шкідливих зразків) ---
-# Defender: Add-MpPreference -ExclusionPath. Ризик винятку малий: $DataDir закрито для всіх, крім SYSTEM і
-# Administrators (крок 4), $InstallDir — звичайні права Program Files. ESET з локального скрипта не
-# налаштовується (налаштування під паролем / ESET PROTECT) — лише попередження.
+# --- 2b. antivirus exclusions (BEFORE copying - the rule files contain strings from malicious samples) ---
+# Defender: Add-MpPreference -ExclusionPath. The risk is small: $DataDir is closed to everyone except SYSTEM and
+# Administrators (step 4), $InstallDir has the normal Program Files permissions. ESET cannot be configured from a
+# local script (settings are password-protected / ESET PROTECT) - warning only.
 if (-not $NoAvExclusion) {
-  Step "антивірус: винятки для $InstallDir і $DataDir"
+  Step "antivirus: exclusions for $InstallDir and $DataDir"
   if (Get-Command Add-MpPreference -ErrorAction SilentlyContinue) {
     try {
       Add-MpPreference -ExclusionPath $InstallDir, $DataDir -ErrorAction Stop
       $ex = @((Get-MpPreference -ErrorAction Stop).ExclusionPath)
-      if ($ex -contains $InstallDir -and $ex -contains $DataDir) { Write-Host "  Microsoft Defender: винятки додано" }
-      else { Write-Host "  Microsoft Defender: винятків не видно — ймовірно, ними керує політика (GPO/Intune); додайте там" -ForegroundColor Yellow }
+      if ($ex -contains $InstallDir -and $ex -contains $DataDir) { Write-Host "  Microsoft Defender: exclusions added" }
+      else { Write-Host "  Microsoft Defender: exclusions not visible - probably managed by a policy (GPO/Intune); add them there" -ForegroundColor Yellow }
     } catch {
-      Write-Host "  Microsoft Defender: не вдалося додати винятки ($($_.Exception.Message)) — додайте політикою" -ForegroundColor Yellow
+      Write-Host "  Microsoft Defender: could not add exclusions ($($_.Exception.Message)) - add them by policy" -ForegroundColor Yellow
     }
   } else {
-    Write-Host "  Microsoft Defender недоступний на цій машині — пропускаю" -ForegroundColor Yellow
+    Write-Host "  Microsoft Defender is not available on this machine - skipped" -ForegroundColor Yellow
   }
   if (Get-Service -Name ekrn -ErrorAction SilentlyContinue) {
-    Write-Host "  ESET виявлено: винятки для $InstallDir і $DataDir додайте політикою в ESET PROTECT" -ForegroundColor Yellow
+    Write-Host "  ESET detected: add exclusions for $InstallDir and $DataDir with an ESET PROTECT policy" -ForegroundColor Yellow
   }
 }
 
-# --- 3. файли програми ---
-Step "копіювання в $InstallDir"
+# --- 3. program files ---
+Step "copying to $InstallDir"
 New-Item -ItemType Directory -Force $InstallDir | Out-Null
 if (Test-Path "$InstallDir\rules") {
   Remove-Item "$InstallDir\rules.prev" -Recurse -Force -EA SilentlyContinue
@@ -128,30 +128,30 @@ foreach ($d in "bin", "rules", "watcher") {
 Copy-Item (Join-Path $Pkg "uninstall.ps1") $InstallDir -Force
 Copy-Item (Join-Path $Pkg "VERSION.txt") $InstallDir -Force -EA SilentlyContinue
 
-# --- 4. дані: результати й карантин (лише SYSTEM + Administrators) ---
-Step "теки даних у $DataDir"
+# --- 4. data: results and quarantine (SYSTEM + Administrators only) ---
+Step "data folders in $DataDir"
 foreach ($d in $DataDir, "$DataDir\results", "$DataDir\quarantine") { New-Item -ItemType Directory -Force $d | Out-Null }
 $acl = New-Object Security.AccessControl.DirectorySecurity
-$acl.SetAccessRuleProtection($true, $false)   # без успадкування від ProgramData (там є Users:Read)
+$acl.SetAccessRuleProtection($true, $false)   # no inheritance from ProgramData (it has Users:Read)
 foreach ($sid in "S-1-5-18", "S-1-5-32-544") {  # SYSTEM, Administrators
   $id = (New-Object Security.Principal.SecurityIdentifier $sid).Translate([Security.Principal.NTAccount])
   $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($id, "FullControl",
     "ContainerInherit,ObjectInherit", "None", "Allow")))
 }
-Set-Acl -Path $DataDir -AclObject $acl   # results\ і quarantine\ успадковують ці права
+Set-Acl -Path $DataDir -AclObject $acl   # results\ and quarantine\ inherit these permissions
 
-# --- 4b. старий DocScan (Wazuh active-response) -> повне видалення ---
+# --- 4b. old DocScan (Wazuh active-response) -> full removal ---
 $legacyRemoved = @()
 if ((Test-Path $OssecDir) -and -not $KeepLegacy) {
   $arBin = Join-Path $OssecDir "active-response\bin"
-  Step "прибираю старий DocScan (Wazuh active-response) з $OssecDir"
+  Step "removing the old DocScan (Wazuh active-response) from $OssecDir"
   foreach ($n in "doc-scan.ps1", "doc-scan.cmd") {
     $f = Join-Path $arBin $n
     if (Test-Path -LiteralPath $f) { Remove-Item -LiteralPath $f -Force; $legacyRemoved += $f }
   }
   $work = Join-Path $OssecDir "tmp\docscan"
   if (Test-Path -LiteralPath $work) { Remove-Item -LiteralPath $work -Recurse -Force; $legacyRemoved += $work }
-  # старий карантин: оригінали заражених файлів — переносимо, не стираємо
+  # old quarantine: originals of infected files - move them, do not delete
   $oldQ = Join-Path $OssecDir "quarantine"
   if (Test-Path -LiteralPath $oldQ) {
     $items = @(Get-ChildItem -LiteralPath $oldQ -Force)
@@ -159,7 +159,7 @@ if ((Test-Path $OssecDir) -and -not $KeepLegacy) {
       $dst = "$DataDir\quarantine\legacy"
       New-Item -ItemType Directory -Force $dst | Out-Null
       foreach ($i in $items) { Move-Item -LiteralPath $i.FullName (Join-Path $dst $i.Name) -Force }
-      Write-Host ("  старий карантин ({0} об'єктів) -> {1}" -f $items.Count, $dst)
+      Write-Host ("  old quarantine ({0} items) -> {1}" -f $items.Count, $dst)
     }
     Remove-Item -LiteralPath $oldQ -Recurse -Force -EA SilentlyContinue
     $legacyRemoved += $oldQ
@@ -171,32 +171,32 @@ if ((Test-Path $OssecDir) -and -not $KeepLegacy) {
     }
   }
   if ($legacyRemoved.Count) {
-    $legacyRemoved | % { Write-Host "  видалено: $_" }
-    Write-Host "  На менеджері Wazuh приберіть <command>/<active-response> для doc-scan і yara-scan." -ForegroundColor Yellow
+    $legacyRemoved | % { Write-Host "  removed: $_" }
+    Write-Host "  On the Wazuh manager remove <command>/<active-response> for doc-scan and yara-scan." -ForegroundColor Yellow
   } else {
-    Write-Host "  (слідів старого DocScan немає)"
+    Write-Host "  (no traces of the old DocScan)"
   }
 }
 
-# --- 4c. агент Wazuh: ossec.conf + перезапуск ---
+# --- 4c. Wazuh agent: ossec.conf + restart ---
 $wazuhDone = $false
 $ossecConf = Join-Path $OssecDir "ossec.conf"
 if ((Test-Path $ossecConf) -and -not $NoWazuhConfig) {
-  Step "агент Wazuh: $ossecConf"
+  Step "Wazuh agent: $ossecConf"
   New-Item -ItemType Directory -Force "$DataDir\legacy" | Out-Null
   $bak = "$DataDir\legacy\ossec.conf.{0}.bak" -f (Get-Date -Format "yyyyMMdd-HHmmss")
   Copy-Item -LiteralPath $ossecConf $bak
   $orig = Read-Text $ossecConf
   $new = Remove-LegacyArBlocks (Remove-DocScanBlock $orig)
   $results = "$DataDir\results\docscan-results.json"
-  # створити заздалегідь: інакше після рестарту агент пише ERROR (1103) "could not open file"
+  # create it beforehand: otherwise the agent logs ERROR (1103) "could not open file" after the restart
   if (-not (Test-Path -LiteralPath $results)) { [IO.File]::WriteAllText($results, "") }
   $block = "  $DsBegin`r`n  <localfile>`r`n    <log_format>json</log_format>`r`n    <location>$results</location>`r`n  </localfile>`r`n  $DsEnd`r`n"
   $i = $new.LastIndexOf("</ossec_config>")
-  if ($i -lt 0) { Fail "ossec.conf без </ossec_config> — не чіпаю (бекап: $bak)" }
+  if ($i -lt 0) { Fail "ossec.conf has no </ossec_config> - not touching it (backup: $bak)" }
   $new = $new.Substring(0, $i) + $block + $new.Substring($i)
   Write-Text $ossecConf $new
-  Write-Host "  бекап: $bak"
+  Write-Host "  backup: $bak"
   Write-Host "  <localfile> json -> $results"
 
   $svc = Get-Service WazuhSvc -EA SilentlyContinue
@@ -212,35 +212,35 @@ if ((Test-Path $ossecConf) -and -not $NoWazuhConfig) {
       $errs = @($tail -split "`n" | ? { $_ -match "(ERROR|CRITICAL).*(config|xml|localfile|ossec\.conf)" })
     }
     if ((Get-Service WazuhSvc).Status -ne "Running" -or $errs.Count) {
-      Write-Host "  агент не прийняв конфігурацію — повертаю старий ossec.conf" -ForegroundColor Yellow
+      Write-Host "  the agent rejected the configuration - restoring the old ossec.conf" -ForegroundColor Yellow
       $errs | % { Write-Host "    $_" }
       Copy-Item -LiteralPath $bak $ossecConf -Force
       Restart-Service WazuhSvc -Force
-      Fail "ossec.conf відкочено (агент працює на старій конфігурації)"
+      Fail "ossec.conf rolled back (the agent runs on the old configuration)"
     }
-    Write-Host "  WazuhSvc перезапущено, конфігурацію прийнято"
+    Write-Host "  WazuhSvc restarted, configuration accepted"
   } else {
-    Write-Host "  (службу WazuhSvc не знайдено — перезапустіть агент вручну)"
+    Write-Host "  (WazuhSvc service not found - restart the agent manually)"
   }
   $wazuhDone = $true
 }
 
-# --- 5. самоперевірка ---
-Step "самоперевірка"
+# --- 5. self-test ---
+Step "self-test"
 $yara  = "$InstallDir\bin\yara64.exe"
 $rules = "$InstallDir\rules\docscan-index.yar"
 $ver = & $yara --version 2>&1
-if ($LASTEXITCODE -ne 0) { Fail "yara64.exe не запускається: $ver (бракує vcruntime140.dll?)" }
+if ($LASTEXITCODE -ne 0) { Fail "yara64.exe does not start: $ver (vcruntime140.dll missing?)" }
 $probe = Join-Path $env:TEMP "docscan-probe.txt"; "probe" | Set-Content $probe
 $out = & $yara -w --docscan-json $rules $probe 2>&1 | % { "$_" }
 Remove-Item $probe -EA SilentlyContinue
 $json = $out | ? { $_ -like '{*' } | Select -First 1
-if (-not $json) { Fail "правила не компілюються або немає JSON:`n$($out -join "`n")" }
+if (-not $json) { Fail "the rules do not compile or there is no JSON:`n$($out -join "`n")" }
 $j = $json | ConvertFrom-Json
-Write-Host "  yara64 $ver; правила компілюються; тестовий скан: verdict=$($j.verdict)"
+Write-Host "  yara64 $ver; rules compile; test scan: verdict=$($j.verdict)"
 
-# --- 6. завдання планувальника ---
-Step "реєстрація завдання '$TaskName' (старт при завантаженні Windows, SYSTEM)"
+# --- 6. scheduled task ---
+Step "registering task '$TaskName' (starts at Windows boot, SYSTEM)"
 $wp = ($WatchPath | % { "'" + ($_ -replace "'", "''") + "'" }) -join ","
 $taskArgs = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command `"& '$InstallDir\watcher\docscan-watcher.ps1'" +
         " -WatchPath $wp -Yara '$yara' -Rules '$rules' -OutDir '$DataDir\results' -BackupDir '$DataDir\quarantine'" +
@@ -253,7 +253,7 @@ $settings  = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero)
                -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -MultipleInstances IgnoreNew `
                -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1)
 Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Principal $principal `
-  -Settings $settings -Description "DocScan: авто-скан і лікування нових документів (yara64 + docscan)" -Force | Out-Null
+  -Settings $settings -Description "DocScan: auto-scan and disarm of new documents (yara64 + docscan)" -Force | Out-Null
 
 if (-not $NoStart) {
   Start-ScheduledTask -TaskName $TaskName
@@ -261,17 +261,17 @@ if (-not $NoStart) {
   $state = (Get-ScheduledTask -TaskName $TaskName).State
   $log = "$DataDir\results\watcher.log"
   $started = (Test-Path $log) -and (Select-String -Path $log -Pattern "disarm=True" -Quiet -Encoding UTF8)
-  if ($state -ne "Running" -or -not $started) { Fail "watcher не стартував (стан: $state). Див. $log" }
-  Write-Host "  watcher працює"
+  if ($state -ne "Running" -or -not $started) { Fail "the watcher did not start (state: $state). See $log" }
+  Write-Host "  watcher is running"
 }
 
 Write-Host ""
-Write-Host "DocScan встановлено." -ForegroundColor Green
-Write-Host "  програма:   $InstallDir"
-Write-Host ("  стежить за: $($WatchPath -join ', ')   " + $(if ($DetectOnly) { "(ЛИШЕ ДЕТЕКТ: файли не змінюються)" } else { "(лікування увімкнене)" }))
-Write-Host "  результати: $DataDir\results\docscan-results.json  (лог: watcher.log)"
-Write-Host "  карантин:   $DataDir\quarantine"
-if ($legacyRemoved.Count) { Write-Host "  старий DocScan (Wazuh active-response) прибрано повністю" }
-if ($wazuhDone) { Write-Host "  Wazuh:      агент читає results\docscan-results.json (json); на менеджері — deploy\manager\cleanup_manager.sh" }
-Write-Host "  політика:   $InstallDir\rules\docscan-policy.yar  (після зміни: Restart-ScheduledTask '$TaskName')"
-Write-Host "  видалення:  powershell -ExecutionPolicy Bypass -File '$InstallDir\uninstall.ps1'"
+Write-Host "DocScan installed." -ForegroundColor Green
+Write-Host "  program:    $InstallDir"
+Write-Host ("  watching:   $($WatchPath -join ', ')   " + $(if ($DetectOnly) { "(DETECT ONLY: files are not changed)" } else { "(disarm enabled)" }))
+Write-Host "  results:    $DataDir\results\docscan-results.json  (log: watcher.log)"
+Write-Host "  quarantine: $DataDir\quarantine"
+if ($legacyRemoved.Count) { Write-Host "  old DocScan (Wazuh active-response) fully removed" }
+if ($wazuhDone) { Write-Host "  Wazuh:      the agent reads results\docscan-results.json (json); on the manager - deploy\manager\cleanup_manager.sh" }
+Write-Host "  policy:     $InstallDir\rules\docscan-policy.yar  (after a change: Restart-ScheduledTask '$TaskName')"
+Write-Host "  uninstall:  powershell -ExecutionPolicy Bypass -File '$InstallDir\uninstall.ps1'"

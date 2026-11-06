@@ -1,59 +1,59 @@
-﻿# DocScan watcher — стежить за новими файлами (FileSystemWatcher) і сканує їх yara64.exe.
+﻿# DocScan watcher - watches for new files (FileSystemWatcher) and scans them with yara64.exe.
 #
-# Один запуск на файл:  yara64 -w --docscan-json [--docscan-disarm] -C rules.yarc <file>
-#   (rules.yarc компілюється з docscan-index.yar один раз на старті)
-#   docscan-index.yar = docscan-policy.yar (що вважати HIGH/MEDIUM, що лікувати)
-#                     + file-index.yar     (vendor-правила: по файлу і по розпакованому VBA)
+# One run per file:  yara64 -w --docscan-json [--docscan-disarm] -C rules.yarc <file>
+#   (rules.yarc is compiled from docscan-index.yar once at start)
+#   docscan-index.yar = docscan-policy.yar (what counts as HIGH/MEDIUM, what to disarm)
+#                     + file-index.yar     (vendor rules: on the file and on the extracted VBA)
 #
-# Категорії файлів:
-#   document — Office (і надбудови) / RTF / PDF / LNK / OneNote / IQY / SLK: модуль + політика
-#              + vendor, зокрема документні правила (yara_doc_matches); ЛІКУВАННЯ ЗА ПОЛІТИКОЮ (за замовч.)
-#   general  — exe/dll/xll/скрипти/hta/msc/url/HTML/SVG/архіви/образи: vendor-правила; документні
-#              правила тут лише індикатори (шаблони шелкоду — звичайний код у будь-якому бінарнику)
+# File categories:
+#   document - Office (and add-ins) / RTF / PDF / LNK / OneNote / IQY / SLK: module + policy
+#              + vendor, including the document rules (yara_doc_matches); DISARM BY POLICY (default)
+#   general  - exe/dll/xll/scripts/hta/msc/url/HTML/SVG/archives/images: vendor rules; the document
+#              rules are only indicators here (shellcode patterns are ordinary code in any binary)
 #
-# Результат: один JSON на рядок у $OutDir\docscan-results.json (у майбутньому забиратиме Wazuh:
-# <localfile><log_format>json</log_format>). Діагностика роботи — $OutDir\watcher.log.
+# Output: one JSON per line in $OutDir\docscan-results.json (read by the Wazuh agent:
+# <localfile><log_format>json</log_format>). Operational log - $OutDir\watcher.log.
 #
-# Запуск (PowerShell від адміністратора, щоб бачити файли всіх користувачів):
+# Run (PowerShell as Administrator, to see the files of all users):
 #   powershell -ExecutionPolicy Bypass -File docscan-watcher.ps1
-#   powershell -ExecutionPolicy Bypass -File docscan-watcher.ps1 -WatchPath C:\docscan-build\inbox -NoDisarm   (тільки детект)
-# Зупинка: Ctrl+C.
+#   powershell -ExecutionPolicy Bypass -File docscan-watcher.ps1 -WatchPath C:\docscan-build\inbox -NoDisarm   (detect only)
+# Stop: Ctrl+C.
 
 param(
   [string[]]$WatchPath = @("C:\Users"),
   [string]$Base        = "C:\docscan-build",
   [string]$Yara        = "",
-  [string]$Yarac       = "",       # за замовч. yarac64.exe поруч із yara64.exe; ним правила компілюються раз на старті
-  [string]$Rules       = "",       # за замовчуванням <Base>\yara\docscan-project\rules\docscan-index.yar
+  [string]$Yarac       = "",       # default: yarac64.exe next to yara64.exe; compiles the rules once at start
+  [string]$Rules       = "",       # default <Base>\yara\docscan-project\rules\docscan-index.yar
   [string]$OutDir      = "",
-  [switch]$NoDisarm,               # НЕ лікувати (діагностика). За замовчуванням документи лікуються за meta.disarm
-  [string]$BackupDir   = "",       # бекапи й карантин (за замовч. <Base>\quarantine); watcher її не сканує
-  [switch]$QuarantineGeneral,      # general-файли (exe/скрипти/архіви) зі збігом vendor-правил -> у карантин
-  [int]$MaxLogMB       = 50,       # ротація docscan-results.json і watcher.log
+  [switch]$NoDisarm,               # do NOT disarm (diagnostics). By default documents are disarmed per meta.disarm
+  [string]$BackupDir   = "",       # backups and quarantine (default <Base>\quarantine); the watcher does not scan it
+  [switch]$QuarantineGeneral,      # general files (exe/scripts/archives) matching vendor rules -> quarantine
+  [int]$MaxLogMB       = 50,       # rotation of docscan-results.json and watcher.log
   [int]$KeepLogs       = 5,
-  [int]$MaxSizeMB      = 100,      # більші файли пропускаємо (запис у лог)
-  [int]$SettleSeconds  = 2,        # скільки чекати тиші після останньої події по файлу
-  [int]$ReadyTimeout   = 60,       # скільки чекати, поки файл перестане записуватись
-  [int]$RescanCooldown = 60,       # той самий файл повторно — не частіше ніж раз на N с (автозбереження Word/OneDrive)
-  [int]$DisarmRetryMinutes = 60,   # файл відкритий (заблокований): перші N хв повтор кожні 30 с, далі кожні 5 хв (без кінця)
-  [double]$DisarmNoticeHours = 24,   # якщо файл відкритий так довго — окремий запис у Wazuh (DisarmPending), лікування триває
+  [int]$MaxSizeMB      = 100,      # larger files are skipped (logged)
+  [int]$SettleSeconds  = 2,        # quiet time to wait after the last event for a file
+  [int]$ReadyTimeout   = 60,       # how long to wait for a file to stop being written
+  [int]$RescanCooldown = 60,       # the same file again - at most once per N s (Word/OneDrive autosave)
+  [int]$DisarmRetryMinutes = 60,   # file open (locked): retry every 30 s for the first N min, then every 5 min (no end)
+  [double]$DisarmNoticeHours = 24,   # file open this long - a separate Wazuh record (DisarmPending), retries go on
   [string[]]$DocExt = @(
     ".doc",".dot",".docx",".docm",".dotx",".dotm",
     ".xls",".xlt",".xlsx",".xlsm",".xltx",".xltm",".xlsb",
     ".ppt",".pps",".pot",".pptx",".pptm",".potx",".potm",".ppsx",".ppsm",
-    ".xla",".xlam",".ppa",".ppam",                 # надбудови Excel / PowerPoint (макроси при відкритті)
+    ".xla",".xlam",".ppa",".ppam",                 # Excel / PowerPoint add-ins (macros on open)
     ".rtf",".pdf",".lnk",
-    ".one",                                         # OneNote: вкладені скрипти/exe
-    ".iqy",".slk"),                                 # Excel Web Query / SYLK: тягнуть дані, виконують DDE
+    ".one",                                         # OneNote: embedded scripts/exe
+    ".iqy",".slk"),                                 # Excel Web Query / SYLK: pull data, run DDE
   [string[]]$GenExt = @(
     ".exe",".dll",".sys",".scr",".cpl",".ocx",".com",".msi",
     ".ps1",".psm1",".vbs",".vbe",".js",".jse",".wsf",".wsh",".hta",".bat",".cmd",".jar",
-    ".xll",                                         # надбудова Excel = DLL
-    ".msc",                                         # консоль MMC (GrimResource)
+    ".xll",                                         # Excel add-in = DLL
+    ".msc",                                         # MMC console (GrimResource)
     ".url",                                         # Internet Shortcut
     ".svg",".htm",".html",                          # HTML smuggling
     ".zip",".rar",".7z",".iso",".img",".vhd",".vhdx"),
-  # шляхи (regex), які не скануємо: кеші браузерів, Recent (там .lnk на кожне відкриття файлу) тощо
+  # paths (regex) that are not scanned: browser caches, Recent (a .lnk for every opened file), etc.
   [string[]]$ExcludePattern = @(
     '\\\$Recycle\.Bin\\',
     '\\AppData\\Local\\(Temp\\chocolatey|Packages|Microsoft\\(Edge|OneDrive|Windows\\(WebCache|Explorer|Notifications|INetCache\\IE))|Google\\Chrome|Mozilla|D3DSCache)\\',
@@ -68,14 +68,14 @@ if (-not $Rules)     { $Rules     = "$Base\yara\docscan-project\rules\docscan-in
 if (-not $OutDir)    { $OutDir    = "$Base\results" }
 if (-not $BackupDir) { $BackupDir = "$Base\quarantine" }
 
-[Console]::OutputEncoding = [Text.Encoding]::UTF8   # вивід yara64 (шляхи, докази) — UTF-8
+[Console]::OutputEncoding = [Text.Encoding]::UTF8   # yara64 output (paths, evidence) is UTF-8
 $utf8   = New-Object Text.UTF8Encoding($false)
 $Result = Join-Path $OutDir "docscan-results.json"
 $LogF   = Join-Path $OutDir "watcher.log"
 $DocSet = @{}; $DocExt | % { $DocSet[$_.ToLower()] = 1 }
 $GenSet = @{}; $GenExt | % { $GenSet[$_.ToLower()] = 1 }
 
-# Ротація: file -> file.1 -> ... -> file.$KeepLogs (найстаріший видаляється).
+# Rotation: file -> file.1 -> ... -> file.$KeepLogs (the oldest is deleted).
 function Rotate-IfBig([string]$file) {
   if (-not (Test-Path -LiteralPath $file)) { return }
   if ((Get-Item -LiteralPath $file).Length -lt $MaxLogMB * 1MB) { return }
@@ -106,7 +106,7 @@ function Test-Excluded([string]$path) {
   return $false
 }
 
-# Файл готовий, коли його можна відкрити на читання і розмір не змінюється.
+# A file is ready when it can be opened for reading and its size does not change.
 function Wait-FileReady([string]$path) {
   $deadline = (Get-Date).AddSeconds($ReadyTimeout)
   $last = -1
@@ -123,7 +123,7 @@ function Wait-FileReady([string]$path) {
   return "timeout"
 }
 
-# Один запуск yara64: JSON (політика + vendor) і, для документів, дія лікування.
+# One yara64 run: JSON (policy + vendor) and, for documents, the disarm action.
 function Invoke-Scan([string]$path, [bool]$cure) {
   $yargs = @("-w", "--docscan-json")
   if ($cure) { $yargs += @("--docscan-disarm", "--docscan-backup-dir=$BackupDir") }
@@ -137,28 +137,28 @@ function Invoke-Scan([string]$path, [bool]$cure) {
   return @{ docscan = $obj; disarm = $act; errors = $errs }
 }
 
-# Опис людською мовою: тексти правил політики (meta.text), опис vendor-правил (meta.description),
-# правила по коду VBA, дія лікування. Обмежено 600 символами (опис алерту Wazuh).
+# Human-readable description: policy rule texts (meta.text), vendor rule descriptions (meta.description),
+# rules on the VBA code, the disarm action. Capped at 600 characters (Wazuh alert description).
 function Get-Summary($rec) {
   $p = @()
   $ds = $rec.docscan
-  if ($rec.event -eq "DisarmPending") { $p += "Лікування не виконано за $DisarmNoticeHours год: файл досі відкритий іншою програмою — потрібна ручна перевірка" }
+  if ($rec.event -eq "DisarmPending") { $p += "Disarm not done in $DisarmNoticeHours h: the file is still open in another program - manual check needed" }
   if ($ds -and $ds.findings_text) { $p += @($ds.findings_text) }
-  # де знайдено: частина документа (другий прохід) або код макросу
+  # where it was found: a document part (second pass) or the macro code
   $where = @{}
   if ($ds) {
     foreach ($pm in @($ds.yara_part_matches)) { if ($pm) { foreach ($r in @($pm.rules)) { if (-not $where[$r]) { $where[$r] = $pm.part } } } }
-    foreach ($r in @($ds.yara_matches)) { if ($r -and -not $where[$r]) { $where[$r] = "код макросу" } }
+    foreach ($r in @($ds.yara_matches)) { if ($r -and -not $where[$r]) { $where[$r] = "macro code" } }
   }
   foreach ($m in $rec.yara_file_matches) {
     $d = $null
     if ($ds -and $ds.yara_descriptions) { $d = (@($ds.yara_descriptions) | Where-Object { $_.rule -eq $m } | Select-Object -First 1).description }
     $t = "YARA $m"
-    if ($where[$m]) { $t += " (у " + $where[$m] + ")" }
-    if ($d) { $t += " — $d" }
+    if ($where[$m]) { $t += " (in " + $where[$m] + ")" }
+    if ($d) { $t += " - $d" }
     $p += $t
   }
-  if ($rec.disarm) { $p += "дія: " + $rec.disarm }
+  if ($rec.disarm) { $p += "action: " + $rec.disarm }
   if ($rec.verdict -eq "SKIPPED" -or $rec.verdict -eq "ERROR") { $p += ($rec.errors -join "; ") }
   $t = ($p -join " | ")
   if ($t.Length -gt 600) { $t = $t.Substring(0, 597) + "..." }
@@ -171,7 +171,7 @@ function Max-Verdict($a, $b) { if ($Rank[$b] -gt $Rank[$a]) { $b } else { $a } }
 function Scan-File([string]$path, [string]$evt) {
   $cat = Get-Category $path
   $state = Wait-FileReady $path
-  if ($state -eq "gone") { Log "зник до скану: $path" "WARN"; return $null }
+  if ($state -eq "gone") { Log "gone before scan: $path" "WARN"; return $null }
 
   $rec = [ordered]@{
     timestamp = (Get-Date).ToString("yyyy-MM-ddTHH:mm:ss.fffzzz")
@@ -179,14 +179,14 @@ function Scan-File([string]$path, [string]$evt) {
     host      = $env:COMPUTERNAME
     event     = $evt
     category  = $cat
-    # НЕ 'file': у індексах Wazuh data.file — keyword, об'єкт там індексатор відкидає (mapper_parsing_exception)
+    # NOT 'file': in the Wazuh indices data.file is a keyword, the indexer rejects an object there (mapper_parsing_exception)
     docfile   = [ordered]@{ path = $path; name = [IO.Path]::GetFileName($path);
                             ext = [IO.Path]::GetExtension($path).ToLower(); size = $null; sha256 = $null }
     verdict   = "INFO"
     docscan   = $null
     yara_file_matches = @()
     disarm    = $null
-    summary   = ""     # людською мовою: що знайдено і що зроблено (для опису алерту Wazuh)
+    summary   = ""     # human-readable: what was found and what was done (for the Wazuh alert description)
     errors    = @()
   }
   if ($state -eq "timeout") { $rec.errors += "file still being written after ${ReadyTimeout}s" }
@@ -199,15 +199,15 @@ function Scan-File([string]$path, [string]$evt) {
     } else {
       $rec.docfile.sha256 = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLower()
 
-      # vendor-правила бачать байти ДО лікування: yara збирає збіги до --docscan-disarm
+      # vendor rules see the bytes BEFORE disarm: yara collects the matches before --docscan-disarm
       $ds = Invoke-Scan $path ((-not $NoDisarm) -and $cat -eq "document")
       $rec.errors += $ds.errors
       if ($ds.docscan) {
         $rec.docscan = $ds.docscan
         $rec.disarm  = $ds.disarm
         $rec.yara_file_matches = @($ds.docscan.yara_file_matches)
-        # документні правила (тег docscan_doc) — детект лише для документів; так само другий
-        # прохід: збіги в розпакованих частинах документа і в коді макросів
+        # document rules (tag docscan_doc) - detection only for documents; the same for the second
+        # pass: matches in the extracted document parts and in the macro code
         if ($cat -eq "document") {
           $rec.yara_file_matches += @($ds.docscan.yara_doc_matches | ? { $_ })
           foreach ($pm in @($ds.docscan.yara_part_matches)) { if ($pm) { $rec.yara_file_matches += @($pm.rules) } }
@@ -216,12 +216,12 @@ function Scan-File([string]$path, [string]$evt) {
         }
         $rec.verdict = $ds.docscan.verdict
       }
-      # vendor-правило на самому файлі: документ — щонайменше MEDIUM, general — HIGH
+      # vendor rule on the file itself: document - at least MEDIUM, general - HIGH
       if ($rec.yara_file_matches.Count) {
         if ($cat -eq "document") { $rec.verdict = Max-Verdict $rec.verdict "MEDIUM" }
         else { $rec.verdict = "HIGH" }
       }
-      # general-файл зі збігом vendor-правил: опційний карантин (копія -> BackupDir, оригінал видаляється)
+      # general file matching vendor rules: optional quarantine (copy -> BackupDir, the original is deleted)
       if ($QuarantineGeneral -and -not $NoDisarm -and $cat -eq "general" -and $rec.yara_file_matches.Count) {
         $i = 0
         do { $dst = Join-Path $BackupDir ("{0}.{1}.docscan-bak" -f [IO.Path]::GetFileName($path), $i++) } while (Test-Path -LiteralPath $dst)
@@ -237,8 +237,8 @@ function Scan-File([string]$path, [string]$evt) {
   }
   $rec.summary = Get-Summary $rec
 
-  # Той самий результат, що й минулого разу для цього шляху (користувач зберігає документ, вміст
-  # змінився, а вердикт і знахідки ні) — у Wazuh не пишемо, лише в локальний лог. HIGH пишеться завжди.
+  # The same result as last time for this path (the user saves the document, the content changed,
+  # but the verdict and findings did not) - not written for Wazuh, only to the local log. HIGH is always written.
   $key = "$($rec.verdict)|$($rec.summary)"
   $repeat = ($rec.verdict -ne "HIGH" -and $LastKey[$path] -eq $key)
   if (-not $repeat) {
@@ -253,46 +253,46 @@ function Scan-File([string]$path, [string]$evt) {
   if ($rec.yara_file_matches.Count) { $what += "yara:" + ($rec.yara_file_matches -join ",") }
   if ($rec.disarm) { $what += "disarm:" + $rec.disarm }
   $lvl = switch ($rec.verdict) { "HIGH" { "HIT" } "MEDIUM" { "HIT" } "ERROR" { "ERROR" } "SKIPPED" { "WARN" } default { "OK" } }
-  if ($repeat) { $what += "(без змін — у Wazuh не пишеться)" }
+  if ($repeat) { $what += "(unchanged - not written for Wazuh)" }
   Log ("{0,-7} {1,-8} {2}  {3}" -f $rec.verdict, $cat, $path, ($what -join " | ")) $lvl
   return $rec
 }
 
-# Файл відкрито іншим процесом без спільного запису (Word тримає документ) — лікувати зараз не вийде.
+# The file is open in another process without shared write (Word holds the document) - disarm is not possible now.
 function Test-FileLocked([string]$path) {
   try { $fs = [IO.File]::Open($path, 'Open', 'ReadWrite', 'None'); $fs.Close(); return $false }
   catch { return (Test-Path -LiteralPath $path -PathType Leaf) }
 }
 
-# ---------- старт ----------
+# ---------- start ----------
 New-Item -ItemType Directory -Force $OutDir | Out-Null
 New-Item -ItemType Directory -Force $BackupDir | Out-Null
 foreach ($p in $Yara, $Rules) {
-  if (-not (Test-Path $p)) { Write-Host "НЕ ЗНАЙДЕНО: $p" -ForegroundColor Red; exit 1 }
+  if (-not (Test-Path $p)) { Write-Host "NOT FOUND: $p" -ForegroundColor Red; exit 1 }
 }
-# перевірка, що правила компілюються (інакше кожен скан мовчки падатиме)
+# check that the rules compile (otherwise every scan would fail silently)
 $probe = Join-Path $OutDir "probe.txt"; "probe" | Set-Content $probe
 $e = & $Yara -w --file-vars $Rules $probe 2>&1 | Where-Object { "$_" -match 'error' }
 Remove-Item $probe
-if ($e) { Write-Host "Правила не компілюються: $Rules`n$e" -ForegroundColor Red; exit 1 }
+if ($e) { Write-Host "The rules do not compile: $Rules`n$e" -ForegroundColor Red; exit 1 }
 
-# Правила компілюються ОДИН раз (yarac64 -> rules.yarc), далі кожен скан іде з -C. Тисячі вендорних
-# правил компілюються ~0.5 с і довше — робити це на кожен файл означало б секунди на скан.
-# Змінні filename/filepath/extension/filetype/owner оголошуються тут, значення yara64 ставить на кожен файл.
+# The rules are compiled ONCE (yarac64 -> rules.yarc), then every scan runs with -C. Thousands of vendor
+# rules take ~0.5 s or more to compile - doing it for every file would mean seconds per scan.
+# The variables filename/filepath/extension/filetype/owner are declared here, yara64 sets the values per file.
 $RuleArgs = @($Rules)
 $Compiled = Join-Path $OutDir "rules.yarc"
 if (Test-Path $Yarac) {
   Remove-Item $Compiled -ErrorAction SilentlyContinue
   $ce = & $Yarac -w -d filename= -d filepath= -d extension= -d filetype= -d owner= $Rules $Compiled 2>&1 | ForEach-Object { "$_" }
   if ($LASTEXITCODE -eq 0 -and (Test-Path $Compiled)) { $RuleArgs = @("-C", $Compiled) }
-  else { Log ("yarac64 не скомпілював правила, скануємо з вихідних .yar (повільніше): " + ($ce -join " ")) "WARN" }
+  else { Log ("yarac64 did not compile the rules, scanning from the source .yar (slower): " + ($ce -join " ")) "WARN" }
 } else {
-  Log "немає $Yarac — скануємо з вихідних .yar (кожен скан компілює правила заново)" "WARN"
+  Log "$Yarac is missing - scanning from the source .yar (every scan recompiles the rules)" "WARN"
 }
 
 $watchers = @()
 foreach ($wp in $WatchPath) {
-  if (-not (Test-Path $wp)) { Log "немає теки для спостереження: $wp" "WARN"; continue }
+  if (-not (Test-Path $wp)) { Log "watch folder does not exist: $wp" "WARN"; continue }
   $w = New-Object IO.FileSystemWatcher $wp, "*"
   $w.IncludeSubdirectories = $true
   $w.NotifyFilter = [IO.NotifyFilters]'FileName, LastWrite, Size'
@@ -305,18 +305,18 @@ foreach ($wp in $WatchPath) {
   $w.EnableRaisingEvents = $true
   $watchers += $w
 }
-if (-not $watchers.Count) { Log "жодної теки для спостереження" "ERROR"; exit 1 }
+if (-not $watchers.Count) { Log "no folder to watch" "ERROR"; exit 1 }
 
-Log ("старт: стежу за {0} | disarm={1} | карантин: {2} | результат: {3}" -f ($WatchPath -join ", "), (-not $NoDisarm), $BackupDir, $Result)
+Log ("start: watching {0} | disarm={1} | quarantine: {2} | results: {3}" -f ($WatchPath -join ", "), (-not $NoDisarm), $BackupDir, $Result)
 
-$pending = @{}   # path -> @{ t = час останньої події; evt = тип першої події }
-$rescanAt = $null   # після переповнення буфера: коли доскановувати
-$rescanFrom = $null # ... файли, змінені з цього моменту
-$recent  = @{}   # path -> sha256 останнього скану (щоб не дублювати Changed після того ж вмісту)
-$LastScan = @{}  # path -> час останнього скану (пауза -RescanCooldown для повторних змін)
-$LastKey  = @{}  # path -> "вердикт|summary" останнього запису в Wazuh (однакові повтори не пишемо)
-$Retry    = @{}  # path -> @{ next; since; noticed } — лікування заблокованого файлу повторюємо пізніше
-$RetryFile = Join-Path $OutDir "retry.json"   # той самий список на диску: переживає перезапуск і перезавантаження
+$pending = @{}   # path -> @{ t = time of the last event; evt = type of the first event }
+$rescanAt = $null   # after a buffer overflow: when to rescan
+$rescanFrom = $null # ... the files changed since this moment
+$recent  = @{}   # path -> sha256 of the last scan (no duplicate scans for Changed with the same content)
+$LastScan = @{}  # path -> time of the last scan (-RescanCooldown pause for repeated changes)
+$LastKey  = @{}  # path -> "verdict|summary" of the last Wazuh record (identical repeats are not written)
+$Retry    = @{}  # path -> @{ next; since; noticed } - disarm of a locked file is retried later
+$RetryFile = Join-Path $OutDir "retry.json"   # the same list on disk: survives a restart and a reboot
 
 function Save-Retry {
   $items = @($Retry.Keys | ForEach-Object { [ordered]@{ path = $_; since = $Retry[$_].since.ToString("o"); noticed = [bool]$Retry[$_].noticed } })
@@ -327,14 +327,14 @@ function Save-Retry {
 function Add-Retry([string]$path) {
   if (-not $Retry.ContainsKey($path)) {
     $Retry[$path] = @{ next = (Get-Date).AddSeconds(30); since = (Get-Date); noticed = $false }
-    Log "файл відкритий іншою програмою — лікування повториться, щойно його закриють: $path" "WARN"
+    Log "file is open in another program - disarm will be retried as soon as it is closed: $path" "WARN"
   } else { $Retry[$path].next = (Get-Date).AddSeconds(30) }
   Save-Retry
 }
 function Remove-Retry([string]$path) {
   if ($Retry.ContainsKey($path)) { $Retry.Remove($path); Save-Retry }
 }
-# незавершені лікування з минулого запуску (перезавантаження: Word уже не тримає файл)
+# unfinished disarms from the previous run (after a reboot Word no longer holds the file)
 if (Test-Path -LiteralPath $RetryFile) {
   try {
     foreach ($it in @(Get-Content -LiteralPath $RetryFile -Raw -Encoding utf8 | ConvertFrom-Json)) {
@@ -342,9 +342,9 @@ if (Test-Path -LiteralPath $RetryFile) {
         $Retry[$it.path] = @{ next = Get-Date; since = [datetime]$it.since; noticed = [bool]$it.noticed }
       }
     }
-    if ($Retry.Count) { Log ("незавершене лікування з минулого запуску: {0} файл(ів)" -f $Retry.Count) "WARN" }
+    if ($Retry.Count) { Log ("unfinished disarm from the previous run: {0} file(s)" -f $Retry.Count) "WARN" }
     Save-Retry
-  } catch { Log "не вдалося прочитати ${RetryFile}: $_" "ERROR" }
+  } catch { Log "could not read ${RetryFile}: $_" "ERROR" }
 }
 
 try {
@@ -353,8 +353,8 @@ try {
     while ($e) {
       $sid = $e.SourceIdentifier
       if ($sid -like "*.Error") {
-        Log ("FileSystemWatcher error (можливо переповнення буфера, частина подій втрачена): " + $e.SourceEventArgs.GetException().Message) "ERROR"
-        # події втрачено -> через хвилину пройдемося по теках і візьмемо файли, змінені з цього часу
+        Log ("FileSystemWatcher error (buffer overflow likely, some events lost): " + $e.SourceEventArgs.GetException().Message) "ERROR"
+        # events were lost -> in a minute walk the folders and take the files changed since then
         if (-not $rescanFrom) { $rescanFrom = (Get-Date).AddMinutes(-1) }
         $rescanAt = (Get-Date).AddSeconds(60)
       } else {
@@ -377,32 +377,32 @@ try {
           Where-Object { $_.LastWriteTime -ge $rescanFrom -and (Get-Category $_.FullName) -and -not (Test-Excluded $_.FullName) } |
           ForEach-Object { if (-not $pending.ContainsKey($_.FullName)) { $pending[$_.FullName] = @{ t = $now.AddSeconds(-$SettleSeconds); evt = "Rescan" }; $n++ } }
       }
-      Log ("доскановування після переповнення: файлів змінених з {0:HH:mm:ss} — {1}" -f $rescanFrom, $n) "WARN"
+      Log ("rescan after overflow: files changed since {0:HH:mm:ss} - {1}" -f $rescanFrom, $n) "WARN"
       $rescanAt = $null; $rescanFrom = $null
     }
     foreach ($path in @($pending.Keys)) {
       if (($now - $pending[$path].t).TotalSeconds -lt $SettleSeconds) { continue }
-      # цей файл уже сканували недавно (редагування з автозбереженням) — чекаємо паузу, потім один скан
-      # останньої версії. Новий файл (ще не сканувався) — одразу.
+      # this file was scanned recently (editing with autosave) - wait for the pause, then one scan of the
+      # latest version. A new file (not scanned yet) - right away.
       if ($LastScan.ContainsKey($path) -and ($now - $LastScan[$path]).TotalSeconds -lt $RescanCooldown) { continue }
       $evt = $pending[$path].evt
       $pending.Remove($path)
       if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { continue }
-      # той самий вміст уже скановано — пропускаємо (Word/провідник шлють кілька Changed поспіль)
+      # the same content was already scanned - skip (Word/Explorer send several Changed in a row)
       try { $h = (Get-FileHash -LiteralPath $path -Algorithm SHA256 -EA Stop).Hash } catch { $h = $null }
       if ($h -and $recent[$path] -eq $h) { continue }
       $r = Scan-File $path $evt
       $LastScan[$path] = Get-Date
       try { $recent[$path] = (Get-FileHash -LiteralPath $path -Algorithm SHA256 -EA Stop).Hash } catch { $recent.Remove($path) }
-      # лікування не вдалося, бо файл відкритий (Word) — повторимо, коли його відпустять;
-      # новий скан без невдалого лікування знімає файл зі списку повторів
+      # disarm failed because the file is open (Word) - retry when it is released;
+      # a new scan without a failed disarm removes the file from the retry list
       if ($r -and "$($r.disarm)" -like 'failed:*' -and (Test-FileLocked $path)) { Add-Retry $path }
       elseif ($r) { Remove-Retry $path }
     }
 
-    # повторне лікування заблокованих файлів
-    # Без кінцевого терміну: перші -DisarmRetryMinutes — кожні 30 с, далі кожні 5 хв. Після
-    # -DisarmNoticeHours — один запис у Wazuh (DisarmPending): SOC має розібратися вручну.
+    # disarm retry for locked files
+    # No end date: every 30 s for the first -DisarmRetryMinutes, then every 5 min. After
+    # -DisarmNoticeHours - one Wazuh record (DisarmPending): the SOC has to handle it manually.
     foreach ($path in @($Retry.Keys)) {
       $rt = $Retry[$path]
       if ($now -lt $rt.next) { continue }
@@ -413,8 +413,8 @@ try {
         $rt.next = $now.AddSeconds($step)
         if (-not $rt.noticed -and $age.TotalHours -ge $DisarmNoticeHours) {
           $rt.noticed = $true; Save-Retry
-          Log "лікування не виконано за $DisarmNoticeHours год — файл досі відкритий: $path" "ERROR"
-          $null = Scan-File $path "DisarmPending"   # HIGH + failed:replace -> окремий запис у Wazuh
+          Log "disarm not done in $DisarmNoticeHours h - the file is still open: $path" "ERROR"
+          $null = Scan-File $path "DisarmPending"   # HIGH + failed:replace -> a separate Wazuh record
           $LastScan[$path] = Get-Date
         }
         continue
@@ -424,7 +424,7 @@ try {
       try { $recent[$path] = (Get-FileHash -LiteralPath $path -Algorithm SHA256 -EA Stop).Hash } catch { $recent.Remove($path) }
       if ($r -and "$($r.disarm)" -like 'failed:*' -and (Test-FileLocked $path)) { $rt.next = (Get-Date).AddSeconds($step) }
       else {
-        if ($r -and "$($r.disarm)" -like 'failed:*') { Log "лікування не вдалося (файл не заблоковано): $path — $($r.disarm)" "ERROR" }
+        if ($r -and "$($r.disarm)" -like 'failed:*') { Log "disarm failed (file not locked): $path - $($r.disarm)" "ERROR" }
         Remove-Retry $path
       }
     }
@@ -434,5 +434,5 @@ try {
 } finally {
   Get-EventSubscriber | Where-Object SourceIdentifier -like "docscan.*" | Unregister-Event
   $watchers | ForEach-Object { $_.EnableRaisingEvents = $false; $_.Dispose() }
-  Log "зупинено"
+  Log "stopped"
 }

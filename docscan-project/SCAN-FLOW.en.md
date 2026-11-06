@@ -708,7 +708,7 @@ No `yarac64.exe` or the compile fails — a WARN in the log and scans from the `
    are not scanned.
 5. `Scan-File`: SHA256 → `Invoke-Scan` → write the JSON line + a log line. **The same result** (the same
    verdict and `summary` as the last record for that path; HIGH excepted) is not written to
-   `docscan-results.json` — only to the log, marked "без змін — у Wazuh не пишеться": saving a document does not
+   `docscan-results.json` — only to the log, marked "(unchanged - not written for Wazuh)": saving a document does not
    flood Wazuh, while any change of verdict or findings is sent as an event.
 6. **File open in another program** (Word holds the document without write/delete sharing): disarm returns
    `failed:replace`, the file is not changed (the backup exists). Every 30 s the watcher checks whether the
@@ -785,7 +785,8 @@ Start-ScheduledTask docscan-watcher          # Stop-ScheduledTask docscan-watche
 |---|---|
 | `build_package.ps1` | on the build machine: `DocScan-<version>.zip` = `bin\yara64.exe` + `vcruntime140*.dll` (yara64 is built with `/MD`; the UCRT ships with Windows 10/11) + `rules\` + `watcher\` + scripts + `VERSION.txt` + `SHA256SUMS.txt` |
 | `install.ps1` | on the target as administrator: verifies SHA256 → copies to `C:\Program Files\DocScan` → `C:\ProgramData\DocScan\{results,quarantine}` accessible only to SYSTEM + Administrators → **removes the old implementation completely** (Wazuh active-response: `doc-scan.ps1`, `doc-scan.cmd`, `tmp\docscan`, the old YARA `active-response\bin\yara` + `yara-scan.*`; the old quarantine is moved to `quarantine\legacy\`; other ARs are left alone; `-KeepLegacy`/`-KeepLegacyYara` to keep them) → **Wazuh agent**: `ossec.conf` (backed up) — removes doc-scan/yara-scan `<command>`/`<active-response>`, adds a json `<localfile>` for `results\docscan-results.json`, restarts `WazuhSvc`; rolled back if the agent rejects it → self-test (yara64, rule compilation, a test JSON) → task **"DocScan Watcher"**: at Windows startup, as SYSTEM, no time limit, restart on failure (999 × 1 min) → starts it and checks the watcher came up. Re-running = upgrade (previous rules → `rules.prev\`). Parameters: `-WatchPath`, `-InstallDir`, `-DataDir`, `-QuarantineGeneral`, `-NoStart`, `-NoAvExclusion` (do not add the Microsoft Defender exclusions for `C:\Program Files\DocScan` and `C:\ProgramData\DocScan`, otherwise added before the files are copied; `uninstall.ps1` removes the program exclusion, the data one with `-Purge`; ESET — a warning only, exclusions via an ESET PROTECT policy), `-DetectOnly` (pilot: the watcher runs with `-NoDisarm` — detection and alerts only, files are not changed) |
-| `DocScan-Setup.ps1` | one-script install from an HTTP server: the package name from `<BaseUrl>/DocScan-latest.txt` (or `-Version`) → downloads the zip and `.sha256`, checks SHA256 → extracts → runs `install.ps1` in-process (`-DetectOnly`, `-WatchPath`, `-NoAvExclusion`, `-QuarantineGeneral` are passed through) → removes temp files. In the repo `-BaseUrl` has no default (the repository is public); the server copy has the address filled in. New version: zip + `.sha256` to the server and the new name in `DocScan-latest.txt` |
+| `DocScan-Setup.ps1` | ASCII bootstrap for `irm http://<server>:8080/DocScan-Setup.ps1 \| iex` (pilot copy `DocScan-Setup-Pilot.ps1` passes `-DetectOnly`): downloads `DocScan-Install.ps1` to %TEMP% and runs it in a separate `powershell.exe`, so an error never closes the console; ASCII only because `irm` decodes text without a charset |
+| `DocScan-Install.ps1` | one-script install from an HTTP server: the package name from `<BaseUrl>/DocScan-latest.txt` (or `-Version`) → downloads the zip and `.sha256`, checks SHA256 → extracts → runs `install.ps1` in-process (`-DetectOnly`, `-WatchPath`, `-NoAvExclusion`, `-QuarantineGeneral` are passed through) → removes temp files. In the repo `-BaseUrl` has no default (the repository is public); the server copy has the address filled in. New version: zip + `.sha256` to the server and the new name in `DocScan-latest.txt` |
 | `uninstall.ps1` | removes the task and the watcher process, deletes the program; `-Purge` also removes results and quarantine. Does not bring the old implementation back |
 | `README.txt` | administrator instructions (shipped in the package) |
 | `manager/cleanup_manager.sh` | **on the Wazuh manager** (root): backs up `ossec.conf`, removes doc-scan/yara-scan `<active-response>`/`<command>`, rules separately: the `manager/local_rules.docscan.xml` block into `local_rules.xml` (section 12.2), `wazuh-analysisd -t`, restarts only then; `--dry-run` shows the changes |
@@ -1109,8 +1110,9 @@ event to `archives.*` (debugging only; fills the disk quickly).
 Top level: `timestamp`, `source` (= `docscan`), `host`, `event`, `category` (`document`/`general`),
 `docfile.{path,name,ext,size,sha256}`, `verdict` (`HIGH`/`MEDIUM`/`INFO`/`ERROR`/`SKIPPED`),
 `yara_file_matches[]`, `disarm` (`removed:…`, `stripped:…`, `deleted:lnk`, `quarantined`, `failed:…`), `errors[]`,
-`summary` — **a human-readable description**: the policy rules' `findings_text` + "YARA <rule> — <meta.description>"
-for every counted vendor match + rules on the macro code + "дія: <disarm>" (≤ 600 chars); the manager rules
+`summary` — **a human-readable description**: the policy rules' `findings_text` + "YARA <rule> (in <part>) - <meta.description>"
+for every counted vendor match + rules on the macro code + "action: <disarm>" (≤ 600 chars; the glue words are English,
+`findings_text` comes from the policy `meta.text`); the manager rules
 101091/101092 show it in their description (`$(summary)`).
 Document analysis: `docscan.{ftype, findings[], findings_text[], verdict, evidence.{template_url, dde_command,
 vba_evidence, lnk_target, lnk_args}, yara_matches[], yara_file_matches[], yara_doc_matches[], yara_info_matches[],

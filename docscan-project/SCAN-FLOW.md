@@ -706,7 +706,7 @@ CVE-2017-11882 (signature-base, Yara-Rules), `mhtml:`/CVE-2021-40444 (signature-
    кілька подій, але один скан; `~WRL*.tmp` і `~$*` не скануються.
 5. `Scan-File`: SHA256 → `Invoke-Scan` → запис JSON-рядка + рядок у лог. **Однаковий результат** (той самий
    вердикт і `summary`, що й у минулому записі для цього шляху; крім HIGH) у `docscan-results.json` не
-   пишеться — лише в лог із позначкою «без змін — у Wazuh не пишеться»: збереження документа не
+   пишеться — лише в лог із позначкою «(unchanged - not written for Wazuh)»: збереження документа не
    засмічує Wazuh, а будь-яка зміна вердикту чи знахідок іде як подія.
 6. **Файл відкритий іншою програмою** (Word тримає документ без дозволу на запис/видалення): лікування
    повертає `failed:replace`, файл не змінюється (бекап є). Вотчер кожні 30 с перевіряє, чи файл
@@ -783,7 +783,8 @@ Start-ScheduledTask docscan-watcher          # Stop-ScheduledTask docscan-watche
 |---|---|
 | `build_package.ps1` | на машині збірки: `DocScan-<версія>.zip` = `bin\yara64.exe` + `vcruntime140*.dll` (yara64 зібраний з `/MD`; UCRT є у Windows 10/11) + `rules\` + `watcher\` + скрипти + `VERSION.txt` + `SHA256SUMS.txt` |
 | `install.ps1` | на цільовій машині від адміністратора: перевіряє SHA256 → копіює в `C:\Program Files\DocScan` → `C:\ProgramData\DocScan\{results,quarantine}` з доступом лише SYSTEM + Administrators → **повністю прибирає стару реалізацію** (Wazuh active-response: `doc-scan.ps1`, `doc-scan.cmd`, `tmp\docscan`, старий YARA `active-response\bin\yara` + `yara-scan.*`; старий карантин переноситься в `quarantine\legacy\`; інші AR не чіпаються; `-KeepLegacy`/`-KeepLegacyYara` — залишити) → **агент Wazuh**: `ossec.conf` (бекап) — прибирає `<command>`/`<active-response>` doc-scan/yara-scan, додає `<localfile>` json на `results\docscan-results.json`, перезапускає `WazuhSvc`; якщо агент не прийняв конфіг — відкат → самоперевірка (yara64, компіляція правил, тестовий JSON) → завдання **«DocScan Watcher»**: при старті Windows, від SYSTEM, без ліміту часу, перезапуск при збої (999 × 1 хв) → запуск і перевірка, що watcher стартував. Повторний запуск = оновлення (попередні правила → `rules.prev\`). Параметри: `-WatchPath`, `-InstallDir`, `-DataDir`, `-QuarantineGeneral`, `-NoStart`, `-NoAvExclusion` (не додавати винятки Microsoft Defender для `C:\Program Files\DocScan` і `C:\ProgramData\DocScan`, які інакше додаються до копіювання файлів; `uninstall.ps1` прибирає виняток програми, даних — з `-Purge`; ESET — лише попередження, винятки політикою ESET PROTECT), `-DetectOnly` (пілот: вотчер з `-NoDisarm` — лише детект і алерти, файли не змінюються) |
-| `DocScan-Setup.ps1` | встановлення з HTTP-сервера одним скриптом: ім'я пакета з `<BaseUrl>/DocScan-latest.txt` (або `-Version`) → завантажує zip і `.sha256`, звіряє SHA256 → розпаковує → `install.ps1` у тому ж процесі (параметри `-DetectOnly`, `-WatchPath`, `-NoAvExclusion`, `-QuarantineGeneral` передаються як є) → прибирає тимчасові файли. У репо `-BaseUrl` без значення за замовчуванням (репозиторій публічний); на сервері — копія з підставленою адресою. Нова версія: zip + `.sha256` на сервер і нове ім'я в `DocScan-latest.txt` |
+| `DocScan-Setup.ps1` | ASCII-завантажувач для `irm http://<сервер>:8080/DocScan-Setup.ps1 \| iex` (пілотна копія `DocScan-Setup-Pilot.ps1` передає `-DetectOnly`): завантажує `DocScan-Install.ps1` у %TEMP% і запускає в окремому `powershell.exe` — помилка не закриває консоль; лише ASCII, бо `irm` декодує текст без charset |
+| `DocScan-Install.ps1` | встановлення з HTTP-сервера одним скриптом: ім'я пакета з `<BaseUrl>/DocScan-latest.txt` (або `-Version`) → завантажує zip і `.sha256`, звіряє SHA256 → розпаковує → `install.ps1` у тому ж процесі (параметри `-DetectOnly`, `-WatchPath`, `-NoAvExclusion`, `-QuarantineGeneral` передаються як є) → прибирає тимчасові файли. У репо `-BaseUrl` без значення за замовчуванням (репозиторій публічний); на сервері — копія з підставленою адресою. Нова версія: zip + `.sha256` на сервер і нове ім'я в `DocScan-latest.txt` |
 | `uninstall.ps1` | знімає завдання й процес watcher, видаляє програму; `-Purge` — ще й результати та карантин. Стару реалізацію не повертає |
 | `README.txt` | інструкція для адміністратора (кладеться в пакет) |
 | `manager/cleanup_manager.sh` | **на менеджері Wazuh** (root): бекап `ossec.conf`, прибирає `<active-response>`/`<command>` doc-scan і yara-scan, правила — окремо: блок `manager/local_rules.docscan.xml` у `local_rules.xml` (розділ 12.2), `wazuh-analysisd -t`, лише тоді рестарт; `--dry-run` — показати зміни |
@@ -1109,8 +1110,9 @@ watcher → C:\ProgramData\DocScan\results\docscan-results.json (JSON Lines)
 Верхній рівень: `timestamp`, `source` (= `docscan`), `host`, `event`, `category` (`document`/`general`),
 `docfile.{path,name,ext,size,sha256}`, `verdict` (`HIGH`/`MEDIUM`/`INFO`/`ERROR`/`SKIPPED`),
 `yara_file_matches[]`, `disarm` (`removed:…`, `stripped:…`, `deleted:lnk`, `quarantined`, `failed:…`), `errors[]`,
-`summary` — **опис людською мовою**: `findings_text` правил політики + «YARA <правило> — <meta.description>» для
-кожного vendor-збігу, що рахується + правила по коду макросу + «дія: <лікування>» (≤ 600 символів); його
+`summary` — **опис людською мовою**: `findings_text` правил політики + «YARA <правило> (in <частина>) - <meta.description>» для
+кожного vendor-збігу, що рахується + правила по коду макросу + «action: <лікування>» (≤ 600 символів; службові
+слова англійською, `findings_text` — з `meta.text` політики); його
 показують описи правил менеджера 101091/101092 (`$(summary)`).
 Розбір документа: `docscan.{ftype, findings[], findings_text[], verdict, evidence.{template_url, dde_command,
 vba_evidence, lnk_target, lnk_args}, yara_matches[], yara_file_matches[], yara_doc_matches[], yara_info_matches[],
