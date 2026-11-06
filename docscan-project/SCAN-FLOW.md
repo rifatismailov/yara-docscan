@@ -136,7 +136,7 @@ libyara/modules/docscan/            МОДУЛЬ (C, вшитий у libyara)
   disarm.c                          ЛІКУВАННЯ (викликається з CLI, не з модуля)
 libyara/include/yara/docscan_disarm.h   контракт лікування (docscan_disarm_info, docscan_disarm)
 libyara/modules/module_list         + MODULE(docscan)
-Makefile.am                         + 15 рядків MODULES += .../docscan/*.c
+Makefile.am                         + 16 рядків MODULES += .../docscan/*.c
 windows/vs20{15,17,19}/libyara/libyara.vcxproj   + 15 ClCompile docscan
 cli/yara.c                          + прапори --docscan-json/-extract/-disarm, JSON, Шар 2, do_disarm
 

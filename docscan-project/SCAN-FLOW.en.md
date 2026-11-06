@@ -137,7 +137,7 @@ libyara/modules/docscan/            MODULE (C, built into libyara)
   disarm.c                          DISARM (called from the CLI, not from the module)
 libyara/include/yara/docscan_disarm.h   disarm contract (docscan_disarm_info, docscan_disarm)
 libyara/modules/module_list         + MODULE(docscan)
-Makefile.am                         + 15 lines MODULES += .../docscan/*.c
+Makefile.am                         + 16 lines MODULES += .../docscan/*.c
 windows/vs20{15,17,19}/libyara/libyara.vcxproj   + 15 docscan ClCompile entries
 cli/yara.c                          + --docscan-json/-extract/-disarm flags, JSON, Layer 2, do_disarm
 
