@@ -43,6 +43,8 @@ param(
   [int]$MacroMaxMB     = 500,      # ... and the oldest go first when the store is bigger than this
   [string]$CriticalRules = "",     # critical-information rules (.yar, from E5Search); empty = off
   [string]$CriticalOut = "",       # queue for E5Search (JSON Lines; default <OutDir>\..\critical\critical.json)
+  # watched only with the critical check on: text formats the docscan module has nothing to say about
+  [string[]]$CriticalExt = @(".odt", ".ods", ".odp", ".txt", ".csv"),
   [string[]]$DocExt = @(
     ".doc",".dot",".docx",".docm",".dotx",".dotm",
     ".xls",".xlt",".xlsx",".xlsm",".xltx",".xltm",".xlsb",
@@ -375,6 +377,7 @@ if ($CriticalRules) {
   if (Test-Path -LiteralPath $CriticalRules) {
     New-Item -ItemType Directory -Force (Split-Path $CriticalOut) | Out-Null
     $CriticalOn = $true
+    $CriticalExt | % { $DocSet[$_.ToLower()] = 1 }
   } else { Write-Host "critical rules not found: $CriticalRules - critical check off" -ForegroundColor Yellow }
 }
 $MacroSent = Join-Path $MacroDir "sent.txt"

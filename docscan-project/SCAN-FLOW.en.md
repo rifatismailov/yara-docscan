@@ -1174,7 +1174,8 @@ puts the full text into a queue. E5Search gives the verdict; another watcher sen
   only (full document texts).
 - **Output**: `docscan-critical: queued fragments=N rules=a,b` on stdout; the document text is never printed. No
   special exit codes. The Wazuh record only gets `critical: {queued, fragments, rules}`.
-- **Selected PCs only** (lawyer, accountant, HR). The third pass is off by default. It is turned on by
+- **Selected PCs only** (lawyer, accountant, HR). With the third pass on, the watcher also watches
+  `.odt .ods .odp .txt .csv` (`-CriticalExt`); other PCs do not. The third pass is off by default. It is turned on by
   `irm http://<server>:8080/docscan/DocScan-Setup-Critical.ps1 | iex` (= `DocScan-Install.ps1 -Critical`): it takes
   `<BaseUrl>/critical-rules.yar`, `install.ps1` puts it into `C:\Program Files\DocScan\critical\` and checks that it
   compiles. A normal update (`DocScan-Setup.ps1`) keeps the installed rules as they are; `-NoCritical` turns the

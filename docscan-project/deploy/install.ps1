@@ -258,7 +258,8 @@ $probe = Join-Path $env:TEMP "docscan-probe.txt"; "probe" | Set-Content $probe
 $out = & $yara -w --docscan-json $rules $probe 2>&1 | % { "$_" }
 if (Test-Path -LiteralPath $critRules) {
   $q = Join-Path $env:TEMP "docscan-probe-critical.json"
-  $co = & $yara -w "--critical-rules=$critRules" "--critical-out=$q" $rules $probe 2>&1 | % { "$_" }
+  # --file-vars: the main rules use the filename/filepath externals
+  $co = & $yara -w --file-vars "--critical-rules=$critRules" "--critical-out=$q" $rules $probe 2>&1 | % { "$_" }
   Remove-Item $q -EA SilentlyContinue
   if ($LASTEXITCODE -ne 0) { Remove-Item $probe -EA SilentlyContinue; Fail "the critical rules do not compile:`n$($co -join "`n")" }
 }
