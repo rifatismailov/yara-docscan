@@ -1180,7 +1180,14 @@ puts the full text into a queue. E5Search gives the verdict; another watcher sen
   `<BaseUrl>/critical-rules.yar`, `install.ps1` puts it into `C:\Program Files\DocScan\critical\` and checks that it
   compiles. A normal update (`DocScan-Setup.ps1`) keeps the installed rules as they are; `-NoCritical` turns the
   check off and removes the rules. The rules are not in the package or the repository: an E5Search requirement.
-- **Tests**: `docscan-project/test-critical/run_tests.py`; the E5Search corpus (`.md` → docx/doc/odt/rtf/xlsx/xls/pptx/ppt): `md2office.py` + LibreOffice, evaluation — `eval_corpus.py` (fragments vs the reference, JSON invariants, formats,
+- **Once per content**: the watcher queues the same document (sha256) once per run (rescans - a disarm retry of an
+  open file, DisarmPending, a copy in another folder - do not duplicate it); a changed version is queued again.
+- **Limits**: text up to 16 MB (≈ 8,000 pages; the rest is cut, a phrase beyond it is not found); file up to 100 MB;
+  zip part up to 64 MB unpacked; `.txt/.csv` mixing UTF-8 and 1251 is read as 1251 (no guessing); text inside
+  altChunk, embedded objects and pictures is not taken.
+- **Tests**: `docscan-project/test-critical/run_tests.py`; the "compote" (corpus documents + inert first/second-pass
+  vectors from `gen_test_range.py`): `mix_corpus.py` / `eval_mix.py`; hostile files: `hostile.py` /
+  `hostile_run.py`; the E5Search corpus (`.md` → docx/doc/odt/rtf/xlsx/xls/pptx/ppt): `md2office.py` + LibreOffice, evaluation — `eval_corpus.py` (fragments vs the reference, JSON invariants, formats,
   parameters, behaviour without the option); fuzzing — `docscan_parsers_fuzzer`, first byte ≥ 0xF0.
 
 ## 13. Known limitations and caveats

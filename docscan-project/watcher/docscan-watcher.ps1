@@ -139,12 +139,12 @@ function Wait-FileReady([string]$path) {
 # One yara64 run: JSON (policy + vendor) and, for documents, the disarm action.
 # For a document the decompressed VBA is written to $MacroTmp (yara writes it only when there are macros,
 # and before any disarm, so the original code is kept).
-function Invoke-Scan([string]$path, [bool]$cure, [bool]$extract) {
+function Invoke-Scan([string]$path, [bool]$cure, [bool]$extract, [bool]$critical = $true) {
   $yargs = @("-w", "--docscan-json")
   if ($cure) { $yargs += @("--docscan-disarm", "--docscan-backup-dir=$BackupDir") }
   if ($extract) { Remove-Item -LiteralPath $MacroTmp -Force -EA SilentlyContinue; $yargs += "--docscan-extract=$MacroTmp" }
   # documents only: the same yara64 run also does the critical-information pre-check (one pass)
-  if ($extract -and $CriticalOn) { $yargs += @("--critical-rules=$CriticalRules", "--critical-out=$CriticalOut") }
+  if ($extract -and $CriticalOn -and $critical) { $yargs += @("--critical-rules=$CriticalRules", "--critical-out=$CriticalOut") }
   $out = & $Yara @yargs @RuleArgs $path 2>&1 | ForEach-Object { "$_" }
   $json = $out | Where-Object { $_ -like '{*' } | Select-Object -First 1
   $act  = $out | Where-Object { $_ -like 'docscan-disarm:*' } | Select-Object -First 1
@@ -297,9 +297,12 @@ function Scan-File([string]$path, [string]$evt) {
       $rec.docfile.sha256 = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLower()
 
       # vendor rules see the bytes BEFORE disarm: yara collects the matches before --docscan-disarm
-      $ds = Invoke-Scan $path ((-not $NoDisarm) -and $cat -eq "document") ($cat -eq "document")
+      # the same content goes to the E5Search queue once (disarm retries / DisarmPending rescan it)
+      $critNew = -not $CritQueued.ContainsKey($rec.docfile.sha256)
+      $ds = Invoke-Scan $path ((-not $NoDisarm) -and $cat -eq "document") ($cat -eq "document") $critNew
       $rec.errors += $ds.errors
       $rec.critical = $ds.critical
+      if ($ds.critical) { $CritQueued[$rec.docfile.sha256] = 1 }
       if ($cat -eq "document") {
         $mc = Save-Macro $rec.docfile.sha256 $rec $ds.docscan
         if ($mc) { $mc.uploaded = Send-Macro $mc.file; $rec.macro = $mc }
@@ -373,6 +376,7 @@ New-Item -ItemType Directory -Force $BackupDir | Out-Null
 New-Item -ItemType Directory -Force $MacroDir | Out-Null
 $MacroTmp = Join-Path $MacroDir "extract.tmp"
 $CriticalOn = $false
+$CritQueued = @{}   # sha256 of documents already put into the E5Search queue (this run)
 if ($CriticalRules) {
   if (Test-Path -LiteralPath $CriticalRules) {
     New-Item -ItemType Directory -Force (Split-Path $CriticalOut) | Out-Null
@@ -560,6 +564,7 @@ try {
     if ($now -ge $nextMacroSync) { Sync-Macros; $nextMacroSync = (Get-Date).AddHours(1) }
 
     if ($recent.Count -gt 5000) { $recent.Clear(); $LastScan.Clear(); $LastKey.Clear() }
+    if ($CritQueued.Count -gt 20000) { $CritQueued.Clear() }
   }
 } finally {
   Get-EventSubscriber | Where-Object SourceIdentifier -like "docscan.*" | Unregister-Event

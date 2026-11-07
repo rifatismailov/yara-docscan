@@ -37,6 +37,11 @@ static void put_bytes(tout* o, const char* s, size_t n)
     return;
   if (o->b.len + n > DOCSCAN_TEXT_MAX)
   {
+    // keep what fits (never cut a UTF-8 sequence), then ignore the rest
+    size_t k = DOCSCAN_TEXT_MAX - o->b.len;
+    while (k > 0 && ((uint8_t) s[k] & 0xC0) == 0x80) k--;
+    if (k > 0 && docscan_buf_push(&o->b, (const uint8_t*) s, k))
+      o->oom = 1;
     o->full = 1;
     return;
   }
