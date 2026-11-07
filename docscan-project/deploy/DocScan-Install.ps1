@@ -19,7 +19,9 @@ param(
   [switch]  $NoAvExclusion,         # -> install.ps1 -NoAvExclusion
   [switch]  $QuarantineGeneral,     # -> install.ps1 -QuarantineGeneral
   [string[]]$WatchPath,             # -> install.ps1 -WatchPath
-  [switch]  $NoMacroUpload          # do not send macro code to <BaseUrl> (keep it on the PC only)
+  [switch]  $NoMacroUpload,         # do not send macro code to <BaseUrl> (keep it on the PC only)
+  [switch]  $Critical,              # this PC gets the critical-information check: <BaseUrl>/critical-rules.yar (E5Search)
+  [switch]  $NoCritical             # -> install.ps1 -NoCritical (turn the check off, remove the rules)
 )
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"   # without it Invoke-WebRequest in PS 5.1 is very slow
@@ -79,12 +81,16 @@ try {
   if ($QuarantineGeneral) { $p.QuarantineGeneral = $true }
   if ($WatchPath)         { $p.WatchPath = $WatchPath }
   if (-not $NoMacroUpload) { $p.MacroUpload = $BaseUrl }   # macro code copies go to the same server
-  # critical-information rules (E5Search), if the server has them; otherwise the installed ones stay
-  $crit = Join-Path $work "critical-rules.yar"
-  try {
-    Invoke-WebRequest -UseBasicParsing "$BaseUrl/critical-rules.yar" -OutFile $crit -ErrorAction Stop
+  # critical-information check (E5Search): only on the PCs it is asked for (lawyer, accountant, HR);
+  # without -Critical the rules a PC already has stay as they are
+  if ($Critical -and $NoCritical) { Fail "-Critical and -NoCritical together" }
+  if ($NoCritical) { $p.NoCritical = $true }
+  if ($Critical) {
+    $crit = Join-Path $work "critical-rules.yar"
+    try { Invoke-WebRequest -UseBasicParsing "$BaseUrl/critical-rules.yar" -OutFile $crit -ErrorAction Stop }
+    catch { Fail "-Critical: could not download $BaseUrl/critical-rules.yar - $($_.Exception.Message)" }
     $p.CriticalRules = $crit
-  } catch { Write-Host "==> no critical-rules.yar on the server - critical rules unchanged" -ForegroundColor Cyan }
+  }
   Write-Host ("==> install.ps1 " + (($p.Keys | ForEach-Object { "-$_" }) -join " ")) -ForegroundColor Cyan
   $global:LASTEXITCODE = 0
   & $inst @p

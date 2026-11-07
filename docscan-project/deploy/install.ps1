@@ -36,6 +36,7 @@ param(
   [switch]  $DetectOnly,          # detection and alerts only: files are NOT disarmed or quarantined (pilot)
   [string]  $MacroUpload = "",    # collector URL for the extracted macro code (POST), e.g. http://<server>:8080; empty - local only
   [string]  $CriticalRules = "",  # critical-information rules (.yar from E5Search) -> <InstallDir>\critical\; empty - keep the installed ones
+  [switch]  $NoCritical,          # turn the critical-information check off on this PC (removes <InstallDir>\critical\)
   [switch]  $NoStart,             # register, but do not start now
   [string]  $OssecDir = "${env:ProgramFiles(x86)}\ossec-agent",
   [switch]  $KeepLegacy,          # do not remove the old DocScan (active-response)
@@ -134,7 +135,9 @@ Copy-Item (Join-Path $Pkg "uninstall.ps1") $InstallDir -Force
 Copy-Item (Join-Path $Pkg "VERSION.txt") $InstallDir -Force -EA SilentlyContinue
 # critical-information rules: not part of the package (they come from the E5Search project)
 $critRules = "$InstallDir\critical\critical-rules.yar"
-if ($CriticalRules) {
+if ($NoCritical) {
+  Remove-Item "$InstallDir\critical" -Recurse -Force -EA SilentlyContinue
+} elseif ($CriticalRules) {
   if (-not (Test-Path -LiteralPath $CriticalRules)) { Fail "critical rules not found: $CriticalRules" }
   New-Item -ItemType Directory -Force "$InstallDir\critical" | Out-Null
   Copy-Item -LiteralPath $CriticalRules $critRules -Force

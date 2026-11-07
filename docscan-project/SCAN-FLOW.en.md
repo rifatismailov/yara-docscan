@@ -1174,9 +1174,11 @@ puts the full text into a queue. E5Search gives the verdict; another watcher sen
   only (full document texts).
 - **Output**: `docscan-critical: queued fragments=N rules=a,b` on stdout; the document text is never printed. No
   special exit codes. The Wazuh record only gets `critical: {queued, fragments, rules}`.
-- **Rules** are not in the package or the repository: they are an E5Search requirement. `DocScan-Install.ps1`
-  takes `<BaseUrl>/critical-rules.yar`, `install.ps1` puts it into `C:\Program Files\DocScan\critical\` and checks
-  that it compiles. Not on the server — the installed one stays; none at all — the check is off.
+- **Selected PCs only** (lawyer, accountant, HR). The third pass is off by default. It is turned on by
+  `irm http://<server>:8080/docscan/DocScan-Setup-Critical.ps1 | iex` (= `DocScan-Install.ps1 -Critical`): it takes
+  `<BaseUrl>/critical-rules.yar`, `install.ps1` puts it into `C:\Program Files\DocScan\critical\` and checks that it
+  compiles. A normal update (`DocScan-Setup.ps1`) keeps the installed rules as they are; `-NoCritical` turns the
+  check off and removes the rules. The rules are not in the package or the repository: an E5Search requirement.
 - **Tests**: `docscan-project/test-critical/run_tests.py` (fragments vs the reference, JSON invariants, formats,
   parameters, behaviour without the option); fuzzing — `docscan_parsers_fuzzer`, first byte ≥ 0xF0.
 

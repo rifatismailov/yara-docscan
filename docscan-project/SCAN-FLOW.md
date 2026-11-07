@@ -1175,9 +1175,11 @@ YARA тут лише швидкий відбір: шукає в **тексті**
   адміністраторам (повні тексти документів).
 - **Вивід**: `docscan-critical: queued fragments=N rules=a,b` у stdout; текст документа ніде не друкується.
   Окремих кодів завершення немає. У записі для Wazuh — лише `critical: {queued, fragments, rules}`.
-- **Правила** не входять у пакет і репозиторій: це вимога проєкту E5Search. `DocScan-Install.ps1` бере
-  `<BaseUrl>/critical-rules.yar`, `install.ps1` кладе в `C:\Program Files\DocScan\critical\` і перевіряє, що вони
-  компілюються. Немає файлу на сервері — лишаються встановлені; немає взагалі — перевірка вимкнена.
+- **Лише на вибраних ПК** (юрист, бухгалтер, кадровик). За замовчуванням третій прохід вимкнений. Вмикає його
+  `irm http://<сервер>:8080/docscan/DocScan-Setup-Critical.ps1 | iex` (= `DocScan-Install.ps1 -Critical`): береться
+  `<BaseUrl>/critical-rules.yar`, `install.ps1` кладе його в `C:\Program Files\DocScan\critical\` і перевіряє, що
+  правила компілюються. Звичайне оновлення (`DocScan-Setup.ps1`) лишає встановлені правила як є; `-NoCritical`
+  вимикає перевірку й видаляє правила. Правила не входять у пакет і репозиторій: це вимога проєкту E5Search.
 - **Тести**: `docscan-project/test-critical/run_tests.py` (ділення проти еталона, інваріанти JSON, формати,
   параметри, поведінка без опції); фазер — `docscan_parsers_fuzzer`, перший байт ≥ 0xF0.
 
