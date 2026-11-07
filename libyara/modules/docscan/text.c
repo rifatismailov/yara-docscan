@@ -1575,7 +1575,36 @@ static int ppt_filter(uint32_t c, void* st, tout* o)
   return c >= 0x20 || c == 0x09;
 }
 
-static void ppt_records(const uint8_t* s, size_t from, size_t to, tout* o, int depth, int* guard)
+// PowerPoint 97 keeps the text of title/body placeholders twice: in the
+// SlideListWithText of the document and in the slide drawing (OfficeArt client
+// textbox). An atom whose bytes were already seen is skipped.
+#define PPT_SEEN 8192
+typedef struct
+{
+  uint64_t h[PPT_SEEN];
+  int n;
+} ppt_seen;
+
+static int ppt_first(ppt_seen* seen, uint16_t type, const uint8_t* p, size_t n)
+{
+  uint64_t h = 1469598103934665603ULL ^ type;
+  for (size_t i = 0; i < n; i++) h = (h ^ p[i]) * 1099511628211ULL;
+  for (int i = 0; i < seen->n; i++)
+    if (seen->h[i] == h)
+      return 0;
+  if (seen->n < PPT_SEEN)
+    seen->h[seen->n++] = h;
+  return 1;
+}
+
+static void ppt_records(
+    const uint8_t* s,
+    size_t from,
+    size_t to,
+    tout* o,
+    int depth,
+    int* guard,
+    ppt_seen* seen)
 {
   size_t p = from;
   while (p + 8 <= to && !o->full && (*guard)++ < 5000000)
@@ -1586,8 +1615,16 @@ static void ppt_records(const uint8_t* s, size_t from, size_t to, tout* o, int d
     size_t body = p + 8;
     if ((uint64_t) body + len > to)
       len = (uint32_t) (to - body);
-    if ((verinst & 0x0F) == 0x0F && depth < 32)
-      ppt_records(s, body, body + len, o, depth + 1, guard);
+    if (type == 0x03F8 || type == 0x0FC9)
+    {
+      // MainMaster / Handout: "Click to edit Master title style" etc.
+    }
+    else if ((verinst & 0x0F) == 0x0F && depth < 32)
+      ppt_records(s, body, body + len, o, depth + 1, guard, seen);
+    else if ((type == 0x0FA0 || type == 0x0FA8) && !ppt_first(seen, type, s + body, len))
+    {
+      // the same text again (placeholder copy)
+    }
     else if (type == 0x0FA0)  // TextCharsAtom: UTF-16LE
     {
       put_utf16le(o, s + body, len / 2, ppt_filter, NULL);
@@ -1612,7 +1649,14 @@ static int extract_ppt(const uint8_t* data, size_t size, docscan_text_t* t, tout
     return DOCSCAN_TEXT_BROKEN;
   snprintf(t->kind, sizeof(t->kind), "ppt");
   int guard = 0;
-  ppt_records(s, 0, n, o, 0, &guard);
+  ppt_seen* seen = (ppt_seen*) calloc(1, sizeof(ppt_seen));
+  if (seen == NULL)
+  {
+    free(s);
+    return DOCSCAN_TEXT_NOMEM;
+  }
+  ppt_records(s, 0, n, o, 0, &guard, seen);
+  free(seen);
   free(s);
   ole_summary(data, size, t);
   return DOCSCAN_TEXT_OK;

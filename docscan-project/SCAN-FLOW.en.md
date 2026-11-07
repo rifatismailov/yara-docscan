@@ -1179,7 +1179,7 @@ puts the full text into a queue. E5Search gives the verdict; another watcher sen
   `<BaseUrl>/critical-rules.yar`, `install.ps1` puts it into `C:\Program Files\DocScan\critical\` and checks that it
   compiles. A normal update (`DocScan-Setup.ps1`) keeps the installed rules as they are; `-NoCritical` turns the
   check off and removes the rules. The rules are not in the package or the repository: an E5Search requirement.
-- **Tests**: `docscan-project/test-critical/run_tests.py` (fragments vs the reference, JSON invariants, formats,
+- **Tests**: `docscan-project/test-critical/run_tests.py`; the E5Search corpus (`.md` → docx/doc/odt/rtf/xlsx/xls/pptx/ppt): `md2office.py` + LibreOffice, evaluation — `eval_corpus.py` (fragments vs the reference, JSON invariants, formats,
   parameters, behaviour without the option); fuzzing — `docscan_parsers_fuzzer`, first byte ≥ 0xF0.
 
 ## 13. Known limitations and caveats

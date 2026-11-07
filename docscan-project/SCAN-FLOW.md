@@ -1180,7 +1180,7 @@ YARA тут лише швидкий відбір: шукає в **тексті**
   `<BaseUrl>/critical-rules.yar`, `install.ps1` кладе його в `C:\Program Files\DocScan\critical\` і перевіряє, що
   правила компілюються. Звичайне оновлення (`DocScan-Setup.ps1`) лишає встановлені правила як є; `-NoCritical`
   вимикає перевірку й видаляє правила. Правила не входять у пакет і репозиторій: це вимога проєкту E5Search.
-- **Тести**: `docscan-project/test-critical/run_tests.py` (ділення проти еталона, інваріанти JSON, формати,
+- **Тести**: `docscan-project/test-critical/run_tests.py`; корпус E5Search (`.md` → docx/doc/odt/rtf/xlsx/xls/pptx/ppt): `md2office.py` + LibreOffice, оцінка — `eval_corpus.py` (ділення проти еталона, інваріанти JSON, формати,
   параметри, поведінка без опції); фазер — `docscan_parsers_fuzzer`, перший байт ≥ 0xF0.
 
 ## 13. Відомі обмеження і нюанси
