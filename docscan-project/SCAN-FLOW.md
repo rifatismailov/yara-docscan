@@ -60,59 +60,77 @@
 flowchart TD
     FS([Новий файл у системі]) --> W[docscan-watcher.ps1<br/>FileSystemWatcher]
     W --> CAT{розширення}
-    CAT -->|Office / RTF / PDF / LNK| DOC[document]
+    CAT -->|Office / RTF / PDF / LNK<br/>+ odt ods odp txt csv на ПК з 3-м проходом| DOC[document]
     CAT -->|exe dll ps1 js hta zip iso ...| GEN[general]
     CAT -->|інше| IGN([ігнор])
-    DOC --> Y[yara64 -w --docscan-json --docscan-disarm<br/>docscan-index.yar]
-    GEN --> Y2[yara64 -w --docscan-json<br/>docscan-index.yar]
+    DOC --> Y[yara64 -w --docscan-json --docscan-disarm<br/>--docscan-extract macros<br/>+ --critical-rules / --critical-out на ПК з 3-м проходом]
+    GEN --> Y2[yara64 -w --docscan-json]
 
-    Y --> D[Компіляція docscan-index.yar<br/>docscan-policy.yar + file-index.yar<br/>g_rules = правила]
+    Y --> D[Правила: rules.yarc<br/>docscan-policy.yar + file-index.yar]
     Y2 --> D
-    D --> E[Скан файлу -> module_load docscan]
+    D --> E[ПРОХІД 1: скан файлу -> module_load docscan]
 
     subgraph M[Модуль docscan · ФАКТИ]
         E --> F{magic.c<br/>тип по байтах}
         F -->|PK zip| G1[inspect_ooxml.c<br/>zip.c + rels.c]
-        F -->|D0CF11E0| G2[inspect_ole.c<br/>cfb.c]
+        F -->|D0CF11E0| G2[inspect_ole.c<br/>cfb.c + oleobj.c]
         F -->|curly-rtf| G3[inspect_rtf.c]
         F -->|%PDF| G4[inspect_pdf.c]
         F -->|4C000000| G5[lnk.c]
         G1 -->|vbaProject.bin| V[vba.c + msovba.c<br/>розпакування VBA]
         G2 --> V
-        G1 & G2 & G3 & G4 & G5 & V --> R[vba_code · external_rels · dde<br/>embedded · entries · lnk_target/args<br/>is_* · докази]
+        G1 & G2 & G3 & G4 & G5 & V --> R[vba_code · parts · external_rels · dde<br/>packages · activex · докази]
     end
 
-    R --> CAP[MODULE_IMPORTED: копія фактів<br/>модуль вивантажується до правил]
-    R --> P[Правила виконуються на файлі]
-    P -->|meta.severity| POL[ПОЛІТИКА<br/>findings · verdict · details<br/>meta.disarm -> що лікувати]
+    R --> CAP[MODULE_IMPORTED: копія фактів]
+    R --> P[Правила на файлі]
+    P -->|meta.severity| POL[ПОЛІТИКА<br/>findings · verdict · meta.disarm]
     P -->|без meta.severity| VEN[vendor-правила<br/>yara_file_matches]
-    CAP --> L2[ШАР 2: другий сканер<br/>g_rules по розпакованому VBA<br/>-> yara_matches]
-    POL & VEN & L2 --> J[/SCAN_FINISHED: рядок 1 — JSON/]
-    POL --> H{--docscan-disarm і<br/>є meta.disarm або HIGH?}
-    H -->|так| X[ЕТАП 2 · disarm.c<br/>бекап -> file.docscan-bak]
-    X --> OUT2[/рядок 2: docscan-disarm: шлях -> дія<br/>або detect-only/]
-    J & OUT2 --> REC[watcher: один JSON-рядок<br/>results/docscan-results.json -> Wazuh]
+    CAP --> L2[ПРОХІД 2: ті самі правила<br/>по коду VBA -> yara_matches<br/>по частинах -> yara_part_matches]
+    CAP --> MAC[код VBA -> macros/sha256.vba.txt<br/>+ копія POST на сервер]
+    POL & VEN & L2 --> J[/рядок JSON/]
+
+    J --> C3{ПРОХІД 3<br/>увімкнено?}
+    C3 -->|так| T[text.c: текст + метадані<br/>копія: нижній регістр, один пробіл]
+    T --> CR{фрази правил<br/>E5Search?}
+    CR -->|так| Q[critical.c: фрагменти 700/120 + JSON<br/>-> рядок у critical/critical.json]
+    Q --> OW[інший watcher: забирає файл<br/>перейменуванням -> E5Search]
+    C3 -->|ні| H
+    CR -->|ні| H
+    Q --> H{--docscan-disarm і<br/>meta.disarm або HIGH?}
+    H -->|так| X[disarm.c: бекап -> лікування]
+    X --> OUT2[/docscan-disarm: шлях -> дія/]
+    J & OUT2 --> REC[watcher: JSON-рядок + macro + critical<br/>results/docscan-results.json -> Wazuh]
 ```
 
 ### Те саме текстом
 
 ```
- новий файл ──► watcher ──► yara64 -w --docscan-json [--docscan-disarm] -C rules.yarc <файл>
+ новий файл ──► watcher ──► yara64 -w --docscan-json [--docscan-disarm] [--docscan-extract] [--critical-*] -C rules.yarc <файл>
                                │
      ┌─────────────────────────▼───────────────────────────────┐
-     │ МОДУЛЬ docscan — тільки ФАКТИ (read-only)                │
+     │ ПРОХІД 1 · МОДУЛЬ docscan — тільки ФАКТИ (read-only)     │
      │  magic ─► ooxml │ ole │ rtf │ pdf │ lnk                  │
      │  vbaProject.bin ─► CFB ─► MS-OVBA ─► vba_code            │
-     │  external_rels[] · dde[] · embedded[] · entries[] · lnk  │
+     │  parts[] · external_rels[] · dde[] · packages · lnk      │
      └──────────┬──────────────────────────────────────────────┘
                 │ правила docscan-index.yar на файлі
      ┌──────────┴───────────────┬─────────────────────────────┐
      ▼                          ▼                             ▼
- ПОЛІТИКА (meta.severity)   vendor-правила по файлу      ШАР 2: vendor-правила
- findings, verdict, details  yara_file_matches            по vba_code → yara_matches
- meta.disarm → що лікувати
-     └──────────────► рядок 1: {JSON}   рядок 2: docscan-disarm: ... -> дія | detect-only
-                                         └──► watcher: results\docscan-results.json
+ ПОЛІТИКА (meta.severity)   vendor-правила по файлу      ПРОХІД 2: ті самі правила
+ findings, verdict, details  yara_file_matches            по vba_code → yara_matches,
+ meta.disarm → що лікувати                                по parts[] → yara_part_matches
+     └──────────────► {JSON}         vba_code ──► macros\<sha256>.vba.txt (+ копія на сервер)
+                        │
+                        ▼  ПРОХІД 3 (лише ПК юриста / бухгалтера / кадровика), до лікування
+              text.c: текст документа ─► копія (нижній регістр, один пробіл) ─► правила E5Search
+                        │ збіг                                     │ немає збігу
+                        ▼                                          ▼
+              critical.c: фрагменти + JSON ─► critical\critical.json ─► інший watcher ─► E5Search
+                        │
+                        ▼
+              лікування (disarm.c): docscan-disarm: ... -> дія | detect-only
+                        └──► watcher: results\docscan-results.json (+ macro, critical) ─► Wazuh
 ```
 
 ## 3. Карта файлів
@@ -679,7 +697,7 @@ CVE-2017-11882 (signature-base, Yara-Rules), `mhtml:`/CVE-2021-40444 (signature-
 
 ## 7. Watcher — авто-скан нових файлів
 
-`docscan-project/watcher/docscan-watcher.ps1` (PowerShell 5.1, UTF-8 з BOM). **Один запуск `yara64` на файл.**
+`docscan-project/watcher/docscan-watcher.ps1` (PowerShell 5.1, файл лише ASCII, повідомлення англійською). **Один запуск `yara64` на файл.**
 Правила компілюються **один раз на старті** (`yarac64.exe` поруч із `yara64.exe` → `<OutDir>\rules.yarc`), далі
 кожен скан — `yara64 -C rules.yarc`: 7000+ правил компілюються ~0.5 с і більше, скан готової бази — ~0.06 с.
 Немає `yarac64.exe` або компіляція не вдалась — WARN у лог і скан з вихідних `.yar` (повільно).
@@ -690,6 +708,7 @@ CVE-2017-11882 (signature-base, Yara-Rules), `mhtml:`/CVE-2021-40444 (signature-
 |---|---|---|
 | `document` | doc dot docx docm dotx dotm, xls xlt xlsx xlsm xltx xltm xlsb, ppt pps pot pptx pptm potx potm ppsx ppsm, **xla xlam ppa ppam**, rtf, pdf, lnk, **one, iqy slk** | `yara64 -w --docscan-json [--docscan-disarm] -C rules.yarc` |
 | `general` | exe dll sys scr cpl ocx com msi, **xll**, ps1 psm1 vbs vbe js jse wsf wsh hta bat cmd jar, **msc, url, svg htm html**, zip rar 7z iso img vhd vhdx | те саме без `--docscan-disarm` (vendor-правила; документні — лише в JSON) |
+| `document`, лише ПК з третім проходом | **odt ods odp txt csv** (`-CriticalExt`) | те саме + `--critical-rules/--critical-out` |
 | інше | — | ігнорується |
 
 - **Verdict запису:** verdict із JSON (політика); якщо є `yara_file_matches` (для `document` — разом із
@@ -921,7 +940,7 @@ make -j8 yara.exe      # PE32+ x64, залежить лише від UCRT (є у
 Для кожного файлу: копія → `work.<ext>`; прогін 1 `--docscan-json --docscan-disarm`; прогін 2
 `--docscan-json` (контроль після лікування); видалення копії й бекапу. Таблиця + JSON + підсумок;
 наприкінці SHA256 оригінали до/після. Параметри: `-Yara`, `-Rules`, `-Samples`, `-WorkDir`.
-Файл має бути **UTF-8 з BOM** (інакше PowerShell 5.1 ламає кирилицю).
+Файл лише ASCII (вивід англійською) — BOM і кодування консолі не мають значення.
 
 **Еталонний результат (31 файл, з 2026-11-05):** детект HIGH 27 / MEDIUM 4; після лікування INFO 19 /
 MEDIUM 4 / HIGH 1 (`activex_control.docx` — лише детект) / DELETED 7. Нові зразки (крок 4):

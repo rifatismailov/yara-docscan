@@ -59,61 +59,79 @@ Principles:
 
 ```mermaid
 flowchart TD
-    FS([New file on the system]) --> W[docscan-watcher.ps1<br/>FileSystemWatcher]
+    FS([New file in the system]) --> W[docscan-watcher.ps1<br/>FileSystemWatcher]
     W --> CAT{extension}
-    CAT -->|Office / RTF / PDF / LNK| DOC[document]
+    CAT -->|Office / RTF / PDF / LNK<br/>+ odt ods odp txt csv on third-pass PCs| DOC[document]
     CAT -->|exe dll ps1 js hta zip iso ...| GEN[general]
     CAT -->|other| IGN([ignored])
-    DOC --> Y[yara64 -w --docscan-json --docscan-disarm<br/>docscan-index.yar]
-    GEN --> Y2[yara64 -w --docscan-json<br/>docscan-index.yar]
+    DOC --> Y[yara64 -w --docscan-json --docscan-disarm<br/>--docscan-extract macros<br/>+ --critical-rules / --critical-out on third-pass PCs]
+    GEN --> Y2[yara64 -w --docscan-json]
 
-    Y --> D[Compile docscan-index.yar<br/>docscan-policy.yar + file-index.yar<br/>g_rules = rules]
+    Y --> D[Rules: rules.yarc<br/>docscan-policy.yar + file-index.yar]
     Y2 --> D
-    D --> E[Scan file -> module_load docscan]
+    D --> E[PASS 1: scan the file -> module_load docscan]
 
     subgraph M[docscan module · FACTS]
         E --> F{magic.c<br/>type by bytes}
         F -->|PK zip| G1[inspect_ooxml.c<br/>zip.c + rels.c]
-        F -->|D0CF11E0| G2[inspect_ole.c<br/>cfb.c]
+        F -->|D0CF11E0| G2[inspect_ole.c<br/>cfb.c + oleobj.c]
         F -->|curly-rtf| G3[inspect_rtf.c]
         F -->|%PDF| G4[inspect_pdf.c]
         F -->|4C000000| G5[lnk.c]
         G1 -->|vbaProject.bin| V[vba.c + msovba.c<br/>VBA decompression]
         G2 --> V
-        G1 & G2 & G3 & G4 & G5 & V --> R[vba_code · external_rels · dde<br/>embedded · entries · lnk_target/args<br/>is_* · evidence]
+        G1 & G2 & G3 & G4 & G5 & V --> R[vba_code · parts · external_rels · dde<br/>packages · activex · evidence]
     end
 
-    R --> CAP[MODULE_IMPORTED: copy the facts<br/>module unloads before rules run]
-    R --> P[Rules run on the file]
-    P -->|meta.severity| POL[POLICY<br/>findings · verdict · details<br/>meta.disarm -> what to cure]
+    R --> CAP[MODULE_IMPORTED: copy of the facts]
+    R --> P[Rules on the file]
+    P -->|meta.severity| POL[POLICY<br/>findings · verdict · meta.disarm]
     P -->|no meta.severity| VEN[vendor rules<br/>yara_file_matches]
-    CAP --> L2[LAYER 2: second scanner<br/>g_rules over decompressed VBA<br/>-> yara_matches]
-    POL & VEN & L2 --> J[/SCAN_FINISHED: line 1 — JSON/]
-    POL --> H{--docscan-disarm and<br/>a meta.disarm or HIGH?}
-    H -->|yes| X[STAGE 2 · disarm.c<br/>backup -> file.docscan-bak]
-    X --> OUT2[/line 2: docscan-disarm: path -> action<br/>or detect-only/]
-    J & OUT2 --> REC[watcher: one JSON line<br/>results/docscan-results.json -> Wazuh]
+    CAP --> L2[PASS 2: the same rules<br/>on the VBA code -> yara_matches<br/>on the parts -> yara_part_matches]
+    CAP --> MAC[VBA code -> macros/sha256.vba.txt<br/>+ a copy POSTed to the server]
+    POL & VEN & L2 --> J[/JSON line/]
+
+    J --> C3{PASS 3<br/>on?}
+    C3 -->|yes| T[text.c: text + metadata<br/>copy: lowercase, single spaces]
+    T --> CR{E5Search rule<br/>phrases?}
+    CR -->|yes| Q[critical.c: fragments 700/120 + JSON<br/>-> a line in critical/critical.json]
+    Q --> OW[another watcher: takes the file<br/>by renaming it -> E5Search]
+    C3 -->|no| H
+    CR -->|no| H
+    Q --> H{--docscan-disarm and<br/>meta.disarm or HIGH?}
+    H -->|yes| X[disarm.c: backup -> disarm]
+    X --> OUT2[/docscan-disarm: path -> action/]
+    J & OUT2 --> REC[watcher: JSON line + macro + critical<br/>results/docscan-results.json -> Wazuh]
 ```
 
 ### The same as text
 
 ```
- new file ──► watcher ──► yara64 -w --docscan-json [--docscan-disarm] -C rules.yarc <file>
-                             │
-     ┌───────────────────────▼─────────────────────────────────┐
-     │ docscan MODULE — FACTS only (read-only)                  │
+ new file ──► watcher ──► yara64 -w --docscan-json [--docscan-disarm] [--docscan-extract] [--critical-*] -C rules.yarc <file>
+                               │
+     ┌─────────────────────────▼───────────────────────────────┐
+     │ PASS 1 · docscan MODULE — FACTS only (read-only)        │
      │  magic ─► ooxml │ ole │ rtf │ pdf │ lnk                  │
      │  vbaProject.bin ─► CFB ─► MS-OVBA ─► vba_code            │
-     │  external_rels[] · dde[] · embedded[] · entries[] · lnk  │
+     │  parts[] · external_rels[] · dde[] · packages · lnk      │
      └──────────┬──────────────────────────────────────────────┘
                 │ docscan-index.yar rules on the file
      ┌──────────┴───────────────┬─────────────────────────────┐
      ▼                          ▼                             ▼
- POLICY (meta.severity)     vendor rules on the file     LAYER 2: vendor rules
- findings, verdict, details  yara_file_matches            on vba_code → yara_matches
- meta.disarm → what to cure
-     └──────────────► line 1: {JSON}   line 2: docscan-disarm: ... -> action | detect-only
-                                        └──► watcher: results\docscan-results.json
+ POLICY (meta.severity)     vendor rules on the file     PASS 2: the same rules
+ findings, verdict, details  yara_file_matches            on vba_code → yara_matches,
+ meta.disarm → what to cure                               on parts[] → yara_part_matches
+     └──────────────► {JSON}         vba_code ──► macros\<sha256>.vba.txt (+ copy to the server)
+                        │
+                        ▼  PASS 3 (only the lawyer / accountant / HR PCs), before disarm
+              text.c: document text ─► copy (lowercase, single spaces) ─► E5Search rules
+                        │ match                                     │ no match
+                        ▼                                           ▼
+              critical.c: fragments + JSON ─► critical\critical.json ─► another watcher ─► E5Search
+                        │
+                        ▼
+              disarm (disarm.c): docscan-disarm: ... -> action | detect-only
+                        └──► watcher: results\docscan-results.json (+ macro, critical) ─► Wazuh
 ```
 
 ## 3. File map
@@ -680,7 +698,7 @@ Rules for index files:
 
 ## 7. Watcher — auto-scan of new files
 
-`docscan-project/watcher/docscan-watcher.ps1` (PowerShell 5.1, UTF-8 with BOM). **One `yara64` run per file.**
+`docscan-project/watcher/docscan-watcher.ps1` (PowerShell 5.1, ASCII-only file, English messages). **One `yara64` run per file.**
 Rules are compiled **once at start** (`yarac64.exe` next to `yara64.exe` → `<OutDir>\rules.yarc`), then every
 scan is `yara64 -C rules.yarc`: 7000+ rules take ~0.5 s or more to compile, scanning with the compiled set ~0.06 s.
 No `yarac64.exe` or the compile fails — a WARN in the log and scans from the `.yar` sources (slow).
@@ -691,6 +709,7 @@ No `yarac64.exe` or the compile fails — a WARN in the log and scans from the `
 |---|---|---|
 | `document` | doc dot docx docm dotx dotm, xls xlt xlsx xlsm xltx xltm xlsb, ppt pps pot pptx pptm potx potm ppsx ppsm, **xla xlam ppa ppam**, rtf, pdf, lnk, **one, iqy slk** | `yara64 -w --docscan-json [--docscan-disarm] -C rules.yarc` |
 | `general` | exe dll sys scr cpl ocx com msi, **xll**, ps1 psm1 vbs vbe js jse wsf wsh hta bat cmd jar, **msc, url, svg htm html**, zip rar 7z iso img vhd vhdx | the same without `--docscan-disarm` (vendor rules; document rules only in the JSON) |
+| `document`, third-pass PCs only | **odt ods odp txt csv** (`-CriticalExt`) | the same + `--critical-rules/--critical-out` |
 | other | — | ignored |
 
 - **Record verdict:** the verdict from the JSON (policy); if there are `yara_file_matches` (for `document`
@@ -922,7 +941,7 @@ then `autoreconf` + `configure` (macOS).
 For each file: copy → `work.<ext>`; run 1 `--docscan-json --docscan-disarm`; run 2 `--docscan-json`
 (check after disarm); delete the copy and backup. Table + JSON + summary; at the end the originals'
 SHA256 before/after. Parameters: `-Yara`, `-Rules`, `-Samples`, `-WorkDir`.
-The file must be **UTF-8 with BOM** (otherwise PowerShell 5.1 garbles Cyrillic).
+The file is ASCII-only (English output), so no BOM / code page issues.
 
 **Reference result (31 files, since 2026-11-05):** detection HIGH 27 / MEDIUM 4; after disarm INFO 19 /
 MEDIUM 4 / HIGH 1 (`activex_control.docx` — detect only) / DELETED 7. New samples (step 4):
