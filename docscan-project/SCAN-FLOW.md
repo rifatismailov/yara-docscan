@@ -134,11 +134,15 @@ libyara/modules/docscan/            МОДУЛЬ (C, вшитий у libyara)
   inspect_rtf.c / inspect_pdf.c     RTF / PDF
   lnk.c                             бінарний розбір LNK (MS-SHLLINK)
   disarm.c                          ЛІКУВАННЯ (викликається з CLI, не з модуля)
+  oleobj.c                          об'єкти в CFB (Package, Equation, ActiveX, XLM) + частини для Шару 2
+  text.c                            текст + метадані документа для критичної інформації (третій прохід)
+  critical.c                        копія для пошуку, SHA-256, фрагменти, JSON для черги E5Search
 libyara/include/yara/docscan_disarm.h   контракт лікування (docscan_disarm_info, docscan_disarm)
+libyara/include/yara/docscan_critical.h контракт третього проходу (docscan_text_extract, docscan_critical_json, ...)
 libyara/modules/module_list         + MODULE(docscan)
-Makefile.am                         + 16 рядків MODULES += .../docscan/*.c
-windows/vs20{15,17,19}/libyara/libyara.vcxproj   + 15 ClCompile docscan
-cli/yara.c                          + прапори --docscan-json/-extract/-disarm, JSON, Шар 2, do_disarm
+Makefile.am                         + 18 рядків MODULES += .../docscan/*.c
+windows/vs20{15,17,19}/libyara/libyara.vcxproj   + ті самі 18 ClCompile docscan
+cli/yara.c                          + прапори --docscan-json/-extract/-disarm, --file-vars, --critical-*, JSON, Шар 2, do_disarm, critical_process
 
 docscan-project/
   SCAN-FLOW.md / SCAN-FLOW.en.md    цей документ (українська / англійська)
@@ -152,6 +156,8 @@ docscan-project/
   watcher/docscan-watcher.ps1       авто-скан нових файлів → results\docscan-results.json
   deploy/                           пакет розгортання: build_package.ps1, install.ps1, uninstall.ps1, README.txt
   fuzz/                             libFuzzer: 2 фазери, словник, корпус, build.sh, regressions/
+  test-critical/                    тести третього проходу: run_tests.py, корпус E5Search (md2office, eval_corpus),
+                                    «компот» (mix_corpus, eval_mix), ворожі файли (hostile, hostile_run)
   test-range/
     run_tests.ps1                   регресійний тест (копія → детект+лікування → повторний скан)
     gen_range.ps1                   генератор полігону (Windows + Word COM)
@@ -173,8 +179,8 @@ docscan-project/
 **Реєстрація** (три місця):
 - `libyara/modules/module_list` — рядок `MODULE(docscan)`. `modules.c` інклудить цей файл двічі
   (X-macro) і будує таблицю `yr_modules_table[]` з покажчиками на функції модуля.
-- `Makefile.am` — 16 рядків `MODULES += libyara/modules/docscan/*.c` (macOS/Linux, autotools).
-- `windows/vs20{15,17,19}/libyara/libyara.vcxproj` — ті самі 16 файлів як `<ClCompile>` (MSVC).
+- `Makefile.am` — 18 рядків `MODULES += libyara/modules/docscan/*.c` (macOS/Linux, autotools).
+- `windows/vs20{15,17,19}/libyara/libyara.vcxproj` — ті самі 18 файлів як `<ClCompile>` (MSVC).
   **Новий `.c` треба додавати в обидві системи збірки.**
 
 **Трюк з іменами.** На початку `docscan.c` стоїть `#define MODULE_NAME docscan`; макроси з
@@ -983,6 +989,13 @@ cd /tmp/docscan-fuzz
   **перезавантаження**: завдання стартувало саме, `rules.yarc` перекомпільовано, скан після старту працює.
   Знайдено й виправлено: з `0511a241` `yara64.exe` падав на Windows ще до роботи (`STATUS_STACK_OVERFLOW`:
   `THREAD_ARGS[YR_MAX_THREADS]` на стеку `main` > 1 МБ) — тепер у купі.
+- Третій прохід (2026-11-07, Windows 11 VM, MSVC, пакет `20261107-b9083062`, повне встановлення з `-CriticalRules`):
+  корпус E5Search 69 `.md` → 372 документи у 8 форматах — у черзі 186/208 позитивних, 0/164 негативних, усі JSON
+  валідні, ділення = еталон; через watcher — те саме за 261 с. «Компот» (180 документів корпусу з безпечними векторами
+  1-го і 2-го проходів, лікування увімкнене) — 0 збоїв: вердикти, лікування (у т.ч. карантин) і в черзі текст
+  оригіналу. 35 ворожих файлів (Mac + Windows) — без падінь і зависань. Кирилиця в шляхах, відкритий документ (у черзі
+  один раз, лікування після звільнення), гонка з читачем черги (184 = 184, 0 зламаних, 0 дублів). Фазинг 2 год
+  (6,0 млн запусків текстового шляху + 1,7 млн модуля) — 0 падінь. Регресія `run_tests.ps1` 31/31 без змін.
 - Політика в правилах (2026-11-02, macOS): 19/19 вердиктів (з `dde_link.docx` — 20/20) і дій лікування як в еталоні; тест на хибні спрацювання — див. §6.1.
 - Watcher на VM: 23 файли в `inbox`/`Downloads` + ручні документи на робочому столі (2 чисті
   робочі звіти → INFO, 3 семпли → HIGH) — 2026-11-02. Хибних спрацювань не було.

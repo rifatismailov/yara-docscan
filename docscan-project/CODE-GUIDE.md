@@ -48,9 +48,12 @@ libyara/modules/docscan/          МОДУЛЬ (C) — розбір докуме
   inspect_pdf.c    PDF: /Launch, JavaScript, /OpenAction, вкладення
   lnk.c            ярлики Windows (MS-SHLLINK): ціль, аргументи, UTF-16 → UTF-8
   disarm.c         ЛІКУВАННЯ (викликається тільки з CLI, не з модуля)
+  text.c           ТРЕТІЙ ПРОХІД: повний текст + метадані документа (docx/xlsx/pptx, odt/ods/odp, doc/xls/ppt, rtf, txt/csv)
+  critical.c       ТРЕТІЙ ПРОХІД: копія для пошуку, SHA-256, ділення на фрагменти, JSON для черги E5Search
 libyara/include/yara/docscan_disarm.h   інтерфейс лікування (docscan_disarm_info, docscan_disarm)
+libyara/include/yara/docscan_critical.h інтерфейс третього проходу (docscan_text_t, docscan_text_extract, docscan_critical_json)
 libyara/modules/module_list              рядок MODULE(docscan) — реєстрація модуля в YARA
-cli/yara.c                                CLI yara64: прапори --docscan-*, JSON, 2-й скан, лікування, --file-vars
+cli/yara.c                                CLI yara64: прапори --docscan-*, JSON, 2-й скан, лікування, --file-vars, --critical-* (3-й прохід)
 
 docscan-project/
   rules/docscan-policy.yar   політика: 29 правил DS_* (рівень, лікування, текст для алерту)
@@ -61,6 +64,7 @@ docscan-project/
   watcher/docscan-watcher.ps1   вотчер (PowerShell 5.1)
   deploy/                    install.ps1, uninstall.ps1, build_package.ps1, manager/ (Wazuh)
   test-range/                генератори тестових зразків, run_tests.ps1
+  test-critical/             тести третього проходу (Python): run_tests.py, корпус, «компот», ворожі файли
   test-samples/generated/    31 тестовий зразок (у git); provided/ — реальні, НЕ в git
   fuzz/                      libFuzzer-харнеси, корпус, регресії
   vendor-sources/            клони джерел правил (НЕ в git)
@@ -325,6 +329,42 @@ CFB — «FAT-файлова система» всередині файлу: с�
 
 ---
 
+### 4.11 Третій прохід: `text.c`, `critical.c` (критична інформація для E5Search)
+
+Це не частина модуля для правил: функції викликає CLI (`critical_process`), як і `disarm.c`. Вони не залежать
+від YARA (чистий C) і використовують наші парсери: `zip.c`, `cfb.c`, `magic.c`, `dynbuf.h`.
+
+**`text.c` — витяг тексту.** Вихід — `docscan_text_t`: `text` (валідний UTF-8, без NUL, `\r\n` → `\n`, обрізаний
+`strip()` як у Python), `kind` (що це за вміст), метадані (`author`, `last_modified_by`, `title`, `created_at`,
+`modified_at`).
+
+| Функція | Що робить |
+|---|---|
+| `docscan_text_extract(data, size, ext, out)` | Точка входу. Тип — за вмістом (`docscan_detect_magic`), розширення важить лише для `txt`/`csv`. Повертає `DOCSCAN_TEXT_OK` / `UNSUPPORTED` / `EMPTY` / `ENCRYPTED` / `BROKEN` / `NOMEM`. |
+| `put_bytes`, `put_cp`, `put_utf16le` | Запис у вихідний буфер (`tout`) з обмеженням `DOCSCAN_TEXT_MAX` (16 МБ): те, що влазить, лишається, далі — ігнор. `put_cp` кодує код-пойнт у UTF-8, `put_utf16le` склеює сурогатні пари. |
+| `cp_byte(b, cp)` | Байт у Windows-1251 або 1252 → код-пойнт (таблиці `cp1251_hi`, `cp1252_80`). |
+| `utf8_seq`, `is_valid_utf8`, `py_space` | Перевірка UTF-8; пробільні символи — рівно як `str.isspace()` у Python (важливо для `strip`). |
+| `finalize(t, raw)` | Єдиний вигляд тексту (див. вище). Після нього текст **не змінюється**: його ділять і рахують `start`/`end`. |
+| `xml_text(o, x, n, profile)` | Невеликий обхід XML без парсера: збирає текст усередині потрібних тегів. `xml_profile` каже, які теги — текст (`t`), абзац (`p`, `si`, …), табуляція, перенос, що пропускати (`mc:Fallback`, `w:tabs`, `rPh`, ODF `tracked-changes`). Імена — без префікса (`w:t` = `a:t` = `t`). |
+| `xml_entity`, `xml_chars`, `odf_count` | `&lt;` … `&#x…;`; символьні дані; `<text:s text:c="N"/>` у ODF. |
+| `extract_zip` | docx (колонтитули → `document.xml` → виноски → коментарі), xlsx (`sharedStrings.xml` + рядки в аркушах), pptx (слайди за номером, потім нотатки), ODF (`content.xml`; тип — з `mimetype`). `ooxml_core` / `odf_meta` — метадані. |
+| `extract_rtf` | Розбір керівних слів RTF: стек груп (`rtf_grp`: пропуск / захоплення метаданих / `\uc`), `\uN` + пропуск запасних символів, `\'hh` у кодуванні `\ansicpg` (або 1251, якщо є шрифт `\fcharset204`), пропуск службових груп (`RTF_SKIP`), `\author` / `\operator` / `\title`. |
+| `extract_doc` | Word 97+: FIB у потоці `WordDocument` → таблиця шматків (CLX / PlcPcd) у `0Table`/`1Table` → кожен шматок 8-бітний (1252) або UTF-16. `word_filter` перетворює службові символи Word (кінець абзацу, клітинки, поля `0x13/0x14/0x15` — інструкція поля пропускається, результат лишається). |
+| `extract_xls` | Excel 97+: таблиця рядків SST у потоці `Workbook`, з переходами через записи `CONTINUE` (`biff_rd`, `biff_next`, `biff_avail`, `biff_skip`). `FILEPASS` → «під паролем». |
+| `extract_ppt` | PowerPoint 97+: рекурсивний обхід записів потоку `PowerPoint Document`, текст з `TextCharsAtom`/`TextBytesAtom`. Пропускаються зразок слайдів і роздатковий матеріал, повторні копії тексту полів (`ppt_seen`). |
+| `ole_summary` | Метадані старих форматів з `\x05SummaryInformation` (автор, назва, дати `FILETIME` → ISO, кодування з PID 1). |
+| `extract_plain` | txt/csv: BOM UTF-8 / UTF-16LE / UTF-16BE, інакше валідний UTF-8, інакше 1251 (не вгадуємо далі). |
+
+**`critical.c` — після витягу.**
+
+| Функція | Що робить |
+|---|---|
+| `docscan_text_normalize` | Копія для правил: нижній регістр (латиниця, кирилиця з Є/І/Ї/Ґ — функція `lower`), пробіли/переноси → один пробіл, м'який перенос геть, апострофи → `'`. Оригінал не змінюється. |
+| `docscan_sha256_hex` | SHA-256 файлу (власна реалізація, без OpenSSL). |
+| `cp_offsets` | Байтовий зсув кожного код-пойнта: `start`/`end` у JSON — у код-пойнтах, а різати треба байти. |
+| `docscan_text_split` | Ділення **рівно** як `yara_sender_ref.py` E5Search (700/120; останній `\n` або пробіл у другій половині вікна). Не міняти — на цьому алгоритмі виміряно якість. |
+| `docscan_critical_json` | Один рядок JSON (схема 2.0) з `\n` у кінці; `jstr` екранує за правилами JSON, не-ASCII лишає як UTF-8. |
+
 ## 5. Лікування — `disarm.c`
 
 Компілюється в libyara, але **викликається тільки з CLI** (`do_disarm`), бо модуль YARA має лише читати.
@@ -348,7 +388,8 @@ CFB — «FAT-файлова система» всередині файлу: с�
 Решта `yara.c` — upstream YARA. Наше:
 
 **Глобальні прапори:** `docscan_json`, `docscan_extract`, `docscan_disarm_flag`, `docscan_backup_dir(_utf8)`,
-`file_vars`, `g_rules` (завантажені правила — для 2-го скану).
+`file_vars`, `g_rules` (завантажені правила — для 2-го скану); для третього проходу — `critical_rules` (окремо скомпільовані
+правила E5Search), `critical_out_utf8`, `critical_rules_utf8`, `critical_chunk_size/overlap`.
 
 **Стан одного файлу — `DOCSCAN_STATE`** (у `CALLBACK_ARGS`, поле `dsc`): тип, копії доказів, копія VBA, копії
 `parts`, `max_severity`, JSON-списки (`findings`, `findings_text`, `file_matches`, `doc_matches`, `info_matches`,
@@ -369,21 +410,33 @@ CFB — «FAT-файлова система» всередині файлу: с�
 | `docscan_list_add`, `docscan_list_has`, `docscan_obj_add` | JSON-списки (`"a","b"`) і масив `{"rule","description"}` з екрануванням і обмеженням розміру. |
 | `docscan_json_puts`, `docscan_json_evidence`, `docscan_defang` | Друк рядків у JSON; `http` → `hxxp` у доказах. |
 | `docscan_state_reset`, `docscan_copy_string` | Скинути стан (звільнити копії); скопіювати рядок з поля модуля. |
+| `critical_setup()` | Після завантаження основних правил: перевіряє `--critical-out` і `--critical-chunk`, читає файл `--critical-rules` і компілює його окремим компілятором (`yr_compiler_add_string`). |
+| `critical_process(file_path)` | Третій прохід для одного файлу (після скану, **до** лікування): читає файл (≤ 100 МБ) → `docscan_text_extract` → `docscan_text_normalize` → `yr_rules_scan_mem` з `critical_callback` → розмір фрагментів (meta правила → `--critical-chunk` → 700/120) → SHA-256, дати файлу, якщо в документі їх немає → `docscan_critical_json` → дописує рядок у чергу під `output_mutex` і друкує `docscan-critical: queued …`. Текст документа ніде не друкується. |
+| `critical_callback` | Збирає назви правил, що спрацювали, і `e5_chunk_size` / `e5_chunk_overlap` з першого правила, де вони є. |
+| `critical_print`, `iso_utc`, `filetime_utc`, `fopen_utf8` | Друк вузьким рядком (на Windows консоль у широкому режимі — тимчасово `_O_TEXT`); дати ISO UTC; відкриття файлу за UTF-8 шляхом (`_wfopen`). |
 
 `THREAD_ARGS` для багатопотокового скану виділяються в купі (`calloc`) — див. розділ 12.
+
+Шляхи `--docscan-backup-dir`, `--critical-rules`, `--critical-out` на Windows беруться з широкого `argv` (UTF-8):
+парсер опцій віддає їх в ANSI і кирилиця губиться.
 
 ---
 
 ## 7. Вотчер — `docscan-watcher.ps1`
 
-PowerShell 5.1, файл у UTF-8 **з BOM** (без BOM кирилиця ламається).
+PowerShell 5.1. Файл **лише ASCII** (усі повідомлення й коментарі англійською) — тоді кодування консолі, BOM і `irm`
+не мають значення. Українська — лише в текстах правил (`meta.text`), які приходять з yara64.
 
 **Параметри** (верх файлу): `-WatchPath`, `-Yara`, `-Yarac`, `-Rules`, `-OutDir`, `-BackupDir`, `-NoDisarm`,
 `-QuarantineGeneral`, `-MaxLogMB`, `-KeepLogs`, `-MaxSizeMB`, `-SettleSeconds`, `-ReadyTimeout`,
-`-RescanCooldown`, `-DisarmRetryMinutes`, `-DisarmNoticeHours`, `-DocExt`, `-GenExt`, `-ExcludePattern`.
+`-RescanCooldown`, `-DisarmRetryMinutes`, `-DisarmNoticeHours`, `-DocExt`, `-GenExt`, `-ExcludePattern`;
+збереження макросів: `-MacroDir`, `-MacroUpload`, `-MacroKeepDays`, `-MacroMaxMB`; третій прохід: `-CriticalRules`,
+`-CriticalOut`, `-CriticalExt` (`.odt .ods .odp .txt .csv` — лише коли третій прохід увімкнений).
 
 **Стан у пам'яті:** `$pending` (події, що чекають), `$recent` (SHA256 останнього скану), `$LastScan` (час скану),
-`$LastKey` (останній запис у Wazuh), `$Retry` (+ `retry.json`), `$rescanAt/$rescanFrom` (після переповнення).
+`$LastKey` (останній запис у Wazuh), `$Retry` (+ `retry.json`), `$rescanAt/$rescanFrom` (після переповнення),
+`$MacroSentSet` (+ `macros\sent.txt` — надіслані макроси), `$CritQueued` (sha256 документів, уже поставлених у чергу
+E5Search за цей запуск — повторний скан того самого вмісту не дублює його в черзі).
 
 | Функція | Що робить |
 |---|---|
@@ -392,7 +445,10 @@ PowerShell 5.1, файл у UTF-8 **з BOM** (без BOM кирилиця лам
 | `Get-Category(path)` | `document` / `general` / `$null` за розширенням. |
 | `Test-Excluded(path)` | Виключені шляхи (кеші, Recent, кошик, `~$`, свої теки). |
 | `Wait-FileReady(path)` | Чекає, поки розмір перестане мінятися: `ready` / `gone` / `timeout`. |
-| `Invoke-Scan(path, cure)` | Один запуск `yara64`; повертає розібраний JSON, дію лікування, помилки. |
+| `Invoke-Scan(path, cure, extract, critical)` | Один запуск `yara64`; для документів також `--docscan-extract` (код макросів) і, якщо увімкнено, `--critical-rules/--critical-out`. Повертає розібраний JSON, дію лікування, помилки і `critical` (з рядка `docscan-critical: queued …`). |
+| `Save-Macro(sha, rec, ds)` | Розпакований VBA → `macros\<sha256 документа>.vba.txt` із заголовком (ПК, шлях, знахідки, час). |
+| `Send-Macro(file)` | POST файлу макросу на колектор (`-MacroUpload`), запис у `sent.txt`. |
+| `Sync-Macros` | Раз на годину: видалити старі/зайві (90 днів / 500 МБ), повторити невдалі надсилання. |
 | `Get-Summary(rec)` | Текст людською мовою: тексти політики, «YARA правило (у частині) — опис», дія. ≤ 600 символів. |
 | `Max-Verdict(a, b)` | Більший з двох вердиктів. |
 | `Scan-File(path, evt)` | Повна обробка файлу: запис, SHA256, скан, вердикт (документні й 2-й скан рахуються лише для `document`), карантин general (опційно), `summary`, запис у `docscan-results.json` (крім однакових повторів), лог. Повертає запис. |
@@ -417,6 +473,9 @@ PowerShell 5.1, файл у UTF-8 **з BOM** (без BOM кирилиця лам
 | `Remove-LegacyArBlocks(c)` | Прибирає блоки старого active-response (`doc-scan`, `yara-scan`). |
 | `Read-Text` / `Write-Text` | Читання/запис UTF-8 без BOM (`ossec.conf`). |
 | `Step` / `Fail` | Вивід кроку / помилка з виходом. |
+| `install.ps1` (нові параметри) | `-DetectOnly` (пілот), `-NoAvExclusion`, `-MacroUpload <url>`, `-CriticalRules <файл>` (правила E5Search → `critical\`, перевірка компіляції з `--file-vars`), `-NoCritical`. |
+| `DocScan-Setup.ps1` | Маленький ASCII-завантажувач для `irm … \| iex`: бере `DocScan-Install.ps1` і запускає його в окремому 64-бітному `powershell.exe`. Копії на сервері: `-Pilot` (`-DetectOnly`), `-Critical`. |
+| `DocScan-Install.ps1` | Завантажує пакет за `DocScan-latest.txt`, звіряє SHA256, запускає `install.ps1`; з `-Critical` ще й `<BaseUrl>/critical-rules.yar`. |
 | `uninstall.ps1` | Видалення (`-Purge` — разом з результатами й карантином), прибирає `<localfile>`. |
 | `manager/cleanup_manager.sh`, `manager/local_rules.docscan.xml` | Для менеджера Wazuh: прибрати старі `<command>`/`<active-response>`; еталонний блок правил. |
 
@@ -456,7 +515,11 @@ PowerShell 5.1, файл у UTF-8 **з BOM** (без BOM кирилиця лам
 | `test-range/gen_range.ps1` | Справжні Office-документи через Word COM (на Windows з Office). |
 | `fuzz/docscan_fuzzer.cc` | `LLVMFuzzerInitialize` компілює вбудоване правило з `import "docscan"`; `LLVMFuzzerTestOneInput` сканує випадковий вхід через модуль (`yr_rules_scan_mem`). |
 | `fuzz/docscan_parsers_fuzzer.cc` | Перший байт обирає парсер (`% 8`): OLE, LNK, RTF, PDF, OOXML, MS-OVBA, rels, лікування. Звільняє `vba_code` і `parts[]`. |
-| `fuzz/build.sh` | Окрема збірка з ASan/UBSan + прогін регресій `fuzz/regressions/`. |
+| `fuzz/build.sh` | Окрема збірка з ASan/UBSan + прогін регресій `fuzz/regressions/`. Перший байт ≥ 0xF0 у `docscan_parsers_fuzzer` — третій прохід (витяг тексту, нормалізація, JSON). |
+| `test-critical/run_tests.py` | Третій прохід: ділення проти еталона E5Search, інваріанти JSON, усі формати, параметри, поведінка без опції (`--yara`, `--legacy DIR`). |
+| `test-critical/md2office.py`, `eval_corpus.py` | Корпус E5Search (`.md`) → docx/xlsx/pptx (далі LibreOffice → doc/odt/rtf/xls/ppt); оцінка: у черзі чи ні проти розмітки. |
+| `test-critical/mix_corpus.py`, `eval_mix.py` | «Компот»: документи корпусу + безпечні вектори 1-го і 2-го проходів; перевірка вердикту, лікування й тексту в черзі (режими `cli` / `watcher`). |
+| `test-critical/hostile.py`, `hostile_run.py` | 35 ворожих / зламаних файлів: без падінь і зависань, зрозуміла причина. |
 | `fuzz/fetch_corpus.sh`, `fuzz/make_corpus.py` | Корпус з відкритих джерел / з тестових зразків. |
 
 Перевірити зміну модуля на Mac:
@@ -539,9 +602,16 @@ rule DS_XLM_MACROSHEET
 | `data.file` у Wazuh | Поле `file` вже keyword в індексі → алерти відкидались | Поле `docfile`; нові імена перевіряти в мапінгу |
 | Ключі-імена в JSON | `{"Ім'я_правила": "опис"}` додавав би поле на кожне правило → ліміт полів індексу | Масив `{"rule": …, "description": …}` |
 | Скан тексту документа | Скриптові правила спрацювали на лекцію, що описує certutil | У 2-й скан — лише `.rels`, вкладення, ActiveX, макроаркуші, altChunk, об'єкти RTF |
-| PowerShell без BOM | Кирилиця в скрипті → тихий збій на Windows | Скрипти з кирилицею — UTF-8 з BOM |
+| PowerShell і кирилиця | Кирилиця в скрипті без BOM → тихий збій; `irm \| iex` ламає і BOM, і кирилицю | Скрипти лише ASCII (повідомлення англійською) |
 | PowerShell: регістр змінних | `$o` і `$O` — одна змінна | Різні імена, а не різний регістр |
 | zsh: glob без збігу | `rm crash-*` без файлів обриває ланцюжок `&&` | `find … -delete` або `setopt nullglob` |
 | vcxproj | Файли з CRLF (як в upstream) | Не перезберігати з LF; додавати рядок, не переписуючи файл |
 | `yr_object_get_string(m, "%s", field)` | Щоб прибрати попередження компілятора, обгорнули ім'я поля в `"%s"`. libyara розгортає `%s`/`%i` лише всередині `[...]` — шукалось поле з назвою «%s», усі докази в JSON стали порожні (вердикти — ні, тому регресія не помітила; помітили в описі алерту Wazuh) | Не «лагодити» попередження без розуміння API; перевіряти не лише вердикт, а й `evidence` |
 | Файл відкритий у Word | Лікування не може підмінити файл | `failed:replace` + повтор у вотчері (`retry.json`) |
+| Опції CLI на Windows | Парсер віддає рядки в ANSI → кирилиця в шляху губиться | Брати значення з широкого `argv` і перетворювати в UTF-8 (`WideCharToMultiByte`) |
+| `printf` у консоль Windows | Консоль у режимі `_O_U8TEXT` → вузький `printf` падає / нічого не друкує | Тимчасово `_setmode(..., _O_TEXT)`, як у `critical_print` і `print_docscan_json` |
+| Потоки CFB > 4 МБ | `cfb_walk` пропускав великі потоки → немає тексту з великих .doc/.xls | `docscan_cfb_get_stream(name, max)` з окремим лімітом (до 64 МБ) |
+| PowerPoint 97 | Текст полів зберігається двічі + зразок слайдів («Click to edit Master…») | Пропуск повторів (`ppt_seen`) і контейнерів MainMaster/Handout |
+| Обмеження розміру | Великий шматок тексту, що не влазить, відкидався цілком | Дописувати те, що влазить, і різати на межі UTF-8 |
+| Самоперевірка правил | `yara64 --critical-rules` без `--file-vars` → основні правила (змінні `filepath` тощо) не компілюються | Будь-який запуск з `docscan-index.yar` — з `--file-vars` або `--docscan-json` |
+| Повторний скан | Повтор лікування відкритого файлу ставив документ у чергу E5Search ще раз | `$CritQueued` — один раз на вміст (sha256) за запуск |

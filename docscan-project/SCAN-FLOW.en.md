@@ -135,11 +135,15 @@ libyara/modules/docscan/            MODULE (C, built into libyara)
   inspect_rtf.c / inspect_pdf.c     RTF / PDF
   lnk.c                             binary LNK parsing (MS-SHLLINK)
   disarm.c                          DISARM (called from the CLI, not from the module)
+  oleobj.c                          objects in CFB (Package, Equation, ActiveX, XLM) + parts for Layer 2
+  text.c                            document text + metadata for critical information (third pass)
+  critical.c                        search copy, SHA-256, fragments, JSON for the E5Search queue
 libyara/include/yara/docscan_disarm.h   disarm contract (docscan_disarm_info, docscan_disarm)
+libyara/include/yara/docscan_critical.h third-pass contract (docscan_text_extract, docscan_critical_json, ...)
 libyara/modules/module_list         + MODULE(docscan)
-Makefile.am                         + 16 lines MODULES += .../docscan/*.c
-windows/vs20{15,17,19}/libyara/libyara.vcxproj   + 15 docscan ClCompile entries
-cli/yara.c                          + --docscan-json/-extract/-disarm flags, JSON, Layer 2, do_disarm
+Makefile.am                         + 18 lines MODULES += .../docscan/*.c
+windows/vs20{15,17,19}/libyara/libyara.vcxproj   + the same 18 docscan ClCompile entries
+cli/yara.c                          + --docscan-json/-extract/-disarm, --file-vars, --critical-* flags, JSON, Layer 2, do_disarm, critical_process
 
 docscan-project/
   SCAN-FLOW.md / SCAN-FLOW.en.md    this document (Ukrainian / English)
@@ -153,6 +157,8 @@ docscan-project/
   watcher/docscan-watcher.ps1       auto-scan of new files → results\docscan-results.json
   deploy/                           deployment package: build_package.ps1, install.ps1, uninstall.ps1, README.txt
   fuzz/                             libFuzzer: 2 fuzzers, dictionary, corpus, build.sh, regressions/
+  test-critical/                    third-pass tests: run_tests.py, the E5Search corpus (md2office, eval_corpus),
+                                    the "compote" (mix_corpus, eval_mix), hostile files (hostile, hostile_run)
   test-range/
     run_tests.ps1                   regression test (copy → detect+disarm → re-scan)
     gen_range.ps1                   test-range generator (Windows + Word COM)
@@ -174,8 +180,8 @@ docscan-project/
 **Registration** (three places):
 - `libyara/modules/module_list` — the line `MODULE(docscan)`. `modules.c` includes this file twice
   (X-macro) and builds the `yr_modules_table[]` table of pointers to module functions.
-- `Makefile.am` — 16 lines `MODULES += libyara/modules/docscan/*.c` (macOS/Linux, autotools).
-- `windows/vs20{15,17,19}/libyara/libyara.vcxproj` — the same 16 files as `<ClCompile>` (MSVC).
+- `Makefile.am` — 18 lines `MODULES += libyara/modules/docscan/*.c` (macOS/Linux, autotools).
+- `windows/vs20{15,17,19}/libyara/libyara.vcxproj` — the same 18 files as `<ClCompile>` (MSVC).
   **A new `.c` file must be added to both build systems.**
 
 **Name trick.** `docscan.c` starts with `#define MODULE_NAME docscan`; macros in `yara/modules.h`
@@ -984,6 +990,13 @@ Final runs after the fixes: module — 2.28 M inputs, parsers — 0.96 M inputs 
   **reboot**: the task started by itself, `rules.yarc` recompiled, scanning works after the start.
   Found and fixed: since `0511a241` `yara64.exe` died on Windows before doing anything (`STATUS_STACK_OVERFLOW`:
   `THREAD_ARGS[YR_MAX_THREADS]` on the `main` stack > 1 MB) — now on the heap.
+- Third pass (2026-11-07, Windows 11 VM, MSVC, package `20261107-b9083062`, full install with `-CriticalRules`):
+  the E5Search corpus, 69 `.md` → 372 documents in 8 formats — queued 186/208 positives, 0/164 negatives, every JSON
+  valid, fragments = the reference; through the watcher — the same in 261 s. "Compote" (180 corpus documents with
+  inert first/second-pass vectors, disarm on) — 0 failures: verdicts, disarm (incl. quarantine) and the original text
+  in the queue. 35 hostile files (Mac + Windows) — no crash, no hang. Cyrillic paths, an open document (queued once,
+  disarmed after release), a race with the queue reader (184 = 184, 0 broken, 0 duplicates). Fuzzing 2 h (6.0 M
+  text-path + 1.7 M module runs) — 0 crashes. Regression `run_tests.ps1` 31/31 unchanged.
 - Policy in rules (2026-11-02, macOS): 19/19 verdicts (with `dde_link.docx` — 20/20) and disarm actions match the reference; false-positive test — see §6.1.
 - Watcher on the VM: 23 files in `inbox`/`Downloads` + documents dropped on the desktop by hand (2
   clean work reports → INFO, 3 samples → HIGH) — 2026-11-02. No false positives.
