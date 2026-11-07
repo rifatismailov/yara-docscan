@@ -41,6 +41,8 @@ param(
   [string]$MacroUpload = "",       # also upload it: POST to this collector URL (e.g. http://<server>:8080)
   [int]$MacroKeepDays  = 90,       # local retention of the macro store: older files are deleted ...
   [int]$MacroMaxMB     = 500,      # ... and the oldest go first when the store is bigger than this
+  [string]$CriticalRules = "",     # critical-information rules (.yar, from E5Search); empty = off
+  [string]$CriticalOut = "",       # queue for E5Search (JSON Lines; default <OutDir>\..\critical\critical.json)
   [string[]]$DocExt = @(
     ".doc",".dot",".docx",".docm",".dotx",".dotm",
     ".xls",".xlt",".xlsx",".xlsm",".xltx",".xltm",".xlsb",
@@ -72,6 +74,7 @@ if (-not $Rules)     { $Rules     = "$Base\yara\docscan-project\rules\docscan-in
 if (-not $OutDir)    { $OutDir    = "$Base\results" }
 if (-not $BackupDir) { $BackupDir = "$Base\quarantine" }
 if (-not $MacroDir)  { $MacroDir  = Join-Path (Split-Path $OutDir) "macros" }
+if (-not $CriticalOut) { $CriticalOut = Join-Path (Split-Path $OutDir) "critical\critical.json" }
 $MacroUpload = $MacroUpload.TrimEnd('/')
 
 [Console]::OutputEncoding = [Text.Encoding]::UTF8   # yara64 output (paths, evidence) is UTF-8
@@ -109,6 +112,7 @@ function Test-Excluded([string]$path) {
   if ($path.StartsWith($OutDir, [StringComparison]::OrdinalIgnoreCase)) { return $true }
   if ($path.StartsWith($BackupDir, [StringComparison]::OrdinalIgnoreCase)) { return $true }
   if ($path.StartsWith($MacroDir, [StringComparison]::OrdinalIgnoreCase)) { return $true }
+  if ($path.StartsWith((Split-Path $CriticalOut), [StringComparison]::OrdinalIgnoreCase)) { return $true }
   foreach ($p in $ExcludePattern) { if ($path -match $p) { return $true } }
   return $false
 }
@@ -137,14 +141,23 @@ function Invoke-Scan([string]$path, [bool]$cure, [bool]$extract) {
   $yargs = @("-w", "--docscan-json")
   if ($cure) { $yargs += @("--docscan-disarm", "--docscan-backup-dir=$BackupDir") }
   if ($extract) { Remove-Item -LiteralPath $MacroTmp -Force -EA SilentlyContinue; $yargs += "--docscan-extract=$MacroTmp" }
+  # documents only: the same yara64 run also does the critical-information pre-check (one pass)
+  if ($extract -and $CriticalOn) { $yargs += @("--critical-rules=$CriticalRules", "--critical-out=$CriticalOut") }
   $out = & $Yara @yargs @RuleArgs $path 2>&1 | ForEach-Object { "$_" }
   $json = $out | Where-Object { $_ -like '{*' } | Select-Object -First 1
   $act  = $out | Where-Object { $_ -like 'docscan-disarm:*' } | Select-Object -First 1
   $errs = @($out | Where-Object { $_ -match '^error' })
+  # "docscan-critical: queued fragments=N rules=a,b" -> the document is in the E5Search queue
+  $crit = $null
+  $cl = $out | Where-Object { $_ -like 'docscan-critical: queued*' } | Select-Object -First 1
+  if ($cl -match 'fragments=(\d+) rules=(\S*)') {
+    $crit = [ordered]@{ queued = $true; fragments = [int]$Matches[1]; rules = @($Matches[2] -split ',' | Where-Object { $_ }) }
+  }
+  $errs += @($out | Where-Object { $_ -like 'docscan-critical: could not*' -or $_ -like 'docscan-critical: invalid*' })
   $obj  = $null
   if ($json) { try { $obj = $json | ConvertFrom-Json } catch { $errs += "bad docscan json: $json" } }
   if ($act) { $act = $act -replace '^docscan-disarm: .* -> ', '' }
-  return @{ docscan = $obj; disarm = $act; errors = $errs }
+  return @{ docscan = $obj; disarm = $act; errors = $errs; critical = $crit }
 }
 
 # ---- macro store: <MacroDir>\<document sha256>.vba.txt (one file per document content) ----
@@ -267,6 +280,7 @@ function Scan-File([string]$path, [string]$evt) {
     yara_file_matches = @()
     disarm    = $null
     macro     = $null  # saved VBA code: @{ file; size; uploaded } (documents with macros)
+    critical  = $null  # @{ queued; fragments; rules } - the text went to the E5Search queue (never the text itself)
     summary   = ""     # human-readable: what was found and what was done (for the Wazuh alert description)
     errors    = @()
   }
@@ -283,6 +297,7 @@ function Scan-File([string]$path, [string]$evt) {
       # vendor rules see the bytes BEFORE disarm: yara collects the matches before --docscan-disarm
       $ds = Invoke-Scan $path ((-not $NoDisarm) -and $cat -eq "document") ($cat -eq "document")
       $rec.errors += $ds.errors
+      $rec.critical = $ds.critical
       if ($cat -eq "document") {
         $mc = Save-Macro $rec.docfile.sha256 $rec $ds.docscan
         if ($mc) { $mc.uploaded = Send-Macro $mc.file; $rec.macro = $mc }
@@ -337,6 +352,7 @@ function Scan-File([string]$path, [string]$evt) {
   if ($rec.docscan) { $what += ($rec.docscan.findings -join ",") }
   if ($rec.yara_file_matches.Count) { $what += "yara:" + ($rec.yara_file_matches -join ",") }
   if ($rec.disarm) { $what += "disarm:" + $rec.disarm }
+  if ($rec.critical) { $what += "critical:" + ($rec.critical.rules -join ",") }
   $lvl = switch ($rec.verdict) { "HIGH" { "HIT" } "MEDIUM" { "HIT" } "ERROR" { "ERROR" } "SKIPPED" { "WARN" } default { "OK" } }
   if ($repeat) { $what += "(unchanged - not written for Wazuh)" }
   Log ("{0,-7} {1,-8} {2}  {3}" -f $rec.verdict, $cat, $path, ($what -join " | ")) $lvl
@@ -354,6 +370,13 @@ New-Item -ItemType Directory -Force $OutDir | Out-Null
 New-Item -ItemType Directory -Force $BackupDir | Out-Null
 New-Item -ItemType Directory -Force $MacroDir | Out-Null
 $MacroTmp = Join-Path $MacroDir "extract.tmp"
+$CriticalOn = $false
+if ($CriticalRules) {
+  if (Test-Path -LiteralPath $CriticalRules) {
+    New-Item -ItemType Directory -Force (Split-Path $CriticalOut) | Out-Null
+    $CriticalOn = $true
+  } else { Write-Host "critical rules not found: $CriticalRules - critical check off" -ForegroundColor Yellow }
+}
 $MacroSent = Join-Path $MacroDir "sent.txt"
 $MacroSentSet = @{}
 if (Test-Path -LiteralPath $MacroSent) {
@@ -407,6 +430,7 @@ if (-not $watchers.Count) { Log "no folder to watch" "ERROR"; exit 1 }
 
 Log ("start: watching {0} | disarm={1} | quarantine: {2} | results: {3}" -f ($WatchPath -join ", "), (-not $NoDisarm), $BackupDir, $Result)
 Log ("macros: {0} (keep {1} days / {2} MB) | upload: {3}" -f $MacroDir, $MacroKeepDays, $MacroMaxMB, $(if ($MacroUpload) { $MacroUpload } else { "off" }))
+Log ("critical: {0}" -f $(if ($CriticalOn) { "rules $CriticalRules -> queue $CriticalOut" } else { "off" }))
 Sync-Macros
 $nextMacroSync = (Get-Date).AddHours(1)
 

@@ -12,6 +12,7 @@
 #   2) copies bin\, rules\, watcher\ to -InstallDir (default C:\Program Files\DocScan);
 #   3) creates -DataDir (C:\ProgramData\DocScan): results\, quarantine\, macros\ - access for SYSTEM + Administrators only;
 #      macros\ = the VBA code of every document with macros (-MacroUpload: also POSTed to a collector);
+#      critical\ = the E5Search queue (critical.json: full text of documents matching -CriticalRules);
 #   4) self-test: yara64 starts, the rules compile, a test scan returns JSON;
 #   5) FULLY removes the old DocScan (Wazuh active-response): doc-scan.ps1, doc-scan.cmd,
 #      <ossec-agent>\tmp\docscan; the old quarantine <ossec-agent>\quarantine is moved to
@@ -34,6 +35,7 @@ param(
   [switch]  $NoAvExclusion,       # do NOT add Defender exclusions (if a central policy sets them)
   [switch]  $DetectOnly,          # detection and alerts only: files are NOT disarmed or quarantined (pilot)
   [string]  $MacroUpload = "",    # collector URL for the extracted macro code (POST), e.g. http://<server>:8080; empty - local only
+  [string]  $CriticalRules = "",  # critical-information rules (.yar from E5Search) -> <InstallDir>\critical\; empty - keep the installed ones
   [switch]  $NoStart,             # register, but do not start now
   [string]  $OssecDir = "${env:ProgramFiles(x86)}\ossec-agent",
   [switch]  $KeepLegacy,          # do not remove the old DocScan (active-response)
@@ -130,6 +132,13 @@ foreach ($d in "bin", "rules", "watcher") {
 }
 Copy-Item (Join-Path $Pkg "uninstall.ps1") $InstallDir -Force
 Copy-Item (Join-Path $Pkg "VERSION.txt") $InstallDir -Force -EA SilentlyContinue
+# critical-information rules: not part of the package (they come from the E5Search project)
+$critRules = "$InstallDir\critical\critical-rules.yar"
+if ($CriticalRules) {
+  if (-not (Test-Path -LiteralPath $CriticalRules)) { Fail "critical rules not found: $CriticalRules" }
+  New-Item -ItemType Directory -Force "$InstallDir\critical" | Out-Null
+  Copy-Item -LiteralPath $CriticalRules $critRules -Force
+}
 
 # a stray copy from an earlier run in a 32-bit PowerShell (installed to Program Files (x86)) - remove it
 $x86Dir = "${env:ProgramFiles(x86)}\DocScan"
@@ -244,6 +253,12 @@ $ver = & $yara --version 2>&1
 if ($LASTEXITCODE -ne 0) { Fail "yara64.exe does not start: $ver (vcruntime140.dll missing?)" }
 $probe = Join-Path $env:TEMP "docscan-probe.txt"; "probe" | Set-Content $probe
 $out = & $yara -w --docscan-json $rules $probe 2>&1 | % { "$_" }
+if (Test-Path -LiteralPath $critRules) {
+  $q = Join-Path $env:TEMP "docscan-probe-critical.json"
+  $co = & $yara -w "--critical-rules=$critRules" "--critical-out=$q" $rules $probe 2>&1 | % { "$_" }
+  Remove-Item $q -EA SilentlyContinue
+  if ($LASTEXITCODE -ne 0) { Remove-Item $probe -EA SilentlyContinue; Fail "the critical rules do not compile:`n$($co -join "`n")" }
+}
 Remove-Item $probe -EA SilentlyContinue
 $json = $out | ? { $_ -like '{*' } | Select -First 1
 if (-not $json) { Fail "the rules do not compile or there is no JSON:`n$($out -join "`n")" }
@@ -257,7 +272,8 @@ $taskArgs = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command `"&
         " -WatchPath $wp -Yara '$yara' -Rules '$rules' -OutDir '$DataDir\results' -BackupDir '$DataDir\quarantine'" +
         ($(if ($QuarantineGeneral) { " -QuarantineGeneral" } else { "" })) +
         ($(if ($DetectOnly) { " -NoDisarm" } else { "" })) +
-        ($(if ($MacroUpload) { " -MacroUpload '" + ($MacroUpload -replace "'", "''") + "'" } else { "" })) + "`""
+        ($(if ($MacroUpload) { " -MacroUpload '" + ($MacroUpload -replace "'", "''") + "'" } else { "" })) +
+        ($(if (Test-Path -LiteralPath $critRules) { " -CriticalRules '$critRules' -CriticalOut '$DataDir\critical\critical.json'" } else { "" })) + "`""
 $action    = New-ScheduledTaskAction -Execute "powershell.exe" -Argument $taskArgs
 $trigger   = New-ScheduledTaskTrigger -AtStartup
 $principal = New-ScheduledTaskPrincipal -UserId "S-1-5-18" -LogonType ServiceAccount -RunLevel Highest
@@ -296,6 +312,7 @@ Write-Host ("  watching:   $($WatchPath -join ', ')   " + $(if ($DetectOnly) { "
 Write-Host "  results:    $DataDir\results\docscan-results.json  (log: watcher.log)"
 Write-Host "  quarantine: $DataDir\quarantine"
 Write-Host ("  macros:     $DataDir\macros  (90 days / 500 MB)" + $(if ($MacroUpload) { "; copy -> $MacroUpload" } else { "" }))
+Write-Host ("  critical:   " + $(if (Test-Path -LiteralPath $critRules) { "$critRules -> queue $DataDir\critical\critical.json" } else { "off (no critical rules)" }))
 if ($legacyRemoved.Count) { Write-Host "  old DocScan (Wazuh active-response) fully removed" }
 if ($wazuhDone) { Write-Host "  Wazuh:      the agent reads results\docscan-results.json (json); on the manager - deploy\manager\cleanup_manager.sh" }
 Write-Host "  policy:     $InstallDir\rules\docscan-policy.yar  (after a change: Restart-ScheduledTask '$TaskName')"

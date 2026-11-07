@@ -1151,6 +1151,35 @@ agent's `ossec.log` (`localfile` not picked up).
 
 ---
 
+### Critical information: the E5Search queue (`--critical-rules`)
+
+YARA is only a quick pre-filter here: it looks for the E5Search phrases in the document **text** and, on a match,
+puts the full text into a queue. E5Search gives the verdict; another watcher sends the documents to it.
+
+- **Call** (the watcher adds it for category `document`, in the same yara64 run as `--docscan-json`):
+  `yara64 --critical-rules=<critical-rules.yar> --critical-out=<critical.json> [--critical-chunk=700,120] ...`
+- **Text**: `.docx .xlsx .pptx`, `.odt .ods .odp`, `.doc .xls .ppt`, `.rtf`, `.txt .csv` (UTF-8 / UTF-16 with BOM /
+  Windows-1251). PDF, images and the rest: `docscan-critical: skipped (...)` on stderr, nothing is written. Plain
+  text (no Markdown), paragraphs by `\n`; metadata from `docProps/core.xml`, ODF `meta.xml`, OLE
+  `SummaryInformation`, RTF `\info`, otherwise file-system dates. Code: `libyara/modules/docscan/text.c`.
+- **Search** runs on a copy: lowercase (Latin and Cyrillic), whitespace and line breaks → one space, soft hyphens
+  dropped, apostrophes → `'`. So phrases in the rules are lowercase with single spaces. The original text is sent.
+- **Fragments**: exactly `yara_sender_ref.py` of E5Search (code points, 700/120 by default; priority: rule `meta`
+  `e5_chunk_size`/`e5_chunk_overlap`, then `--critical-chunk`, then 700/120; limits 200..1500 and 0..size/2).
+  Code: `libyara/modules/docscan/critical.c`.
+- **Queue** `C:\ProgramData\DocScan\critical\critical.json` — JSON Lines: one document (schema 2.0, like
+  `yara_sender_example.json`) per line. YARA only **appends** a line (one write). The other watcher **takes the file
+  by renaming it** (`critical.json` → e.g. `critical.sending.json`; if yara64 is writing at that moment the rename
+  fails, retry shortly), sends the lines one by one and deletes the file. The folder is SYSTEM/Administrators
+  only (full document texts).
+- **Output**: `docscan-critical: queued fragments=N rules=a,b` on stdout; the document text is never printed. No
+  special exit codes. The Wazuh record only gets `critical: {queued, fragments, rules}`.
+- **Rules** are not in the package or the repository: they are an E5Search requirement. `DocScan-Install.ps1`
+  takes `<BaseUrl>/critical-rules.yar`, `install.ps1` puts it into `C:\Program Files\DocScan\critical\` and checks
+  that it compiles. Not on the server — the installed one stays; none at all — the check is off.
+- **Tests**: `docscan-project/test-critical/run_tests.py` (fragments vs the reference, JSON invariants, formats,
+  parameters, behaviour without the option); fuzzing — `docscan_parsers_fuzzer`, first byte ≥ 0xF0.
+
 ## 13. Known limitations and caveats
 
 **Module / policy / disarm**

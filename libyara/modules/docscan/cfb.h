@@ -33,4 +33,17 @@ int docscan_cfb_foreach_named_stream(
     docscan_cfb_named_cb cb,
     void* ud);
 
+// 1 if the CFB has a stream with this (folded) name; nothing is read.
+int docscan_cfb_has_stream(const uint8_t* data, size_t size, const char* name);
+
+// Copy of the first stream named `name` (folded name as above), up to
+// max_size bytes (capped at 64 MB; bigger streams are not read). Caller frees
+// with free(). NULL if there is no such stream or the CFB is invalid.
+uint8_t* docscan_cfb_get_stream(
+    const uint8_t* data,
+    size_t size,
+    const char* name,
+    size_t max_size,
+    size_t* out_size);
+
 #endif

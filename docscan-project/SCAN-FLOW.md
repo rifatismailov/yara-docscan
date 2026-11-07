@@ -1151,6 +1151,36 @@ yara_descriptions[{rule, description}], details[]}`. В індексі все ц
 
 ---
 
+### Критична інформація: черга для E5Search (`--critical-rules`)
+
+YARA тут лише швидкий відбір: шукає в **тексті** документа фрази з правил E5Search і, якщо знайшла,
+кладе повний текст у чергу. Вердикт виносить E5Search; відправляє в нього інший watcher.
+
+- **Виклик** (watcher додає для категорії `document`, той самий запуск yara64, що й `--docscan-json`):
+  `yara64 --critical-rules=<critical-rules.yar> --critical-out=<critical.json> [--critical-chunk=700,120] ...`
+- **Текст**: `.docx .xlsx .pptx`, `.odt .ods .odp`, `.doc .xls .ppt`, `.rtf`, `.txt .csv` (UTF-8 / UTF-16 з BOM /
+  Windows-1251). PDF, зображення та інше — `docscan-critical: skipped (...)` у stderr, нічого не пишеться. Текст
+  звичайний (без Markdown), абзаци через `\n`; метадані з `docProps/core.xml`, ODF `meta.xml`, OLE
+  `SummaryInformation`, RTF `\info`, інакше дати файлової системи. Код: `libyara/modules/docscan/text.c`.
+- **Пошук** іде по копії тексту: нижній регістр (латиниця й кирилиця), пробіли й переноси → один пробіл, м'які
+  переноси прибрано, апострофи → `'`. Тому фрази в правилах — малими літерами з одним пробілом. Відправляється
+  оригінальний текст.
+- **Ділення** — точно за `yara_sender_ref.py` E5Search (code points, 700/120 за замовчуванням; пріоритет: `meta`
+  правила `e5_chunk_size`/`e5_chunk_overlap`, потім `--critical-chunk`, потім 700/120; межі 200..1500 і 0..size/2).
+  Код: `libyara/modules/docscan/critical.c`.
+- **Черга** `C:\ProgramData\DocScan\critical\critical.json` — JSON Lines: один документ (схема 2.0, як
+  `yara_sender_example.json`) на рядок. YARA лише **дописує** рядок (один запис) у кінець. Інший watcher **забирає файл
+  перейменуванням** (`critical.json` → напр. `critical.sending.json`; якщо yara64 саме пише — перейменування
+  відмовить, повторити за мить), відправляє рядки по одному й видаляє файл. Тека доступна лише SYSTEM і
+  адміністраторам (повні тексти документів).
+- **Вивід**: `docscan-critical: queued fragments=N rules=a,b` у stdout; текст документа ніде не друкується.
+  Окремих кодів завершення немає. У записі для Wazuh — лише `critical: {queued, fragments, rules}`.
+- **Правила** не входять у пакет і репозиторій: це вимога проєкту E5Search. `DocScan-Install.ps1` бере
+  `<BaseUrl>/critical-rules.yar`, `install.ps1` кладе в `C:\Program Files\DocScan\critical\` і перевіряє, що вони
+  компілюються. Немає файлу на сервері — лишаються встановлені; немає взагалі — перевірка вимкнена.
+- **Тести**: `docscan-project/test-critical/run_tests.py` (ділення проти еталона, інваріанти JSON, формати,
+  параметри, поведінка без опції); фазер — `docscan_parsers_fuzzer`, перший байт ≥ 0xF0.
+
 ## 13. Відомі обмеження і нюанси
 
 **Модуль / політика / лікування**

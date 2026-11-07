@@ -55,6 +55,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <string.h>
 #include <time.h>
 #include <yara.h>
+#include <yara/docscan_critical.h>
 #include <yara/docscan_disarm.h>
 
 #include "args.h"
@@ -209,6 +210,18 @@ static bool docscan_disarm_flag = false;
 // original wide argv in _tmain (docscan_backup_dir_utf8).
 static char* docscan_backup_dir = NULL;
 static char docscan_backup_dir_utf8[4096];
+// --critical-rules / --critical-out / --critical-chunk: critical-information
+// mode. A phrase of the critical rules found in the document TEXT -> the full
+// text in fragments (E5Search sender JSON 2.0) is appended as one line to the
+// queue file; another program sends it on. Paths are UTF-8 (see above).
+static char* critical_rules_arg = NULL;
+static char* critical_out_arg = NULL;
+static char* critical_chunk_arg = NULL;
+static char critical_rules_utf8[4096];
+static char critical_out_utf8[4096];
+static int critical_chunk_size = 0;     // from --critical-chunk (0 = not set)
+static int critical_chunk_overlap = -1;
+static YR_RULES* critical_rules = NULL;
 static YR_RULES* g_rules = NULL;  // loaded rules, for Layer-2 VBA re-scan
 static long total_count = 0;
 static long limit = 0;
@@ -267,6 +280,30 @@ args_option_t options[] = {
         &docscan_backup_dir,
         _T("store disarm backups and quarantined files in DIR (must exist)"),
         _T("DIR")),
+
+    OPT_STRING(
+        0,
+        _T("critical-rules"),
+        &critical_rules_arg,
+        _T("critical-information rules (.yar), matched against the document")
+        _T(" text; a match appends the text as JSON to --critical-out"),
+        _T("FILE")),
+
+    OPT_STRING(
+        0,
+        _T("critical-out"),
+        &critical_out_arg,
+        _T("queue file for --critical-rules (JSON Lines, one document per line;")
+        _T(" keep it in a folder only SYSTEM/Administrators can read)"),
+        _T("FILE")),
+
+    OPT_STRING(
+        0,
+        _T("critical-chunk"),
+        &critical_chunk_arg,
+        _T("fragment size and overlap in characters (default 700,120; size")
+        _T(" 200..1500, overlap 0..size/2; quality is measured on 700,120)"),
+        _T("SIZE,OVERLAP")),
 
     OPT_BOOLEAN(
         'c',
@@ -1803,6 +1840,371 @@ static void do_disarm(const char_t* file_path, docscan_disarm_info* ds)
 #endif
 }
 
+// ------------------------------------------------- critical information --
+
+// One ASCII/UTF-8 message line on stderr / stdout. On Windows the console
+// streams are switched to wide mode, so go through the narrow mode here.
+static void critical_print(FILE* fh, const char* line)
+{
+#if defined(_WIN32) && defined(_UNICODE)
+  fflush(fh);
+  _setmode(_fileno(fh), _O_TEXT);
+  fputs(line, fh);
+  fflush(fh);
+  _setmode(_fileno(fh), _O_U8TEXT);
+#else
+  fputs(line, fh);
+  fflush(fh);
+#endif
+}
+
+static void iso_utc(time_t t, char* out, size_t osz)
+{
+  struct tm tmv;
+#if defined(_WIN32)
+  if (gmtime_s(&tmv, &t) != 0)
+  {
+    out[0] = '\0';
+    return;
+  }
+#else
+  if (gmtime_r(&t, &tmv) == NULL)
+  {
+    out[0] = '\0';
+    return;
+  }
+#endif
+  strftime(out, osz, "%Y-%m-%dT%H:%M:%SZ", &tmv);
+}
+
+#if defined(_WIN32)
+static void filetime_utc(const FILETIME* ft, char* out, size_t osz)
+{
+  uint64_t v = ((uint64_t) ft->dwHighDateTime << 32) | ft->dwLowDateTime;
+  if (v == 0)
+  {
+    out[0] = '\0';
+    return;
+  }
+  iso_utc((time_t) (v / 10000000ULL - 11644473600ULL), out, osz);
+}
+
+static FILE* fopen_utf8(const char* path, const wchar_t* mode)
+{
+  wchar_t w[4096];
+  if (MultiByteToWideChar(CP_UTF8, 0, path, -1, w, 4096) == 0)
+    return NULL;
+  return _wfopen(w, mode);
+}
+#endif
+
+typedef struct
+{
+  const char* names[64];
+  int n;
+  int size;      // from the first matched rule that has e5_chunk_size
+  int overlap;   // ... e5_chunk_overlap
+} CRITICAL_MATCHES;
+
+static int critical_callback(
+    YR_SCAN_CONTEXT* context,
+    int message,
+    void* message_data,
+    void* user_data)
+{
+  (void) context;
+  if (message == CALLBACK_MSG_RULE_MATCHING)
+  {
+    YR_RULE* rule = (YR_RULE*) message_data;
+    CRITICAL_MATCHES* m = (CRITICAL_MATCHES*) user_data;
+    if (m->n < 64)
+      m->names[m->n++] = rule->identifier;
+    YR_META* meta;
+    yr_rule_metas_foreach(rule, meta)
+    {
+      if (meta->type != META_TYPE_INTEGER)
+        continue;
+      if (m->size == 0 && strcmp(meta->identifier, "e5_chunk_size") == 0)
+        m->size = (int) meta->integer;
+      if (m->overlap < 0 && strcmp(meta->identifier, "e5_chunk_overlap") == 0)
+        m->overlap = (int) meta->integer;
+    }
+  }
+  return CALLBACK_CONTINUE;
+}
+
+#define CRITICAL_MAX_FILE (100u * 1024 * 1024)
+
+// Critical-information step for one file: extract the text, scan the search
+// copy with the critical rules, on a match append one JSON line to the queue.
+// Never prints the document text.
+static void critical_process(const char_t* file_path)
+{
+  char msg[4600];
+  char received[32];
+  iso_utc(time(NULL), received, sizeof(received));
+
+  // path / name / extension in UTF-8
+  char path[4096];
+#if defined(_WIN32) && defined(_UNICODE)
+  wchar_t full[4096];
+  const wchar_t* src = file_path;
+  DWORD fl = GetFullPathNameW(file_path, 4096, full, NULL);
+  if (fl > 0 && fl < 4096)
+    src = full;
+  if (WideCharToMultiByte(CP_UTF8, 0, src, -1, path, sizeof(path), NULL, NULL) == 0)
+    return;
+#else
+  if (realpath(file_path, path) == NULL)
+    snprintf(path, sizeof(path), "%s", file_path);
+#endif
+  const char* name = path;
+  for (const char* c = path; *c; c++)
+    if (*c == '/' || *c == '\\')
+      name = c + 1;
+  char ext[16] = "";
+  const char* dot = strrchr(name, '.');
+  if (dot != NULL && strlen(dot + 1) < sizeof(ext))
+  {
+    size_t k = 0;
+    for (const char* c = dot + 1; *c; c++)
+      ext[k++] = (char) ((*c >= 'A' && *c <= 'Z') ? *c + 32 : *c);
+    ext[k] = '\0';
+  }
+
+  // read the file
+#if defined(_WIN32) && defined(_UNICODE)
+  FILE* fh = _wfopen(file_path, L"rb");
+#else
+  FILE* fh = fopen(file_path, "rb");
+#endif
+  if (fh == NULL)
+    return;
+  uint8_t* data = NULL;
+  size_t size = 0;
+#if defined(_WIN32)
+  _fseeki64(fh, 0, SEEK_END);
+  long long fsz = _ftelli64(fh);
+  _fseeki64(fh, 0, SEEK_SET);
+#else
+  fseeko(fh, 0, SEEK_END);
+  long long fsz = (long long) ftello(fh);
+  fseeko(fh, 0, SEEK_SET);
+#endif
+  if (fsz > 0 && (unsigned long long) fsz <= CRITICAL_MAX_FILE)
+  {
+    data = (uint8_t*) malloc((size_t) fsz);
+    if (data != NULL)
+      size = fread(data, 1, (size_t) fsz, fh);
+  }
+  fclose(fh);
+  if (data == NULL || size == 0)
+  {
+    if (fsz > 0 && (unsigned long long) fsz > CRITICAL_MAX_FILE)
+      critical_print(stderr, "docscan-critical: skipped (file larger than 100 MB)\n");
+    free(data);
+    return;
+  }
+
+  docscan_text_t t;
+  int rc = docscan_text_extract(data, size, ext, &t);
+  if (rc != DOCSCAN_TEXT_OK)
+  {
+    snprintf(msg, sizeof(msg), "docscan-critical: skipped (%s)\n", docscan_text_strerror(rc));
+    critical_print(stderr, msg);
+    free(data);
+    return;
+  }
+
+  size_t nlen = 0;
+  char* norm = docscan_text_normalize(t.text, t.len, &nlen);
+  CRITICAL_MATCHES m;
+  memset(&m, 0, sizeof(m));
+  m.overlap = -1;
+  int sr = norm ? yr_rules_scan_mem(critical_rules, (const uint8_t*) norm, nlen,
+                                    SCAN_FLAGS_FAST_MODE, critical_callback, &m, (int) timeout)
+                : ERROR_INSUFFICIENT_MEMORY;
+  free(norm);
+  if (sr != ERROR_SUCCESS)
+  {
+    snprintf(msg, sizeof(msg), "docscan-critical: scan error %d\n", sr);
+    critical_print(stderr, msg);
+  }
+  if (sr != ERROR_SUCCESS || m.n == 0)
+  {
+    docscan_text_free(&t);
+    free(data);
+    return;
+  }
+
+  // chunking: rule meta, then --critical-chunk, then 700/120
+  int csize = m.size > 0 ? m.size : (critical_chunk_size > 0 ? critical_chunk_size : 700);
+  int cover = m.overlap >= 0 ? m.overlap : (critical_chunk_overlap >= 0 ? critical_chunk_overlap : 120);
+  if (csize < 200 || csize > 1500 || cover < 0 || cover > csize / 2)
+  {
+    snprintf(msg, sizeof(msg),
+             "docscan-critical: invalid chunk size/overlap %d,%d (size 200..1500,"
+             " overlap 0..size/2) - not queued\n", csize, cover);
+    critical_print(stderr, msg);
+    docscan_text_free(&t);
+    free(data);
+    return;
+  }
+
+  char sha[65];
+  docscan_sha256_hex(data, size, sha);
+  free(data);
+
+  // file-system dates when the document has none of its own
+  char fs_created[32] = "", fs_modified[32] = "";
+  if (!t.created_at[0] || !t.modified_at[0])
+  {
+#if defined(_WIN32) && defined(_UNICODE)
+    WIN32_FILE_ATTRIBUTE_DATA fa;
+    if (GetFileAttributesExW(file_path, GetFileExInfoStandard, &fa))
+    {
+      filetime_utc(&fa.ftCreationTime, fs_created, sizeof(fs_created));
+      filetime_utc(&fa.ftLastWriteTime, fs_modified, sizeof(fs_modified));
+    }
+#else
+    struct stat stt;
+    if (stat(file_path, &stt) == 0)
+    {
+      iso_utc(stt.st_mtime, fs_modified, sizeof(fs_modified));
+#if defined(__APPLE__)
+      iso_utc(stt.st_birthtime, fs_created, sizeof(fs_created));
+#endif
+    }
+#endif
+  }
+
+  docscan_critical_doc d;
+  memset(&d, 0, sizeof(d));
+  d.name = name;
+  d.path = path;
+  d.format = ext[0] ? ext : t.kind;
+  d.size_bytes = size;
+  d.sha256 = sha;
+  d.author = t.author;
+  d.last_modified_by = t.last_modified_by;
+  d.title = t.title;
+  d.created_at = t.created_at[0] ? t.created_at : fs_created;
+  d.modified_at = t.modified_at[0] ? t.modified_at : fs_modified;
+  d.received_at = received;
+  d.matches = m.names;
+  d.n_matches = m.n;
+  d.chunk_size = csize;
+  d.chunk_overlap = cover;
+
+  size_t jl = 0;
+  int nfrag = 0;
+  char* json = docscan_critical_json(t.text, t.len, &d, &jl, &nfrag);
+  docscan_text_free(&t);
+  if (json == NULL)
+  {
+    critical_print(stderr, "docscan-critical: could not build the JSON - not queued\n");
+    return;
+  }
+
+  // one line, one write, appended; the reader takes the file by renaming it
+  cli_mutex_lock(&output_mutex);
+#if defined(_WIN32)
+  FILE* q = fopen_utf8(critical_out_utf8, L"ab");
+#else
+  FILE* q = fopen(critical_out_utf8, "ab");
+#endif
+  int ok = q != NULL && fwrite(json, 1, jl, q) == jl;
+  if (q != NULL && fclose(q) != 0)
+    ok = 0;
+  if (ok)
+  {
+    size_t o = (size_t) snprintf(msg, sizeof(msg), "docscan-critical: queued fragments=%d rules=", nfrag);
+    for (int i = 0; i < m.n && o + 2 < sizeof(msg); i++)
+      o += (size_t) snprintf(msg + o, sizeof(msg) - o, "%s%s", i ? "," : "", m.names[i]);
+    if (o + 2 < sizeof(msg))
+      snprintf(msg + o, sizeof(msg) - o, "\n");
+    critical_print(stdout, msg);
+  }
+  else
+    critical_print(stderr, "docscan-critical: could not write the queue file - not queued\n");
+  cli_mutex_unlock(&output_mutex);
+  free(json);
+}
+
+// Compile --critical-rules (a separate rule set: it scans text, not files).
+static int critical_setup(void)
+{
+  if (critical_rules_utf8[0] == '\0')
+    return 1;
+  if (critical_out_utf8[0] == '\0')
+  {
+    fprintf(stderr, "error: --critical-rules needs --critical-out\n");
+    return 0;
+  }
+  if (critical_chunk_arg != NULL)
+  {
+    int a = 0, b = -1;
+    if (sscanf(critical_chunk_arg, "%d,%d", &a, &b) != 2 || a < 200 || a > 1500 ||
+        b < 0 || b > a / 2)
+    {
+      fprintf(stderr, "error: --critical-chunk must be SIZE,OVERLAP with size"
+                      " 200..1500 and overlap 0..size/2\n");
+      return 0;
+    }
+    critical_chunk_size = a;
+    critical_chunk_overlap = b;
+  }
+#if defined(_WIN32)
+  FILE* fh = fopen_utf8(critical_rules_utf8, L"rb");
+#else
+  FILE* fh = fopen(critical_rules_utf8, "rb");
+#endif
+  if (fh == NULL)
+  {
+    fprintf(stderr, "error: could not open --critical-rules file\n");
+    return 0;
+  }
+  char* src = NULL;
+  size_t n = 0, cap = 0;
+  for (;;)
+  {
+    if (n + 4096 + 1 > cap)
+    {
+      cap = cap ? cap * 2 : 65536;
+      char* ns = (char*) realloc(src, cap);
+      if (ns == NULL || cap > 64u * 1024 * 1024)
+      {
+        free(ns ? ns : src);
+        fclose(fh);
+        return 0;
+      }
+      src = ns;
+    }
+    size_t r = fread(src + n, 1, 4096, fh);
+    n += r;
+    if (r < 4096)
+      break;
+  }
+  fclose(fh);
+  src[n] = '\0';
+
+  YR_COMPILER* c = NULL;
+  int ok = 0;
+  if (yr_compiler_create(&c) == ERROR_SUCCESS)
+  {
+    COMPILER_RESULTS cr = {0, 0};
+    yr_compiler_set_callback(c, print_compiler_error, &cr);
+    if (yr_compiler_add_string(c, src, NULL) == 0 && cr.errors == 0 &&
+        yr_compiler_get_rules(c, &critical_rules) == ERROR_SUCCESS)
+      ok = 1;
+    yr_compiler_destroy(c);
+  }
+  free(src);
+  if (!ok)
+    fprintf(stderr, "error: --critical-rules do not compile\n");
+  return ok;
+}
+
 static int callback(
     YR_SCAN_CONTEXT* context,
     int message,
@@ -2016,6 +2418,10 @@ static void* scanning_thread(void* param)
         cli_mutex_unlock(&output_mutex);
       }
 
+      // critical information: on the original, before any disarm
+      if (critical_rules != NULL && result == ERROR_SUCCESS)
+        critical_process(file_path);
+
       // cure what the policy asked for; a HIGH without actions -> "detect-only"
       if (docscan_disarm_flag && args->callback_args.dsc.ds.present &&
           (args->callback_args.dsc.ds.high ||
@@ -2122,6 +2528,23 @@ int _tmain(int argc, const char_t** argv)
       WideCharToMultiByte(CP_UTF8, 0, val, -1, docscan_backup_dir_utf8,
                           (int) sizeof(docscan_backup_dir_utf8), NULL, NULL);
   }
+  // the same for the --critical-* paths
+  {
+    const wchar_t* copts[2] = {L"--critical-rules", L"--critical-out"};
+    char* cdst[2] = {critical_rules_utf8, critical_out_utf8};
+    for (int k = 0; k < 2; k++)
+      for (int i = 1; i < argc; i++)
+      {
+        size_t ol = wcslen(copts[k]);
+        const wchar_t* val = NULL;
+        if (wcsncmp(argv[i], copts[k], ol) == 0 && argv[i][ol] == L'=')
+          val = argv[i] + ol + 1;
+        else if (wcscmp(argv[i], copts[k]) == 0 && i + 1 < argc)
+          val = argv[i + 1];
+        if (val != NULL)
+          WideCharToMultiByte(CP_UTF8, 0, val, -1, cdst[k], 4096, NULL, NULL);
+      }
+  }
 #endif
 
   argc = args_parse(options, argc, argv);
@@ -2133,6 +2556,10 @@ int _tmain(int argc, const char_t** argv)
   if (docscan_backup_dir != NULL)
     snprintf(docscan_backup_dir_utf8, sizeof(docscan_backup_dir_utf8), "%s",
              docscan_backup_dir);
+  if (critical_rules_arg != NULL)
+    snprintf(critical_rules_utf8, sizeof(critical_rules_utf8), "%s", critical_rules_arg);
+  if (critical_out_arg != NULL)
+    snprintf(critical_out_utf8, sizeof(critical_out_utf8), "%s", critical_out_arg);
 #endif
 
   scan_opts.follow_symlinks = follow_symlinks;
@@ -2329,6 +2756,9 @@ int _tmain(int argc, const char_t** argv)
     exit_with_code(EXIT_FAILURE);
   }
 
+  if (!critical_setup())
+    exit_with_code(EXIT_FAILURE);
+
   if (show_stats)
     print_rules_stats(rules);
 
@@ -2451,6 +2881,9 @@ int _tmain(int argc, const char_t** argv)
       exit_with_code(EXIT_FAILURE);
     }
 
+    if (critical_rules != NULL)
+      critical_process(argv[argc - 1]);
+
     if (docscan_disarm_flag && user_data.dsc.ds.present &&
         (user_data.dsc.ds.high || user_data.dsc.max_severity == 2))
       do_disarm(argv[argc - 1], &user_data.dsc.ds);
@@ -2478,6 +2911,9 @@ _exit:
 
   if (rules != NULL)
     yr_rules_destroy(rules);
+
+  if (critical_rules != NULL)
+    yr_rules_destroy(critical_rules);
 
   yr_finalize();
 

@@ -109,3 +109,7 @@ tests/mapper
 # Python bytecode
 __pycache__/
 *.pyc
+
+# DocScan critical-mode tests (the upstream test-* pattern above is for test binaries)
+!/docscan-project/test-critical/
+!/docscan-project/test-critical/*.py

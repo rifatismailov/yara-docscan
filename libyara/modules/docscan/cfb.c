@@ -88,12 +88,16 @@ static void read_chain(
   }
 }
 
+// max_stream: largest stream handed over (bigger ones are skipped).
+// want: if not NULL, only the stream with this (folded) name is read.
 static int cfb_walk(
     const uint8_t* data,
     size_t size,
     docscan_cfb_stream_cb cb,
     docscan_cfb_named_cb ncb,
-    void* ud)
+    void* ud,
+    size_t max_stream,
+    const char* want)
 {
   if (size < 512 || data[0] != 0xD0 || data[1] != 0xCF || data[2] != 0x11 ||
       data[3] != 0xE0)
@@ -200,8 +204,35 @@ static int cfb_walk(
 
     int32_t start = i32(dir.p, dir.len, base + 116);
     int32_t ssize = i32(dir.p, dir.len, base + 120);
-    if (ssize <= 0 || (uint32_t) ssize > CFB_MAX_STREAM)
+    if (ssize < 0 || (uint32_t) ssize > max_stream)
       continue;
+    if (ssize == 0 && (cb != NULL || ncb != NULL))
+      continue;
+
+    // directory name: UTF-16LE, length in bytes (incl. the NUL) at +64
+    char name[33];
+    {
+      size_t nl = u16(dir.p, dir.len, base + 64) / 2;
+      if (nl > 32)
+        nl = 32;
+      size_t k = 0;
+      for (; k < nl; k++)
+      {
+        uint16_t ch = u16(dir.p, dir.len, base + k * 2);
+        if (ch == 0)
+          break;
+        name[k] = ch < 0x80 ? (char) ch : '?';
+      }
+      name[k] = '\0';
+    }
+    if (want != NULL && strcmp(name, want) != 0)
+      continue;
+    if (cb == NULL && ncb == NULL)
+    {
+      // probe only (docscan_cfb_has_stream): found, nothing to read
+      *(int*) ud = 1;
+      break;
+    }
 
     docscan_buf sb = {0};
 
@@ -220,7 +251,7 @@ static int cfb_walk(
           end = mini.len;
         if (docscan_buf_push(&sb, mini.p + o, end - o))
           break;
-        if (sb.len > CFB_MAX_STREAM)
+        if (sb.len > max_stream)
           break;
         sid = mfat.p[sid];
         g++;
@@ -239,20 +270,6 @@ static int cfb_walk(
     {
       if (ncb != NULL)
       {
-        // directory name: UTF-16LE, length in bytes (incl. the NUL) at +64
-        char name[33];
-        size_t nl = u16(dir.p, dir.len, base + 64) / 2;
-        if (nl > 32)
-          nl = 32;
-        size_t k = 0;
-        for (; k < nl; k++)
-        {
-          uint16_t ch = u16(dir.p, dir.len, base + k * 2);
-          if (ch == 0)
-            break;
-          name[k] = ch < 0x80 ? (char) ch : '?';
-        }
-        name[k] = '\0';
         stop = ncb(name, sb.p, used, ud);
       }
       else
@@ -281,7 +298,7 @@ int docscan_cfb_foreach_stream(
     docscan_cfb_stream_cb cb,
     void* ud)
 {
-  return cfb_walk(data, size, cb, NULL, ud);
+  return cfb_walk(data, size, cb, NULL, ud, CFB_MAX_STREAM, NULL);
 }
 
 int docscan_cfb_foreach_named_stream(
@@ -290,5 +307,47 @@ int docscan_cfb_foreach_named_stream(
     docscan_cfb_named_cb cb,
     void* ud)
 {
-  return cfb_walk(data, size, NULL, cb, ud);
+  return cfb_walk(data, size, NULL, cb, ud, CFB_MAX_STREAM, NULL);
+}
+
+typedef struct
+{
+  uint8_t* p;
+  size_t n;
+} cfb_copy;
+
+static int copy_cb(const char* name, const uint8_t* d, size_t n, void* ud)
+{
+  cfb_copy* c = (cfb_copy*) ud;
+  (void) name;
+  c->p = (uint8_t*) malloc(n ? n : 1);
+  if (c->p != NULL)
+  {
+    memcpy(c->p, d, n);
+    c->n = n;
+  }
+  return 1;  // the first stream with that name is enough
+}
+
+int docscan_cfb_has_stream(const uint8_t* data, size_t size, const char* name)
+{
+  int found = 0;
+  cfb_walk(data, size, NULL, NULL, &found, (size_t) -1, name);
+  return found;
+}
+
+uint8_t* docscan_cfb_get_stream(
+    const uint8_t* data,
+    size_t size,
+    const char* name,
+    size_t max_size,
+    size_t* out_size)
+{
+  cfb_copy c = {NULL, 0};
+  if (max_size > CFB_MAX_BUILD)
+    max_size = CFB_MAX_BUILD;
+  cfb_walk(data, size, NULL, copy_cb, &c, max_size, name);
+  if (out_size != NULL)
+    *out_size = c.n;
+  return c.p;
 }

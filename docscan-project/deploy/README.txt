@@ -14,6 +14,8 @@
    Нова версія: покласти zip + .sha256 і змінити DocScan-latest.txt; скрипти не міняються.
    Код макросів кожного документа з VBA зберігається в C:\ProgramData\DocScan\macros\ (90 днів / 500 МБ)
    і копія надсилається POST-ом на той самий сервер (-NoMacroUpload у DocScan-Install.ps1 — лише локально).
+   Критична інформація (E5Search): якщо на сервері є critical-rules.yar, документи з фразами з нього
+   ставляться в чергу C:\ProgramData\DocScan\critical\critical.json (забирає інший watcher).
    Вивід усіх скриптів PowerShell — англійською (ASCII: без проблем з кодуванням консолі та irm).
 
 Вручну:

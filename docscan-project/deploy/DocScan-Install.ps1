@@ -79,6 +79,12 @@ try {
   if ($QuarantineGeneral) { $p.QuarantineGeneral = $true }
   if ($WatchPath)         { $p.WatchPath = $WatchPath }
   if (-not $NoMacroUpload) { $p.MacroUpload = $BaseUrl }   # macro code copies go to the same server
+  # critical-information rules (E5Search), if the server has them; otherwise the installed ones stay
+  $crit = Join-Path $work "critical-rules.yar"
+  try {
+    Invoke-WebRequest -UseBasicParsing "$BaseUrl/critical-rules.yar" -OutFile $crit -ErrorAction Stop
+    $p.CriticalRules = $crit
+  } catch { Write-Host "==> no critical-rules.yar on the server - critical rules unchanged" -ForegroundColor Cyan }
   Write-Host ("==> install.ps1 " + (($p.Keys | ForEach-Object { "-$_" }) -join " ")) -ForegroundColor Cyan
   $global:LASTEXITCODE = 0
   & $inst @p
