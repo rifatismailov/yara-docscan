@@ -16,6 +16,19 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
+
+
+def remove(path, tries=20):
+    """Delete a file; on Windows an antivirus may hold it for a moment after it was written."""
+    for i in range(tries):
+        try:
+            if os.path.exists(path):
+                os.remove(path)
+            return
+        except PermissionError:
+            time.sleep(0.25 * (i + 1))
+    os.remove(path)
 
 
 def scan(yara, rules, path, disarm, backup_dir):
@@ -42,12 +55,16 @@ def main():
     ap.add_argument("--samples", required=True)
     ap.add_argument("--expected", required=True)
     ap.add_argument("--write", action="store_true", help="write the current results as the expectation")
+    ap.add_argument("--workdir", default=None, help="folder for the working copies (default: system temp)."
+                    " On Windows use a folder excluded from the antivirus")
     a = ap.parse_args()
 
     files = sorted(f for f in os.listdir(a.samples) if os.path.isfile(os.path.join(a.samples, f)))
     before = {f: hashlib.sha256(open(os.path.join(a.samples, f), "rb").read()).hexdigest() for f in files}
     rows = []
-    with tempfile.TemporaryDirectory() as tmp:
+    if a.workdir:
+        os.makedirs(a.workdir, exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=a.workdir, ignore_cleanup_errors=True) as tmp:
         bak = os.path.join(tmp, "backup")
         os.makedirs(bak)
         for f in files:
@@ -57,8 +74,7 @@ def main():
             after = scan(a.yara, a.rules, work, False, bak)[0] if os.path.exists(work) else "DELETED"
             action_kind = action.split(":")[0].split(",")[0]
             rows.append((f, verdict, action_kind, after))
-            if os.path.exists(work):
-                os.remove(work)
+            remove(work)
 
     if a.write:
         with open(a.expected, "w", encoding="utf-8", newline="\n") as out:

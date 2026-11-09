@@ -98,9 +98,9 @@ if ok:
     y = REPO + r"\windows\vs2019\Release\yara64.exe"
     step("documents", r"""
 Set-Location '%(repo)s'; $env:PYTHONIOENCODING = 'utf-8'
-python docscan-project\ci\check_verdicts.py --yara '%(y)s' --rules docscan-project\rules\docscan-index.yar --samples docscan-project\test-samples\generated --expected docscan-project\ci\expected-verdicts.tsv
+python docscan-project\ci\check_verdicts.py --yara '%(y)s' --rules docscan-project\rules\docscan-index.yar --samples docscan-project\test-samples\generated --expected docscan-project\ci\expected-verdicts.tsv --workdir '%(w)s\tmp'
 exit $LASTEXITCODE
-""" % {"repo": REPO, "y": y})
+""" % {"repo": REPO, "y": y, "w": WDIR})
     step("critical", r"""
 Set-Location '%(repo)s'; $env:PYTHONIOENCODING = 'utf-8'
 python docscan-project\test-critical\run_tests.py --yara '%(y)s'
