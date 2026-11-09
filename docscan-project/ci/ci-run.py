@@ -224,8 +224,8 @@ def run_local():
         th.start()
     for th in threads:
         th.join()
-    for n in jobs:
-        shutil.rmtree(os.path.join(out, n + "-work", "fuzz"), ignore_errors=True)
+    for n in jobs:   # the artifacts are copied out; the work folders (fuzz build tree etc.) go
+        shutil.rmtree(os.path.join(out, n + "-work"), ignore_errors=True)
     return out, all(rc == 0 for rc in results.values())
 
 

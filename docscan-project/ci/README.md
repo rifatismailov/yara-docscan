@@ -23,7 +23,8 @@ VS Code ─► ci-run.py: git push на GitHub → Forgejo оновлює дзе
 |---|---|---|
 | `.forgejo/workflows/ci.yml` | Forgejo | Опис конвеєра: три завдання (`macos`, `windows11`, `linux`), які runner-и їх беруть, секрети, артефакти, нічний прогін (фазинг 1 год) |
 | `docscan-project/ci/build-test-unix.sh` | Мак, Ubuntu | Збірка → документи → 3-й прохід → ворожі файли (якщо задано `CI_SEEDS`) → фазинг (`FUZZ_SECONDS`) → `ci-out/artifacts` |
-| `docscan-project/ci/windows-remote.py` | runner з міткою `winrm` | Керує Windows по WinRM: точний коміт з Forgejo, MSBuild, ті самі тести, `build_package.ps1`, забирає zip |
+| `docscan-project/ci/windows-remote.py` | runner з міткою `winrm` або Мак (локальний режим) | Вибирає Windows-машину (ВМ, інакше 216), точний коміт (git або zip), MSBuild, тести, `build_package.ps1`, забирає zip |
+| `docscan-project/ci/check_verdicts.ps1` | Windows | Перевірка документів без Python (те саме, що `check_verdicts.py`) |
 | `docscan-project/ci/check_verdicts.py` | усі ОС | Документи: копія → детект + лікування → повторний скан, порівняння з `expected-verdicts.tsv` |
 | `docscan-project/ci/expected-verdicts.tsv` | — | Еталон для 24 зразків `test-samples/generated` (оновлювати свідомо: `check_verdicts.py --write`) |
 | `docscan-project/ci/ci-run.py` | ваш Мак | «Кнопка»: коміт змін (з перевіркою) → push → синхронізація дзеркала → запуск Дії → стеження → артефакти |
@@ -32,6 +33,42 @@ VS Code ─► ci-run.py: git push на GitHub → Forgejo оновлює дзе
 Тести в кожному прогоні: **документи** (24 зразки: вердикт, лікування, повторний скан, оригінали не змінені),
 **3-й прохід** (`test-critical/run_tests.py`, 299 перевірок), **ворожі файли** (35, якщо на runner-і є корпус),
 **фазинг** (обидва фазери, ASan + UBSan; на Windows не запускається — libFuzzer там лише через clang-cl).
+
+## Режими і запасна Windows-машина
+
+`ci-run.py` сам вибирає, як працювати:
+
+| Що доступно | Що відбувається |
+|---|---|
+| **Forgejo** (Proxmox працює) | Дія `build-test` у Forgejo: Мак (`macos`), Windows (`windows`), Ubuntu (`linux`, коли буде) |
+| **Forgejo недоступний** (або `--local`) | **Локальний режим** — те саме прямо з Мака: `build-test-unix.sh` тут, `windows-remote.py` по WinRM |
+
+Windows-машину `windows-remote.py` вибирає сам: **ВМ Windows 11** (Proxmox), якщо відповідає, інакше
+**запасний ПК** (профіль `216`). Якщо машина не бачить Forgejo, код потрапляє на неї zip-архівом точного коміту
+(`git archive`, ~5 МБ) по WinRM. Перевірка документів на Windows — `check_verdicts.ps1` (Python не потрібен);
+тести третього проходу — лише там, де є справжній Python (інакше `SKIP`, вони йдуть на macOS/Linux). Немає NuGet —
+береться готовий кеш пакетів збірки (`C:\docscan-build\yara\windows\vs2019\packages`) або завантажується `nuget.exe` у `C:\ci\tools`.
+
+## Набір для розгортання і публікація
+
+Після **зеленого** прогону в `ci-out/<прогін>/deploy/` лежить усе для розгортання:
+
+```
+DocScan-<дата>-<коміт>.zip + .sha256     пакет
+DocScan-latest.txt                       ім'я поточного пакета
+DocScan-Install.ps1                      інсталятор з сервера
+DocScan-Setup.ps1 / -Pilot / -Critical   завантажувачі для irm | iex (адреса сервера вже підставлена)
+critical-rules.yar                       правила E5Search (якщо задано в hosts.json "fs".critical_rules)
+```
+
+**`--publish`** (у VS Code: *Run Task → «DocScan CI + publish to the deployment server»*) викладає набір на
+сервер розгортання по ssh, звіряє SHA256 на сервері і лише тоді перемикає `DocScan-latest.txt` — з цього моменту
+`irm http://<сервер>:8080/docscan/DocScan-Setup.ps1 | iex` ставить новий пакет. Не зелений прогін — не публікується.
+
+Налаштування в `~/.docscan/hosts.json` (не в репозиторії): `forgejo` (`url`, `token`, `ci_checkout_token`),
+`vm` і `216` (Windows-машини: `host`, `user`, `password`), `fs` (`host`, `user`, `password`, `deploy_dir`
+= `scripts/docscan`, `deploy_url` = `http://<сервер>:8080/docscan`, `critical_rules`).
+У Forgejo для запасного ПК потрібні ще секрети `WIN216_HOST`, `WIN216_USER`, `WIN216_PASS`.
 
 ## Налаштування з нуля (покроково)
 
