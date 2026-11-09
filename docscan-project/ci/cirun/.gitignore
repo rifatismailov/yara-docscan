@@ -1,0 +1,2 @@
+# a local "go build" puts the binary here; ci-run is started with "go run"
+/cirun

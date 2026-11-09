@@ -6,7 +6,7 @@
     {
       "label": "DocScan CI",
       "type": "shell",
-      "command": "python3 docscan-project/ci/ci-run.py",
+      "command": "go run -C docscan-project/ci/cirun .",
       "group": { "kind": "build", "isDefault": true },
       "presentation": { "reveal": "always", "panel": "dedicated", "clear": true },
       "problemMatcher": []
@@ -14,14 +14,14 @@
     {
       "label": "DocScan CI without publishing (the server is not changed)",
       "type": "shell",
-      "command": "python3 docscan-project/ci/ci-run.py --no-publish",
+      "command": "go run -C docscan-project/ci/cirun . --no-publish",
       "presentation": { "reveal": "always", "panel": "dedicated", "clear": true },
       "problemMatcher": []
     },
     {
       "label": "DocScan CI (no fuzzing)",
       "type": "shell",
-      "command": "python3 docscan-project/ci/ci-run.py --fuzz 0",
+      "command": "go run -C docscan-project/ci/cirun . --fuzz 0",
       "presentation": { "reveal": "always", "panel": "dedicated", "clear": true },
       "problemMatcher": []
     },

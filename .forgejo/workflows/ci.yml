@@ -1,5 +1,5 @@
 # DocScan CI: build + tests + fuzzing on macOS, Windows 11 and Linux.
-# Started by the "Run workflow" button in Forgejo (Дії) or by docscan-project/ci/ci-run.py (VS Code task).
+# Started by the "Run workflow" button in Forgejo (Дії) or by docscan-project/ci/cirun (VS Code task).
 # Runners (labels): "macos" - the Mac; "linux" - the Ubuntu VM; "winrm" - any runner that reaches the
 # Windows build machine over WinRM. Secrets / variables are set in Forgejo, not here.
 name: build-test
@@ -33,14 +33,14 @@ jobs:
 
   windows:
     # the Windows build machine: the Proxmox VM when it is reachable, otherwise the fallback PC
-    # (windows-remote.py picks it). Turn the job off with the Forgejo variable WINDOWS = false.
+    # (ci-run windows picks it). Turn the job off with the Forgejo variable WINDOWS = false.
     if: ${{ vars.WINDOWS != 'false' }}
     runs-on: winrm
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
       - name: build, tests, package on Windows (WinRM)
-        run: python3 docscan-project/ci/windows-remote.py
+        run: PATH="/opt/homebrew/bin:$PATH" go run -C docscan-project/ci/cirun . windows
         env:
           WIN11_HOST: ${{ secrets.WIN11_HOST }}
           WIN11_USER: ${{ secrets.WIN11_USER }}
