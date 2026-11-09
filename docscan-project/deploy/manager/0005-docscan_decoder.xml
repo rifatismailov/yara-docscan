@@ -1,0 +1,17 @@
+<!--
+  DocScan (docscan-results.json): JSON lines from the DocScan watcher.
+  Put into /var/ossec/etc/decoders-pre/ and list that folder FIRST in ossec.conf <ruleset>:
+      <decoder_dir>etc/decoders-pre</decoder_dir>
+      <decoder_dir>ruleset/decoders</decoder_dir>
+  The file name must sort before 0006-json_decoders.xml (Wazuh orders decoder files by name),
+  so this decoder runs before the built-in "json" one; rule 101090 uses decoded_as docscan-json.
+
+  Why: null values are DISCARDED instead of becoming the string "null". A "docscan":"null" string as
+  the first DocScan event of the day mapped data.docscan as keyword in the daily index, and the indexer
+  then rejected every DocScan alert with a docscan object until midnight (seen 2026-11-09).
+-->
+<decoder name="docscan-json">
+  <prematch>"source":"docscan"</prematch>
+  <plugin_decoder>JSON_Decoder</plugin_decoder>
+  <json_null_field>discard</json_null_field>
+</decoder>

@@ -575,7 +575,7 @@ A policy rule must not be `private` (YARA never reports private rules).
 | `DS_PDF_JS_AUTO` / `DS_PDF_JS` | `/JavaScript`/`/JS` with / without a dangerous API | HIGH (`quarantine`) / MEDIUM | |
 | `DS_PDF_OPENACTION` | `/OpenAction`/`/AA` without JS (usually start page/zoom) | INFO | — |
 | `DS_PDF_EMBEDDED` | `/EmbeddedFile` | MEDIUM | — |
-| `DS_LNK_URL_ARGS` | URL/UNC in the arguments | HIGH | `lnk_delete` |
+| `DS_LNK_URL_ARGS` | URL/UNC in the arguments, except browser shortcuts (Edge, Chrome, Firefox, Brave, Opera, Vivaldi: websites and PWA web apps) | HIGH | `lnk_delete` |
 | `DS_LNK_OBFUSCATED` | `-enc`, `iex`, `-w hidden`, `downloadstring`… | HIGH | `lnk_delete` |
 | `DS_LNK_REMOTE_EXEC` | the target is an executable on a network share (`\\server\…\x.exe`, `.ps1`, `.vbs`, `.hta`…) | HIGH | `lnk_delete` |
 | `DS_LNK_REMOTE_TARGET` | the target is on a share but not executable (folder, document) | MEDIUM | — |
@@ -1150,9 +1150,16 @@ With centrally managed agents (`agent.conf` in a manager group) the same `<local
    sh manager/cleanup_manager.sh --dry-run   # show what would change
    sh manager/cleanup_manager.sh             # backup ossec.conf → remove → wazuh-analysisd -t → restart
    ```
-2. **Rules.** Put the `deploy/manager/local_rules.docscan.xml` block (group `docscan`) into
-   `/var/ossec/etc/rules/local_rules.xml`. **No custom decoder**: each line is plain JSON, handled by the
-   built-in `json` decoder; fields are used as is (`verdict`, `docfile.path`, `docscan.findings`…).
+2. **Decoder.** `deploy/manager/0005-docscan_decoder.xml` → `/var/ossec/etc/decoders-pre/` (owner `wazuh`), and in
+   `ossec.conf` `<ruleset>` the first line `<decoder_dir>etc/decoders-pre</decoder_dir>` (before `ruleset/decoders`).
+   It is the same JSON decoder with `<json_null_field>discard</json_null_field>`, only for `"source":"docscan"`
+   lines. **Why:** the built-in `json` turns `null` into the string `"null"`; when the first event of the day was a
+   scan error with `"docscan": null`, the indexer mapped `data.docscan` as keyword in the daily index and rejected
+   every DocScan alert with a `docscan` object until midnight (Telegram got them from `alerts.json`, Discover did
+   not; seen 2026-11-09). The file name must sort before `0006-json_decoders.xml` — Wazuh orders decoder files by name.
+   **Rules.** Put the `deploy/manager/local_rules.docscan.xml` block (group `docscan`) into
+   `/var/ossec/etc/rules/local_rules.xml`; the base 101090 uses `decoded_as docscan-json`. Fields are used as is
+   (`verdict`, `docfile.path`, `docscan.findings`…). Decoder check: `wazuh-logtest` → `name: 'docscan-json'`.
 
    | ID | Level | Condition | Meaning |
    |---|---|---|---|

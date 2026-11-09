@@ -575,7 +575,7 @@ MS-OVBA. Ланцюжок: **CFB → потоки → пошук контейн�
 | `DS_PDF_JS_AUTO` / `DS_PDF_JS` | `/JavaScript`/`/JS` з небезпечним API / без | HIGH (`quarantine`) / MEDIUM | |
 | `DS_PDF_OPENACTION` | `/OpenAction`/`/AA` без JS (звичайно — стартова сторінка/масштаб) | INFO | — |
 | `DS_PDF_EMBEDDED` | `/EmbeddedFile` | MEDIUM | — |
-| `DS_LNK_URL_ARGS` | URL/UNC в аргументах | HIGH | `lnk_delete` |
+| `DS_LNK_URL_ARGS` | URL/UNC в аргументах, крім ярликів браузерів (Edge, Chrome, Firefox, Brave, Opera, Vivaldi: сайти й веб-застосунки PWA) | HIGH | `lnk_delete` |
 | `DS_LNK_OBFUSCATED` | `-enc`, `iex`, `-w hidden`, `downloadstring`… | HIGH | `lnk_delete` |
 | `DS_LNK_REMOTE_EXEC` | ціль — виконуваний файл на мережевій шарі (`\\сервер\…\x.exe`, `.ps1`, `.vbs`, `.hta`…) | HIGH | `lnk_delete` |
 | `DS_LNK_REMOTE_TARGET` | ціль на шарі, але не виконувана (тека, документ) | MEDIUM | — |
@@ -1151,9 +1151,17 @@ watcher → C:\ProgramData\DocScan\results\docscan-results.json (JSON Lines)
    sh manager/cleanup_manager.sh --dry-run   # показати, що зміниться
    sh manager/cleanup_manager.sh             # бекап ossec.conf → видалення → wazuh-analysisd -t → рестарт
    ```
-2. **Правила.** Блок `deploy/manager/local_rules.docscan.xml` (група `docscan`) — у
-   `/var/ossec/etc/rules/local_rules.xml`. Окремий декодер **не потрібен**: рядок — чистий JSON, його
-   розбирає вбудований декодер `json`, поля доступні як є (`verdict`, `docfile.path`, `docscan.findings`…).
+2. **Декодер.** `deploy/manager/0005-docscan_decoder.xml` → `/var/ossec/etc/decoders-pre/` (власник `wazuh`), а в
+   `ossec.conf` у `<ruleset>` першим рядком — `<decoder_dir>etc/decoders-pre</decoder_dir>` (перед
+   `ruleset/decoders`). Це той самий JSON-декодер, але з `<json_null_field>discard</json_null_field>` і лише для
+   рядків `"source":"docscan"`. **Навіщо:** вбудований `json` перетворює `null` на рядок `"null"`; якщо першою
+   подією дня була помилка сканування з `"docscan": null`, індексатор закріплював за `data.docscan` тип keyword у
+   денному індексі й до півночі відкидав усі алерти DocScan з об'єктом `docscan` (у Telegram вони приходили — з
+   `alerts.json`, — а в Discover ні; випадок 2026-11-09). Назва файлу має йти за алфавітом перед
+   `0006-json_decoders.xml` — Wazuh упорядковує файли декодерів за назвою.
+   **Правила.** Блок `deploy/manager/local_rules.docscan.xml` (група `docscan`) — у
+   `/var/ossec/etc/rules/local_rules.xml`; база 101090 — `decoded_as docscan-json`. Поля доступні як є
+   (`verdict`, `docfile.path`, `docscan.findings`…). Перевірка декодера: `wazuh-logtest` → `name: 'docscan-json'`.
 
    | ID | Рівень | Умова | Що означає |
    |---|---|---|---|

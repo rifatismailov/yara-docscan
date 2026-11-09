@@ -347,7 +347,15 @@ function Scan-File([string]$path, [string]$evt) {
   $key = "$($rec.verdict)|$($rec.summary)"
   $repeat = ($rec.verdict -ne "HIGH" -and $LastKey[$path] -eq $key)
   if (-not $repeat) {
-    $json = $rec | ConvertTo-Json -Depth 8 -Compress
+    # No null values in the JSON: the Wazuh json decoder turns null into the string "null", and the
+    # first such event of the day would map data.docscan / data.macro / data.critical as keyword in the
+    # daily index - every later alert with an object there is then rejected by the indexer.
+    $out = [ordered]@{}
+    foreach ($k in $rec.Keys) { if ($null -ne $rec[$k]) { $out[$k] = $rec[$k] } }
+    $df = [ordered]@{}
+    foreach ($k in $rec.docfile.Keys) { if ($null -ne $rec.docfile[$k]) { $df[$k] = $rec.docfile[$k] } }
+    $out.docfile = $df
+    $json = $out | ConvertTo-Json -Depth 8 -Compress
     Rotate-IfBig $Result
     [IO.File]::AppendAllText($Result, $json + "`n", $utf8)
     $LastKey[$path] = $key

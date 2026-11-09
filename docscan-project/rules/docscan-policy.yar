@@ -390,7 +390,10 @@ rule DS_LNK_URL_ARGS
     disarm   = "lnk_delete"
     mitre    = "T1204.001"
   condition:
-    docscan.lnk_args matches /(https?:\/\/|ftp:\/\/|\\\\|www\.)/i
+    docscan.lnk_args matches /(https?:\/\/|ftp:\/\/|\\\\|www\.)/i and
+    // a browser opening a URL is normal: website shortcuts, Edge/Chrome web apps (PWA:
+    // msedge_proxy.exe --app-id=... --app-url=https://...). Obfuscation is DS_LNK_OBFUSCATED.
+    not docscan.lnk_target matches /\\(msedge|msedge_proxy|chrome|chrome_proxy|firefox|brave|opera|vivaldi)\.exe$/i
 }
 
 rule DS_LNK_OBFUSCATED

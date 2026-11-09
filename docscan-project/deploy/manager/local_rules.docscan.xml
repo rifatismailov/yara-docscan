@@ -7,7 +7,7 @@
 <group name="docscan,">
 
   <rule id="101090" level="0">
-    <decoded_as>json</decoded_as>
+    <decoded_as>docscan-json</decoded_as>
     <field name="source">^docscan$</field>
     <description>DocScan: $(verdict) $(docfile.path)</description>
     <group>docscan,</group>
