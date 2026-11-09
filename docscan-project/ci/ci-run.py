@@ -3,7 +3,7 @@
 -> deployment set -> (optionally) publish to the deployment server.
 
   python3 docscan-project/ci/ci-run.py [--fuzz SECONDS] [-m "message"] [--no-commit] [--no-push]
-                                       [--local] [--publish]
+                                       [--local] [--no-publish] [--publish-dir DIR]
 
 Two modes, chosen automatically:
   * Forgejo reachable  -> the "build-test" workflow runs there (runners: this Mac, Windows over WinRM,
@@ -14,7 +14,8 @@ Two modes, chosen automatically:
 After a green run the deployment set is put together in ci-out/<run>/deploy/: the Windows package
 DocScan-<date>-<commit>.zip + .sha256, DocScan-latest.txt, DocScan-Install.ps1 and the bootstraps
 DocScan-Setup.ps1 / -Pilot / -Critical with the server address filled in (+ critical-rules.yar).
---publish uploads it to the deployment server and switches DocScan-latest.txt to the new package.
+Then it is uploaded to the deployment server (default; --no-publish to skip) and DocScan-latest.txt is
+switched to the new package: "irm http://<server>:8080/docscan/DocScan-Setup.ps1 | iex" on a PC installs it.
 
 Auto-commit: every change git does not ignore (git add -A) goes into one commit, unless the safety
 check finds something that must not reach the public repository (internal addresses, host/user
@@ -48,7 +49,9 @@ ap.add_argument("--no-commit", action="store_true", help="do not commit local ch
 ap.add_argument("-m", "--message", default="", help="commit message for the auto-commit")
 ap.add_argument("--remote", default="docscan", help="git remote of GitHub (default: docscan)")
 ap.add_argument("--local", action="store_true", help="do not use Forgejo: build and test from this Mac")
-ap.add_argument("--publish", action="store_true", help="after a green run, upload the deployment set to the server")
+ap.add_argument("--no-publish", action="store_true", help="do not upload the deployment set to the server")
+ap.add_argument("--publish", action="store_true", help=argparse.SUPPRESS)   # the default now; kept for old tasks
+ap.add_argument("--publish-dir", default="", help="only publish an existing deployment set (ci-out/<run>/deploy), no build")
 a = ap.parse_args()
 
 REPO_ROOT = subprocess.run(["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True, check=True).stdout.strip()
@@ -102,8 +105,12 @@ def safety_check():
     return problems
 
 
+if a.publish_dir:
+    PUBLISH_ONLY = os.path.abspath(a.publish_dir)
+else:
+    PUBLISH_ONLY = ""
 branch = git("rev-parse", "--abbrev-ref", "HEAD")
-changes = git("status", "--porcelain")
+changes = git("status", "--porcelain") if not PUBLISH_ONLY else ""
 if changes and not a.no_commit:
     say("commit local changes:")
     say("\n".join("    " + l for l in changes.splitlines()[:30]))
@@ -122,7 +129,7 @@ elif changes:
     say("! uncommitted changes (--no-commit) - the last COMMIT %s is built" % git("rev-parse", "--short", "HEAD"))
 sha = git("rev-parse", "HEAD")
 
-if not a.no_push:
+if not a.no_push and not PUBLISH_ONLY:
     say("git push %s %s" % (a.remote, branch))
     if subprocess.run(["git", "push", a.remote, branch]).returncode != 0:
         say("! git push failed - continuing with the local commit")
@@ -296,6 +303,16 @@ def publish(d, pkg, fs, base):
 
 # ------------------------------------------------------------------- main --
 
+if PUBLISH_ONLY:
+    zips = sorted(glob.glob(os.path.join(PUBLISH_ONLY, "DocScan-*.zip")))
+    if not zips:
+        sys.exit("no DocScan-*.zip in %s" % PUBLISH_ONLY)
+    fs = HOSTS.get("fs", {})
+    base = fs.get("deploy_url") or ("http://%s:8080/docscan" % fs.get("host", "<server>"))
+    ok = publish(PUBLISH_ONLY, os.path.basename(zips[-1]), fs, base)
+    say("\nRESULT: %s" % ("PUBLISHED" if ok else "NOT published"))
+    sys.exit(0 if ok else 1)
+
 use_forgejo = not a.local and URL and TOKEN and reachable(URL)
 if not use_forgejo and not a.local:
     say("Forgejo (%s) is not reachable - local mode" % (URL or "not configured"))
@@ -308,7 +325,7 @@ for name in sorted(os.listdir(out)):
 
 dep = deploy_set(out) if green else None
 published = None
-if a.publish:
+if not a.no_publish:
     if not green:
         say("\n! --publish skipped: the run is not green")
         published = False

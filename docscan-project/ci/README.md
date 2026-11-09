@@ -61,9 +61,11 @@ DocScan-Setup.ps1 / -Pilot / -Critical   завантажувачі для irm |
 critical-rules.yar                       правила E5Search (якщо задано в hosts.json "fs".critical_rules)
 ```
 
-**`--publish`** (у VS Code: *Run Task → «DocScan CI + publish to the deployment server»*) викладає набір на
+**Публікація — за замовчуванням** (▷ / Cmd+Shift+B): набір іде на
 сервер розгортання по ssh, звіряє SHA256 на сервері і лише тоді перемикає `DocScan-latest.txt` — з цього моменту
 `irm http://<сервер>:8080/docscan/DocScan-Setup.ps1 | iex` ставить новий пакет. Не зелений прогін — не публікується.
+Без публікації: `--no-publish` (*Run Task → «DocScan CI without publishing»*). Викласти готовий набір без збірки:
+`ci-run.py --publish-dir ci-out/<прогін>/deploy`.
 
 Налаштування в `~/.docscan/hosts.json` (не в репозиторії): `forgejo` (`url`, `token`, `ci_checkout_token`),
 `vm` і `216` (Windows-машини: `host`, `user`, `password`), `fs` (`host`, `user`, `password`, `deploy_dir`

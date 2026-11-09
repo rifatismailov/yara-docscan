@@ -1,5 +1,5 @@
 {
-  // DocScan: Cmd+Shift+B = "DocScan CI" (push -> Forgejo -> macOS + Windows 11 + Linux).
+  // DocScan: Cmd+Shift+B / ▷ = "DocScan CI": commit, push, build + tests, package published to the deployment server.
   // Terminal > Run Task... also has the local-only build/test.
   "version": "2.0.0",
   "tasks": [
@@ -12,9 +12,9 @@
       "problemMatcher": []
     },
     {
-      "label": "DocScan CI + publish to the deployment server",
+      "label": "DocScan CI without publishing (the server is not changed)",
       "type": "shell",
-      "command": "python3 docscan-project/ci/ci-run.py --publish",
+      "command": "python3 docscan-project/ci/ci-run.py --no-publish",
       "presentation": { "reveal": "always", "panel": "dedicated", "clear": true },
       "problemMatcher": []
     },
