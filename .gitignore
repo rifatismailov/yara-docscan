@@ -113,3 +113,10 @@ __pycache__/
 # DocScan critical-mode tests (the upstream test-* pattern above is for test binaries)
 !/docscan-project/test-critical/
 !/docscan-project/test-critical/*.py
+
+# VS Code: only the shared tasks file is versioned
+!/.vscode/
+/.vscode/*
+!/.vscode/tasks.json
+# CI output
+/ci-out/

@@ -1,0 +1,74 @@
+# DocScan CI: build + tests + fuzzing on macOS, Windows 11 and Linux.
+# Started by the "Run workflow" button in Forgejo (Дії) or by docscan-project/ci/ci-run.py (VS Code task).
+# Runners (labels): "macos" - the Mac; "linux" - the Ubuntu VM; "winrm" - any runner that reaches the
+# Windows build machine over WinRM. Secrets / variables are set in Forgejo, not here.
+name: build-test
+
+on:
+  workflow_dispatch:
+    inputs:
+      fuzz_seconds:
+        description: "Fuzzing time per OS, seconds (0 = no fuzzing)"
+        default: "300"
+  schedule:
+    - cron: "30 1 * * *"   # nightly: long fuzzing
+
+jobs:
+  macos:
+    runs-on: macos
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - name: build, tests, fuzzing
+        run: sh docscan-project/ci/build-test-unix.sh
+        env:
+          CI_OUT: ci-out
+          FUZZ_SECONDS: ${{ github.event_name == 'schedule' && '3600' || inputs.fuzz_seconds || '300' }}
+          CI_SEEDS: ${{ vars.CI_SEEDS_MACOS }}
+      - uses: actions/upload-artifact@v3
+        if: always()
+        with:
+          name: macos
+          path: ci-out/artifacts
+
+  windows11:
+    # runs only when the Windows build machine is up (Forgejo variable WIN11 = true)
+    if: ${{ vars.WIN11 == 'true' }}
+    runs-on: winrm
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - name: build, tests, package on Windows 11 (WinRM)
+        run: python3 docscan-project/ci/windows-remote.py
+        env:
+          WIN_HOST: ${{ secrets.WIN11_HOST }}
+          WIN_USER: ${{ secrets.WIN11_USER }}
+          WIN_PASS: ${{ secrets.WIN11_PASS }}
+          GIT_URL: ${{ github.server_url }}/${{ github.repository }}.git
+          GIT_TOKEN: ${{ secrets.CI_GIT_TOKEN }}
+          SHA: ${{ github.sha }}
+          CI_OUT: ci-out
+      - uses: actions/upload-artifact@v3
+        if: always()
+        with:
+          name: windows11
+          path: ci-out/artifacts
+
+  linux:
+    # runs only when the Ubuntu runner exists (Forgejo variable LINUX_RUNNER = true)
+    if: ${{ vars.LINUX_RUNNER == 'true' }}
+    runs-on: linux
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - name: build, tests, fuzzing
+        run: sh docscan-project/ci/build-test-unix.sh
+        env:
+          CI_OUT: ci-out
+          FUZZ_SECONDS: ${{ github.event_name == 'schedule' && '3600' || inputs.fuzz_seconds || '300' }}
+          CI_SEEDS: ${{ vars.CI_SEEDS_LINUX }}
+      - uses: actions/upload-artifact@v3
+        if: always()
+        with:
+          name: linux
+          path: ci-out/artifacts

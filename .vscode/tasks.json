@@ -1,0 +1,29 @@
+{
+  // DocScan: Cmd+Shift+B = "DocScan CI" (push -> Forgejo -> macOS + Windows 11 + Linux).
+  // Terminal > Run Task... also has the local-only build/test.
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "DocScan CI",
+      "type": "shell",
+      "command": "python3 docscan-project/ci/ci-run.py",
+      "group": { "kind": "build", "isDefault": true },
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true },
+      "problemMatcher": []
+    },
+    {
+      "label": "DocScan CI (no fuzzing)",
+      "type": "shell",
+      "command": "python3 docscan-project/ci/ci-run.py --fuzz 0",
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true },
+      "problemMatcher": []
+    },
+    {
+      "label": "DocScan local: build + tests on this Mac (no push)",
+      "type": "shell",
+      "command": "FUZZ_SECONDS=120 sh docscan-project/ci/build-test-unix.sh",
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true },
+      "problemMatcher": []
+    }
+  ]
+}
