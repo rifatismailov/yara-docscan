@@ -61,40 +61,33 @@ else:
 
 print("3/4 start the workflow build-test (fuzzing %ss per OS)" % a.fuzz, flush=True)
 started = time.time()
-api("POST", "/repos/%s/actions/workflows/ci.yml/dispatches" % REPO, {"ref": branch, "inputs": {"fuzz_seconds": str(a.fuzz)}})
-run = None
-for _ in range(40):
-    runs = api("GET", "/repos/%s/actions/runs?limit=10" % REPO).get("workflow_runs", [])
-    for r in runs:
-        if r.get("head_sha") == sha and r.get("event") == "workflow_dispatch":
-            run = r
-            break
-    if run:
-        break
-    time.sleep(3)
-if not run:
-    sys.exit("the run did not appear - check Forgejo -> Дії")
-rid = run["id"]
-print("    run #%s: %s" % (run.get("run_number", rid), run.get("html_url", URL + "/" + REPO + "/actions")), flush=True)
+info = api("POST", "/repos/%s/actions/workflows/ci.yml/dispatches" % REPO,
+           {"ref": branch, "inputs": {"fuzz_seconds": str(a.fuzz)}, "return_run_info": True})
+rid = info["id"]
+print("    run #%s: %s/%s/actions/runs/%s   jobs: %s" % (info.get("run_number", rid), URL, REPO, rid,
+                                                       ", ".join(info.get("jobs", []))), flush=True)
 
 print("4/4 follow the run (Ctrl+C stops following, not the run)", flush=True)
 last = {}
 while True:
-    jobs = api("GET", "/repos/%s/actions/runs/%s/jobs" % (REPO, rid)).get("jobs", [])
+    jobs = api("GET", "/repos/%s/actions/runs/%s/jobs" % (REPO, rid))
+    if isinstance(jobs, dict):
+        jobs = jobs.get("jobs", [])
     for j in jobs:
-        st = "%s/%s" % (j.get("status"), j.get("conclusion") or "-")
+        st = j.get("status")
         if last.get(j["name"]) != st:
             last[j["name"]] = st
             print("    %-10s %-22s %4ds" % (j["name"], st, time.time() - started), flush=True)
     r = api("GET", "/repos/%s/actions/runs/%s" % (REPO, rid))
-    if r.get("status") in ("completed", "success", "failure", "cancelled", "skipped") or r.get("conclusion"):
+    if r.get("status") in ("success", "failure", "cancelled", "skipped"):
         break
     time.sleep(15)
 
-concl = r.get("conclusion") or r.get("status")
+concl = r.get("status")
 out = os.path.join("ci-out", "run-%s" % rid)
 os.makedirs(out, exist_ok=True)
-for art in api("GET", "/repos/%s/actions/runs/%s/artifacts" % (REPO, rid)).get("artifacts", []):
+arts = api("GET", "/repos/%s/actions/runs/%s/artifacts" % (REPO, rid))
+for art in (arts.get("artifacts", []) if isinstance(arts, dict) else arts):
     try:
         zipfile.ZipFile(io.BytesIO(api("GET", "/repos/%s/actions/artifacts/%s/zip" % (REPO, art["id"]), raw=True))) \
             .extractall(os.path.join(out, art["name"]))
