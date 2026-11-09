@@ -31,19 +31,23 @@ jobs:
           name: macos
           path: ci-out/artifacts
 
-  windows11:
-    # runs only when the Windows build machine is up (Forgejo variable WIN11 = true)
-    if: ${{ vars.WIN11 == 'true' }}
+  windows:
+    # the Windows build machine: the Proxmox VM when it is reachable, otherwise the fallback PC
+    # (windows-remote.py picks it). Turn the job off with the Forgejo variable WINDOWS = false.
+    if: ${{ vars.WINDOWS != 'false' }}
     runs-on: winrm
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
-      - name: build, tests, package on Windows 11 (WinRM)
+      - name: build, tests, package on Windows (WinRM)
         run: python3 docscan-project/ci/windows-remote.py
         env:
-          WIN_HOST: ${{ secrets.WIN11_HOST }}
-          WIN_USER: ${{ secrets.WIN11_USER }}
-          WIN_PASS: ${{ secrets.WIN11_PASS }}
+          WIN11_HOST: ${{ secrets.WIN11_HOST }}
+          WIN11_USER: ${{ secrets.WIN11_USER }}
+          WIN11_PASS: ${{ secrets.WIN11_PASS }}
+          WIN216_HOST: ${{ secrets.WIN216_HOST }}
+          WIN216_USER: ${{ secrets.WIN216_USER }}
+          WIN216_PASS: ${{ secrets.WIN216_PASS }}
           GIT_URL: ${{ github.server_url }}/${{ github.repository }}.git
           GIT_TOKEN: ${{ secrets.CI_GIT_TOKEN }}
           SHA: ${{ github.sha }}
@@ -51,7 +55,7 @@ jobs:
       - uses: actions/upload-artifact@v3
         if: always()
         with:
-          name: windows11
+          name: windows
           path: ci-out/artifacts
 
   linux:

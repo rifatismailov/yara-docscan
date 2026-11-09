@@ -12,6 +12,13 @@
       "problemMatcher": []
     },
     {
+      "label": "DocScan CI + publish to the deployment server",
+      "type": "shell",
+      "command": "python3 docscan-project/ci/ci-run.py --publish",
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true },
+      "problemMatcher": []
+    },
+    {
       "label": "DocScan CI (no fuzzing)",
       "type": "shell",
       "command": "python3 docscan-project/ci/ci-run.py --fuzz 0",
