@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
-"""The "Run" button: push -> Forgejo mirror sync -> start the build-test workflow -> follow it
--> download the artifacts. Used by the VS Code task "DocScan CI".
+"""The "Run" button: commit (if there are changes) -> push -> Forgejo mirror sync -> start the
+build-test workflow -> follow it -> download the artifacts. Used by the VS Code ▷ / task "DocScan CI".
 
-  python3 docscan-project/ci/ci-run.py [--fuzz SECONDS] [--no-push]
+  python3 docscan-project/ci/ci-run.py [--fuzz SECONDS] [-m "message"] [--no-commit] [--no-push]
+
+Auto-commit: every change git does not ignore (git add -A) goes into one commit, unless the
+safety check finds something that must not reach the public repository (internal addresses,
+host/user names, passwords, tokens, files > 5 MB) - then nothing is committed and the script stops.
 
 Forgejo address and API token: ~/.docscan/hosts.json, profile "forgejo" ({"url", "token"}), or the
 environment FORGEJO_URL / FORGEJO_TOKEN. Repository: FORGEJO_REPO (default rifat/yara-docscan).
@@ -12,6 +16,8 @@ import argparse, json, os, subprocess, sys, time, urllib.request, urllib.error, 
 ap = argparse.ArgumentParser()
 ap.add_argument("--fuzz", default="300", help="fuzzing seconds per OS (0 = none)")
 ap.add_argument("--no-push", action="store_true", help="do not git push (the commit is already on GitHub)")
+ap.add_argument("--no-commit", action="store_true", help="do not commit local changes (CI builds the last commit)")
+ap.add_argument("-m", "--message", default="", help="commit message for the auto-commit")
 ap.add_argument("--remote", default="docscan", help="git remote of GitHub (default: docscan)")
 a = ap.parse_args()
 
@@ -40,10 +46,56 @@ def git(*args):
     return subprocess.run(["git", *args], capture_output=True, text=True, check=True).stdout.strip()
 
 
+# what must never reach the public repository (same check as before every manual push)
+import re
+_INTERNAL_NAMES = "|".join(["fort" + "una", "(?<!rifat)" + "isma" + "ilov", "odessa" + r"\.ua"])  # split: this file is public too
+FORBIDDEN = [
+    (re.compile(r"\b(192\.168\.(1|17|88|129)|10\.10\.67|172\.118\.18)\.\d{1,3}\b"), "internal IP address"),
+    (re.compile(_INTERNAL_NAMES, re.I), "internal host / user name"),
+    (re.compile(r"(password|passwd|pwd|secret|token)['\"]?\s*[:=]\s*['\"][^'\"\s]{6,}['\"]", re.I), "password / token value"),
+    (re.compile(r"\b[0-9a-f]{40}\b"), "40-hex token (Forgejo/GitHub)"),
+]
+MAX_FILE = 5 * 1024 * 1024
+
+
+def safety_check():
+    """Check the staged changes; returns a list of problems."""
+    problems = []
+    for f in git("diff", "--cached", "--name-only", "-z").split("\0"):
+        if f and os.path.isfile(f) and os.path.getsize(f) > MAX_FILE:
+            problems.append("%s: file larger than 5 MB" % f)
+    diff = subprocess.run(["git", "diff", "--cached", "-U0", "--no-color"], capture_output=True,
+                          text=True, encoding="utf-8", errors="replace").stdout
+    cur = "?"
+    for line in diff.splitlines():
+        if line.startswith("+++ "):
+            cur = line[6:] if line.startswith("+++ b/") else line[4:]
+        elif line.startswith("+") and not line.startswith("+++"):
+            for rx, what in FORBIDDEN:
+                if rx.search(line):
+                    problems.append("%s: %s:  %s" % (cur, what, line[1:].strip()[:100]))
+    return problems
+
+
 branch = git("rev-parse", "--abbrev-ref", "HEAD")
+changes = git("status", "--porcelain")
+if changes and not a.no_commit:
+    print("0/4 commit local changes:", flush=True)
+    print("\n".join("    " + l for l in changes.splitlines()[:30]))
+    subprocess.run(["git", "add", "-A"], check=True)
+    problems = safety_check()
+    if problems:
+        subprocess.run(["git", "reset", "-q"], check=True)   # unstage, files stay as they are
+        print("\n! NOT committed - the public repository must not get:")
+        print("\n".join("    " + p for p in problems[:20]))
+        sys.exit("fix these changes (or commit by hand with --no-commit) and press Run again")
+    files = git("diff", "--cached", "--name-only").splitlines()
+    msg = a.message or ("ci: " + (", ".join(os.path.basename(f) for f in files[:6]) + (" ..." if len(files) > 6 else "")))
+    subprocess.run(["git", "commit", "-q", "-m", msg], check=True)
+    print("    committed: %s  (%s)" % (git("rev-parse", "--short", "HEAD"), msg), flush=True)
+elif changes:
+    print("! uncommitted changes (--no-commit) - CI builds the last COMMIT %s" % git("rev-parse", "--short", "HEAD"))
 sha = git("rev-parse", "HEAD")
-if git("status", "--porcelain", "--untracked-files=no"):
-    print("! there are uncommitted changes - CI builds the last COMMIT %s, not the working tree" % sha[:8])
 
 if not a.no_push:
     print("1/4 git push %s %s" % (a.remote, branch), flush=True)

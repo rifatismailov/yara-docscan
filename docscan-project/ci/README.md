@@ -26,7 +26,7 @@ VS Code ─► ci-run.py: git push на GitHub → Forgejo оновлює дзе
 | `docscan-project/ci/windows-remote.py` | runner з міткою `winrm` | Керує Windows по WinRM: точний коміт з Forgejo, MSBuild, ті самі тести, `build_package.ps1`, забирає zip |
 | `docscan-project/ci/check_verdicts.py` | усі ОС | Документи: копія → детект + лікування → повторний скан, порівняння з `expected-verdicts.tsv` |
 | `docscan-project/ci/expected-verdicts.tsv` | — | Еталон для 24 зразків `test-samples/generated` (оновлювати свідомо: `check_verdicts.py --write`) |
-| `docscan-project/ci/ci-run.py` | ваш Мак | «Кнопка»: push → синхронізація дзеркала → запуск Дії → стеження → артефакти |
+| `docscan-project/ci/ci-run.py` | ваш Мак | «Кнопка»: коміт змін (з перевіркою) → push → синхронізація дзеркала → запуск Дії → стеження → артефакти |
 | `.vscode/tasks.json` | VS Code | Завдання «DocScan CI» (Cmd+Shift+B), «без фазингу», «локально на Маку без push» |
 
 Тести в кожному прогоні: **документи** (24 зразки: вердикт, лікування, повторний скан, оригінали не змінені),
@@ -101,8 +101,12 @@ forgejo-runner register --no-interactive --instance http://<forgejo>:3000 --toke
 (у `settings.json`: `"VsCodeTaskButtons.tasks": [{"label": "$(play) DocScan CI", "task": "DocScan CI"}]`).
 
 ## Як користуватися
-1. Закомітити зміни (CI будує **останній коміт**, не робочу копію).
-2. **Cmd+Shift+B.** У терміналі: push → синхронізація → «run #N: <посилання>» → стан кожної системи.
+1. **▷ угорі праворуч** (при відкритому файлі проєкту; Code Runner, `.vscode/settings.json`) або **Cmd+Shift+B**.
+2. Якщо є незакомічені зміни, скрипт сам робить `git add -A` і **один коміт** (повідомлення — `-m "…"` або
+   автоматичне «ci: <файли>»), потім push. Перед комітом — **перевірка для публічного репозиторію**: внутрішні
+   IP, імена хостів/користувачів, паролі й токени в лапках, 40-символьні токени, файли > 5 МБ. Знайдено щось —
+   нічого не комітиться, файли лишаються як є, у терміналі видно, де саме. Вимкнути автокоміт: `--no-commit`.
+3. Далі в терміналі: push → синхронізація → «run #N: <посилання>» → стан кожної системи.
 3. Наприкінці — `RESULT: SUCCESS/FAILURE`, підсумок по системах і артефакти в `ci-out/run-<N>/`
    (`windows11/DocScan-<дата>-<коміт>.zip` — готовий пакет; `macos/yara-darwin-arm64.tar.gz`; логи кроків).
 4. Те саме — у Forgejo → репозиторій → **Дії** → прогін (логи кожного кроку, кнопки завантаження артефактів).
