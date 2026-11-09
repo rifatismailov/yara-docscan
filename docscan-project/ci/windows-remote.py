@@ -68,6 +68,11 @@ def step(name, script):
 hdr = "Authorization: token " + os.environ["GIT_TOKEN"]
 ok = step("checkout", r"""
 $url = '%(url)s'; $repo = '%(repo)s'
+# the test samples look malicious on purpose (inert): Defender must not take them from the CI folder
+if (Get-Command Add-MpPreference -EA 0) {
+  if (@((Get-MpPreference).ExclusionPath) -notcontains '%(wdir)s') { Add-MpPreference -ExclusionPath '%(wdir)s' }
+  "defender exclusion: " + (@((Get-MpPreference).ExclusionPath) -contains '%(wdir)s')
+}
 if (-not (Test-Path "$repo\.git")) { git -c "http.extraHeader=%(hdr)s" clone --no-checkout $url $repo 2>&1 | %% { "$_" } }
 Set-Location $repo
 git -c "http.extraHeader=%(hdr)s" fetch --force origin %(sha)s 2>&1 | %% { "$_" }
@@ -75,7 +80,7 @@ git checkout --force %(sha)s 2>&1 | %% { "$_" }
 git clean -xfdq -e windows/vs2019/packages 2>&1 | %% { "$_" }
 "commit: " + (git rev-parse HEAD)
 if ((git rev-parse HEAD) -ne '%(sha)s') { exit 1 }
-""" % {"url": os.environ["GIT_URL"], "repo": REPO, "hdr": hdr, "sha": SHA})
+""" % {"url": os.environ["GIT_URL"], "repo": REPO, "hdr": hdr, "sha": SHA, "wdir": WDIR})
 
 if ok:
     ok = step("build", r"""
