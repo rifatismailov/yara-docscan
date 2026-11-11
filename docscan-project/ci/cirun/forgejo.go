@@ -1,7 +1,8 @@
 package main
 
-// Forgejo mode: sync the GitHub mirror, start the "build-test" workflow, follow its jobs and download
-// the artifacts into ci-out/run-<id>/.
+// Режим Forgejo: синхронізувати дзеркало GitHub, запустити Дію «build-test» (файл
+// .forgejo/workflows/ci.yml), стежити за її завданнями і завантажити артефакти в ci-out/run-<id>/.
+// Тут же — читання ~/.docscan/hosts.json (профілі з адресами й обліковими записами).
 
 import (
 	"archive/zip"
@@ -17,9 +18,12 @@ import (
 	"time"
 )
 
-// profile is one entry of ~/.docscan/hosts.json.
+// profile — один профіль з ~/.docscan/hosts.json: ім'я поля -> значення (JSON-об'єкт як є).
+// Приклад профілю «fs»: {"host": "...", "user": "...", "password": "...", "deploy_dir": "..."}.
 type profile map[string]any
 
+// s повертає поле key профілю як рядок; якщо поля немає або воно не рядок — порожній рядок.
+// Так код не падає, коли якогось поля в hosts.json немає (і профілю теж: s на nil-мапі працює).
 func (p profile) s(key string) string {
 	if v, ok := p[key].(string); ok {
 		return v
@@ -27,6 +31,8 @@ func (p profile) s(key string) string {
 	return ""
 }
 
+// loadHosts читає ~/.docscan/hosts.json і повертає профілі за іменами. Немає файлу або він
+// зіпсований — порожня мапа (тоді, наприклад, Forgejo вважається не налаштованим).
 func loadHosts() map[string]profile {
 	h := map[string]profile{}
 	if b, err := os.ReadFile(filepath.Join(home(), ".docscan", "hosts.json")); err == nil {
@@ -35,8 +41,16 @@ func loadHosts() map[string]profile {
 	return h
 }
 
-type forgejo struct{ url, token, repo string }
+// forgejo — підключення до API Forgejo для одного репозиторію.
+type forgejo struct {
+	url   string // адреса сервера Forgejo, напр. http://<сервер>:3000 (без «/» у кінці)
+	token string // API-токен Forgejo (з hosts.json «forgejo».token або FORGEJO_TOKEN)
+	repo  string // власник/репозиторій, напр. rifat/yara-docscan
+}
 
+// api робить запит до API репозиторію: method — GET/POST, path — частина після
+// /api/v1/repos/<repo> (напр. "/mirror-sync"), body — тіло JSON (nil — без тіла).
+// Повертає сирі байти відповіді; HTTP-статус 300 і вище — помилка. Тайм-аут 10 хв (артефакти бувають великі).
 func (f *forgejo) api(method, path string, body any) ([]byte, error) {
 	var rd io.Reader
 	if body != nil {
@@ -61,7 +75,8 @@ func (f *forgejo) api(method, path string, body any) ([]byte, error) {
 	return data, err
 }
 
-// call is api() that decodes the JSON answer into v; stops on an error.
+// call — те саме, що api, але розбирає JSON-відповідь у v (nil — відповідь не потрібна).
+// Будь-яка помилка зупиняє програму: без цих запитів продовжувати немає сенсу.
 func (f *forgejo) call(method, path string, body, v any) {
 	data, err := f.api(method, path, body)
 	if err != nil {
@@ -74,17 +89,20 @@ func (f *forgejo) call(method, path string, body, v any) {
 	}
 }
 
+// fjJob — завдання прогону Дії (macos / windows / linux) з відповіді Forgejo.
 type fjJob struct {
-	Name   string `json:"name"`
-	Status string `json:"status"`
+	Name   string `json:"name"`   // ім'я завдання з ci.yml
+	Status string `json:"status"` // стан: waiting, running, success, failure, ...
 }
 
+// fjArtifact — артефакт прогону (zip, який завдання вивантажило через upload-artifact).
 type fjArtifact struct {
-	ID   int64  `json:"id"`
-	Name string `json:"name"`
+	ID   int64  `json:"id"`   // номер артефакту для завантаження
+	Name string `json:"name"` // ім'я (macos / windows / linux) — стає ім'ям підтеки в ci-out
 }
 
-// listOf decodes an answer that is either a plain list or {"<key>": [...]} (Forgejo versions differ).
+// listOf розбирає відповідь, яка буває або простим списком [...], або об'єктом {"<key>": [...]}
+// (різні версії Forgejo відповідають по-різному). T — тип елемента (fjJob, fjArtifact).
 func listOf[T any](data []byte, key string) []T {
 	var l []T
 	if json.Unmarshal(data, &l) == nil {
@@ -96,10 +114,19 @@ func listOf[T any](data []byte, key string) []T {
 	return l
 }
 
+// run — увесь режим Forgejo. branch — гілка, sha — коміт, який має зібратися.
+// Повертає теку прогону ci-out/run-<id> і true, якщо прогін завершився успіхом. Як:
+//  1. mirror-sync — дзеркало підтягує свіжий push з GitHub; чекаємо (до 3 хв), поки гілка в
+//     дзеркалі вкаже саме на sha, інакше зібрали б старий коміт;
+//  2. запуск Дії ci.yml (workflow_dispatch) з fuzz_seconds; return_run_info — щоб одразу отримати
+//     номер прогону, а не шукати його;
+//  3. кожні 15 с — стан завдань (друкується лише зміна стану) і стан прогону, до кінцевого;
+//  4. завантаження всіх артефактів і розпаковування в ci-out/run-<id>/<ім'я артефакту>/.
 func (f *forgejo) run(branch, sha string) (string, bool) {
 	say("Forgejo: sync the mirror")
 	f.call("POST", "/mirror-sync", nil, nil)
 	for i := 0; ; i++ {
+		// br — відповідь «гілка»: нам потрібен лише хеш її останнього коміту
 		var br struct {
 			Commit struct {
 				ID string `json:"id"`
@@ -109,31 +136,32 @@ func (f *forgejo) run(branch, sha string) (string, bool) {
 		if br.Commit.ID == sha {
 			break
 		}
-		if i == 60 {
+		if i == 60 { // 60 спроб по 3 с = 3 хв
 			die(fmt.Sprintf("the mirror did not get %s in 3 minutes (is it pushed to GitHub?)", sha[:8]))
 		}
 		time.Sleep(3 * time.Second)
 	}
 
 	say("Forgejo: start the workflow build-test (fuzzing %ss per OS)", opt.fuzz)
+	// info — що Forgejo повертає про запущений прогін
 	var info struct {
-		ID        int64    `json:"id"`
-		RunNumber int64    `json:"run_number"`
-		Jobs      []string `json:"jobs"`
+		ID        int64    `json:"id"`         // внутрішній номер прогону (для API і посилання)
+		RunNumber int64    `json:"run_number"` // номер, який видно в інтерфейсі («#12»)
+		Jobs      []string `json:"jobs"`       // імена завдань, які будуть виконані
 	}
 	f.call("POST", "/actions/workflows/ci.yml/dispatches", map[string]any{
 		"ref": branch, "inputs": map[string]string{"fuzz_seconds": opt.fuzz}, "return_run_info": true}, &info)
 	num := info.RunNumber
-	if num == 0 {
+	if num == 0 { // старіші версії не повертають run_number — показуємо id
 		num = info.ID
 	}
 	say("    run #%d: %s/%s/actions/runs/%d   jobs: %s", num, f.url, f.repo, info.ID, strings.Join(info.Jobs, ", "))
 
 	runPath := fmt.Sprintf("/actions/runs/%d", info.ID)
-	last := map[string]string{}
-	status := ""
+	last := map[string]string{} // останній надрукований стан кожного завдання (друкуємо лише зміни)
+	status := ""                // кінцевий стан прогону
 	for {
-		// a short network hiccup must not stop the run: report it and ask again
+		// коротка перерва в мережі не повинна зупиняти прогін: повідомляємо і питаємо знову
 		if data, err := f.api("GET", runPath+"/jobs", nil); err != nil {
 			say("    (Forgejo: %v)", err)
 		} else {
@@ -144,6 +172,7 @@ func (f *forgejo) run(branch, sha string) (string, bool) {
 				}
 			}
 		}
+		// r — стан усього прогону
 		var r struct {
 			Status string `json:"status"`
 		}
@@ -174,13 +203,15 @@ func (f *forgejo) run(branch, sha string) (string, bool) {
 	return out, status == "success"
 }
 
-// unzip extracts a zip held in memory; entries that would land outside dst are refused.
+// unzip розпаковує zip, що вже лежить у пам'яті (data), у теку dst. Захист: запис, шлях якого після
+// з'єднання з dst виходить за межі dst (напр. «../../файл»), відхиляється — архів не може записати
+// щось поза текою прогону.
 func unzip(data []byte, dst string) error {
 	zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
 	if err != nil {
 		return err
 	}
-	root := filepath.Clean(dst) + string(os.PathSeparator)
+	root := filepath.Clean(dst) + string(os.PathSeparator) // dst з «/» у кінці: для перевірки префікса
 	for _, f := range zr.File {
 		p := filepath.Join(dst, f.Name)
 		if !strings.HasPrefix(p+string(os.PathSeparator), root) {

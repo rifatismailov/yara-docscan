@@ -1,31 +1,36 @@
-// ci-run: the "Run" button (VS Code ▷ / task "DocScan CI"): commit -> push -> build + tests on every
-// system -> deployment set -> publish to the deployment server.
+// ci-run — «кнопка Запуск» проєкту DocScan (VS Code ▷ / задача «DocScan CI»).
 //
-//	go run -C docscan-project/ci/cirun . [--fuzz SECONDS] [-m "message"] [--no-commit] [--no-push]
-//	                                     [--local] [--no-publish] [--publish-dir DIR]
-//	go run -C docscan-project/ci/cirun . windows      (the Windows job alone, see windows.go)
+// Що робить за один запуск:
 //
-// Two modes, chosen automatically:
-//   - Forgejo reachable  -> the "build-test" workflow runs there (runners: this Mac, Windows over WinRM,
-//     Ubuntu when it exists); ci-run follows it and downloads the artifacts.
-//   - Forgejo NOT reachable (or --local) -> the same steps run from this Mac directly: build-test-unix.sh
-//     here and the Windows job over WinRM to the first reachable Windows build machine (the Proxmox VM,
-//     else the fallback PC "216").
+//	коміт локальних змін -> git push -> збірка і всі тести на кожній системі ->
+//	набір для розгортання -> публікація на сервер розгортання.
 //
-// After a green run the deployment set is put together in ci-out/<run>/deploy/: the Windows package
-// DocScan-<date>-<commit>.zip + .sha256, DocScan-latest.txt, DocScan-Install.ps1 and the bootstraps
-// DocScan-Setup.ps1 / -Pilot / -Critical with the server address filled in (+ critical-rules.yar).
-// Then it is uploaded to the deployment server (default; --no-publish to skip) and DocScan-latest.txt is
-// switched to the new package: "irm http://<server>:8080/docscan/DocScan-Setup.ps1 | iex" installs it.
+// Запуск (з кореня репозиторію):
 //
-// Auto-commit: every change git does not ignore (git add -A) goes into one commit, unless the safety
-// check finds something that must not reach the public repository (internal addresses, host/user
-// names, passwords, tokens, files > 5 MB) - then nothing is committed and ci-run stops.
+//	go run -C docscan-project/ci/cirun . [--fuzz СЕКУНДИ] [-m "повідомлення"] [--no-commit] [--no-push]
+//	                                     [--local] [--no-publish] [--publish-dir ТЕКА]
+//	go run -C docscan-project/ci/cirun . windows      (лише задача Windows, див. windows.go)
 //
-// Settings: ~/.docscan/hosts.json - profile "forgejo" (url, token, ci_checkout_token), "vm" and "216"
-// (host, user, password: the Windows build machines, local mode), "fs" (host, user, password,
-// deploy_dir, deploy_url, critical_rules: the deployment server). Repository on Forgejo: FORGEJO_REPO
-// (default rifat/yara-docscan).
+// Два режими, вибираються автоматично:
+//   - Forgejo доступний -> у Forgejo запускається Дія «build-test» (runner-и: цей Мак, Windows через
+//     WinRM, Ubuntu, коли з'явиться); ci-run стежить за нею і завантажує артефакти (forgejo.go).
+//   - Forgejo НЕдоступний (або --local) -> ті самі кроки прямо з цього Мака: build-test-unix.sh тут і
+//     задача Windows по WinRM на першу доступну Windows-машину (ВМ на Proxmox, інакше запасний ПК «216»).
+//
+// Після «зеленого» прогону в ci-out/<прогін>/deploy/ складається набір для розгортання: пакет Windows
+// DocScan-<дата>-<коміт>.zip + .sha256, DocScan-latest.txt, DocScan-Install.ps1 і завантажувачі
+// DocScan-Setup.ps1 / -Pilot / -Critical з уже підставленою адресою сервера (+ critical-rules.yar).
+// Далі набір викладається на сервер (за замовчуванням; --no-publish — не викладати) і DocScan-latest.txt
+// перемикається на новий пакет: «irm http://<сервер>:8080/docscan/DocScan-Setup.ps1 | iex» ставить його.
+//
+// Автокоміт: усі зміни, які git не ігнорує (git add -A), ідуть одним комітом — якщо перевірка безпеки
+// не знайде того, що не можна пускати в публічний репозиторій (внутрішні адреси, імена хостів і
+// користувачів, паролі, токени, файли > 5 МБ). Інакше нічого не комітиться і ci-run зупиняється.
+//
+// Налаштування: ~/.docscan/hosts.json — профіль «forgejo» (url, token, ci_checkout_token), «vm» і «216»
+// (host, user, password: Windows-машини для збірки, локальний режим), «fs» (host, user, password,
+// deploy_dir, deploy_url, critical_rules: сервер розгортання). Репозиторій у Forgejo: змінна середовища
+// FORGEJO_REPO (за замовчуванням rifat/yara-docscan).
 package main
 
 import (
@@ -46,23 +51,52 @@ import (
 	"time"
 )
 
+// options — значення прапорців командного рядка (заповнюються в main через пакет flag).
 type options struct {
-	fuzz, message, remote, publishDir  string
-	noPush, noCommit, local, noPublish bool
+	// fuzz — скільки секунд фазингу на кожну ОС (рядком, бо так його передаємо далі в змінну
+	// середовища FUZZ_SECONDS і в Дію Forgejo); "0" — без фазингу.
+	fuzz string
+	// message — повідомлення для автокоміту (-m / --message); порожнє — складається автоматично
+	// з імен змінених файлів: «ci: a.go, b.ps1 ...».
+	message string
+	// remote — ім'я git remote, куди робиться push (GitHub; за замовчуванням "docscan").
+	remote string
+	// publishDir — якщо задано (--publish-dir), нічого не збирати, а лише викласти вже готовий набір
+	// для розгортання з цієї теки (ci-out/<прогін>/deploy).
+	publishDir string
+	// noPush — не робити git push (--no-push).
+	noPush bool
+	// noCommit — не комітити локальні зміни (--no-commit); тоді збирається останній коміт.
+	noCommit bool
+	// local — не використовувати Forgejo навіть якщо він доступний (--local): усе прямо з Мака.
+	local bool
+	// noPublish — не викладати набір на сервер розгортання (--no-publish).
+	noPublish bool
 }
 
 var (
-	opt     options
-	hosts   map[string]profile
+	// opt — розібрані прапорці запуску (див. options).
+	opt options
+	// hosts — профілі з ~/.docscan/hosts.json: ключ — ім'я профілю ("forgejo", "vm", "216", "fs"),
+	// значення — його поля (host, user, password, ...). Паролі живуть лише там, не в репозиторії.
+	hosts map[string]profile
+	// started — час старту програми: для підсумкового «(N min)» і рядків стану в progress.go.
 	started = time.Now()
 )
 
+// main — точка входу. Порядок: перейти в корінь репозиторію -> (якщо перший аргумент "windows" —
+// виконати лише задачу Windows і вийти) -> розібрати прапорці -> коміт і push -> збірка й тести
+// (Forgejo або локально) -> показати підсумки -> набір для розгортання -> публікація -> RESULT.
+// Код виходу: 0 — усе зелене (і опубліковано, якщо публікацію просили), 1 — інакше.
 func main() {
-	// "go run -C docscan-project/ci/cirun ." starts in the module folder: work from the repository root
+	// "go run -C docscan-project/ci/cirun ." стартує в теці модуля, тому спершу переходимо в корінь
+	// репозиторію: усі шляхи нижче (docscan-project/..., ci-out/...) відносні до нього.
 	root := strings.TrimSpace(mustGit("rev-parse", "--show-toplevel"))
 	if err := os.Chdir(root); err != nil {
 		die(err.Error())
 	}
+	// Підкоманда "windows": той самий бінарник запускає себе так у локальному режимі (runLocal),
+	// а Forgejo — у завданні windows (ci.yml). Далі main тоді не йде.
 	if len(os.Args) > 1 && os.Args[1] == "windows" {
 		os.Exit(runWindows())
 	}
@@ -74,40 +108,45 @@ func main() {
 	flag.StringVar(&opt.remote, "remote", "docscan", "git remote of GitHub")
 	flag.BoolVar(&opt.local, "local", false, "do not use Forgejo: build and test from this Mac")
 	flag.BoolVar(&opt.noPublish, "no-publish", false, "do not upload the deployment set to the server")
+	// --publish лишився від старих задач VS Code: публікація тепер і так за замовчуванням.
 	flag.Bool("publish", false, "the default now; kept for old tasks")
 	flag.StringVar(&opt.publishDir, "publish-dir", "", "only publish an existing deployment set (ci-out/<run>/deploy), no build")
 	flag.Parse()
 
 	hosts = loadHosts()
+	// fj — профіль Forgejo; адресу і токен можна перекрити змінними середовища FORGEJO_URL / FORGEJO_TOKEN.
 	fj := hosts["forgejo"]
 	forgejoURL := strings.TrimRight(envOr("FORGEJO_URL", fj.s("url")), "/")
 	forgejoToken := envOr("FORGEJO_TOKEN", fj.s("token"))
 	repo := envOr("FORGEJO_REPO", "rifat/yara-docscan")
 
+	// Режим «лише викласти готовий набір» — без коміту, push і збірки.
 	if opt.publishDir != "" {
 		publishOnly(opt.publishDir)
 		return
 	}
 
-	// ---- commit and push
-	branch := mustGit("rev-parse", "--abbrev-ref", "HEAD")
-	changes := mustGit("status", "--porcelain")
+	// ---- коміт і push
+	branch := mustGit("rev-parse", "--abbrev-ref", "HEAD") // поточна гілка (її і пушимо)
+	changes := mustGit("status", "--porcelain")            // незакомічені зміни, порожньо — немає
 	if changes != "" && !opt.noCommit {
 		commit(changes)
 	} else if changes != "" {
 		say("! uncommitted changes (--no-commit) - the last COMMIT %s is built", mustGit("rev-parse", "--short", "HEAD"))
 	}
-	sha := mustGit("rev-parse", "HEAD")
+	sha := mustGit("rev-parse", "HEAD") // повний хеш коміту, який збираємо
 	if !opt.noPush {
 		say("git push %s %s", opt.remote, branch)
+		// Помилка push не зупиняє: локальний режим може зібрати й локальний коміт.
 		if runCmd(nil, "git", "push", opt.remote, branch) != 0 {
 			say("! git push failed - continuing with the local commit")
 		}
 	}
 
-	// ---- build and tests
-	var out string
-	var green bool
+	// ---- збірка і тести
+	var out string // тека прогону з артефактами: ci-out/run-<N> або ci-out/local-<час>
+	var green bool // true — усі задачі пройшли
+	// Forgejo використовуємо, лише якщо не просили --local, він налаштований і відповідає по TCP.
 	useForgejo := !opt.local && forgejoURL != "" && forgejoToken != "" && reachable(forgejoURL)
 	if useForgejo {
 		f := &forgejo{url: forgejoURL, token: forgejoToken, repo: repo}
@@ -116,6 +155,8 @@ func main() {
 		if !opt.local {
 			say("Forgejo (%s) is not reachable - local mode", orStr(forgejoURL, "not configured"))
 		}
+		// gitURL — звідки Windows-машина може взяти код через git (якщо бачить Forgejo);
+		// інакше windows.go відправить код zip-архівом.
 		gitURL := "http://localhost/"
 		if forgejoURL != "" {
 			gitURL = forgejoURL + "/" + repo + ".git"
@@ -123,6 +164,7 @@ func main() {
 		out, green = runLocal(sha, gitURL, fj.s("ci_checkout_token"))
 	}
 
+	// Підсумок кожної задачі: кожна кладе summary.txt у свою підтеку артефактів.
 	entries, _ := os.ReadDir(out)
 	for _, e := range entries {
 		if b, err := os.ReadFile(filepath.Join(out, e.Name(), "summary.txt")); err == nil {
@@ -130,12 +172,12 @@ func main() {
 		}
 	}
 
-	// ---- deployment set and publishing
-	var dep *deployment
+	// ---- набір для розгортання і публікація
+	var dep *deployment // nil — набору немає (прогін не зелений або без пакета Windows)
 	if green {
 		dep = deploySet(out)
 	}
-	published := "" // "" = not asked, "yes", "no"
+	published := "" // "" — публікацію не просили (--no-publish), "yes" — опубліковано, "no" — ні
 	if !opt.noPublish {
 		published = "no"
 		if !green {
@@ -153,23 +195,37 @@ func main() {
 	}
 }
 
-// ------------------------------------------------------------------ commit --
+// ------------------------------------------------------------------ коміт --
 
-// The internal names are split so that this public file does not contain them.
+// forbidden — правила перевірки безпеки для публічного репозиторію: кожне — регулярний вираз (rx)
+// і що саме він ловить (what, друкується в повідомленні). Перевіряються лише ДОДАНІ рядки коміту.
+// Внутрішні імена в самих виразах розбиті на шматки ("ab" + "cd"), щоб цей публічний файл
+// сам не містив їх цілком і не спрацьовував на собі.
 var forbidden = []struct {
-	rx   *regexp.Regexp
-	what string
+	rx   *regexp.Regexp // що шукати в доданому рядку
+	what string         // опис знахідки для повідомлення («internal IP address» тощо)
 }{
+	// внутрішні підмережі (адреси серверів і ПК мережі)
 	{regexp.MustCompile(`\b(192\.168\.(1|17|88|129)|10\.10\.67|172\.118\.18)\.\d{1,3}\b`), "internal IP address"},
+	// внутрішні імена хостів / домени
 	{regexp.MustCompile(`(?i)(` + "fort" + "una" + `|` + "odessa" + `\.ua)`), "internal host / user name"},
+	// пароль або токен у лапках після «password=» / «token:» тощо (від 6 символів)
 	{regexp.MustCompile(`(?i)(password|passwd|pwd|secret|token)['"]?\s*[:=]\s*['"][^'"\s]{6,}['"]`), "password / token value"},
+	// 40 шістнадцяткових символів — так виглядають токени Forgejo / GitHub
 	{regexp.MustCompile(`\b[0-9a-f]{40}\b`), "40-hex token (Forgejo/GitHub)"},
 }
+
+// surname — прізвище користувача (розбите на шматки, див. forbidden). Окремо від forbidden, бо Go
+// (RE2) не вміє «не після rifat»; цю умову перевіряє internalSurname.
 var surname = regexp.MustCompile(`(?i)` + "isma" + "ilov")
 
+// maxFile — найбільший дозволений розмір файлу в коміті (5 МБ): більші — найчастіше випадкові
+// бінарники (зібрана програма, архів), їм не місце в git.
 const maxFile = 5 * 1024 * 1024
 
-// internalSurname: the surname is allowed only as part of the public GitHub account name.
+// internalSurname повертає true, якщо в рядку є прізвище НЕ як частина публічного імені облікового
+// запису GitHub. Як: шукає всі входження surname і для кожного дивиться 5 символів перед ним —
+// якщо там не "rifat" (або входження на початку рядка), це знахідка.
 func internalSurname(line string) bool {
 	for _, m := range surname.FindAllStringIndex(line, -1) {
 		if m[0] < 5 || !strings.EqualFold(line[m[0]-5:m[0]], "rifat") {
@@ -179,6 +235,10 @@ func internalSurname(line string) bool {
 	return false
 }
 
+// safetyCheck перевіряє те, що вже додано в індекс git (git add), і повертає список проблем (порожній —
+// можна комітити). Як: 1) розміри файлів з «git diff --cached --name-only» проти maxFile;
+// 2) кожен доданий рядок («+» у «git diff --cached -U0») проти forbidden і internalSurname.
+// Ім'я файлу для повідомлення береться з останнього рядка «+++ b/<файл>».
 func safetyCheck() []string {
 	var problems []string
 	for _, f := range strings.Split(mustGit("diff", "--cached", "--name-only", "-z"), "\x00") {
@@ -186,12 +246,13 @@ func safetyCheck() []string {
 			problems = append(problems, f+": file larger than 5 MB")
 		}
 	}
-	cur := "?"
+	cur := "?" // файл, до якого належать поточні рядки diff
 	for _, line := range strings.Split(mustGit("diff", "--cached", "-U0", "--no-color"), "\n") {
 		switch {
 		case strings.HasPrefix(line, "+++ "):
 			cur = strings.TrimPrefix(strings.TrimPrefix(line, "+++ "), "b/")
 		case strings.HasPrefix(line, "+"):
+			// text — сам рядок без «+», обрізаний до 100 символів, щоб повідомлення було коротким
 			text := strings.TrimSpace(line[1:])
 			if len(text) > 100 {
 				text = text[:100]
@@ -209,6 +270,10 @@ func safetyCheck() []string {
 	return problems
 }
 
+// commit робить автокоміт. changes — вивід «git status --porcelain» (показуємо перші 30 рядків).
+// Як: git add -A -> safetyCheck; якщо є проблеми — git reset (зміни лишаються у файлах, лише
+// знімаються з індексу), друкує до 20 знахідок і завершує програму. Інакше — один коміт з
+// повідомленням opt.message або автоматичним «ci: <до 6 імен файлів> ...».
 func commit(changes string) {
 	say("commit local changes:")
 	for i, l := range strings.Split(changes, "\n") {
@@ -229,7 +294,7 @@ func commit(changes string) {
 		}
 		die("fix these changes (or commit by hand with --no-commit) and press Run again")
 	}
-	files := strings.Split(mustGit("diff", "--cached", "--name-only"), "\n")
+	files := strings.Split(mustGit("diff", "--cached", "--name-only"), "\n") // що увійде в коміт
 	msg := opt.message
 	if msg == "" {
 		var names []string
@@ -248,22 +313,39 @@ func commit(changes string) {
 	say("    committed: %s  (%s)", mustGit("rev-parse", "--short", "HEAD"), msg)
 }
 
-// ------------------------------------------------------------- local mode --
+// ------------------------------------------------------------ локальний режим --
 
+// runLocal — локальний режим (без Forgejo). Паралельно запускає дві задачі:
+//   - macos:   sh docscan-project/ci/build-test-unix.sh на цьому Маку;
+//   - windows: цей самий бінарник з аргументом "windows" (windows.go), який по WinRM збирає на Windows.
+//
+// Параметри: sha — коміт, який збирати; gitURL / gitToken — звідки і з яким токеном Windows може
+// взяти код через git (якщо бачить Forgejo). Повертає теку прогону ci-out/local-<час> і true, якщо
+// обидві задачі завершилися з кодом 0.
+//
+// Як: кожна задача пише весь вивід у <тека>/<задача>.log і свої артефакти в <тека>/<задача>-work/
+// artifacts; після завершення артефакти копіюються в <тека>/<задача>/, а робочі теки (дерево збірки
+// фазерів тощо) видаляються. Хід у терміналі показує progress.go, читаючи ці логи.
 func runLocal(sha, gitURL, gitToken string) (string, bool) {
 	out := filepath.Join("ci-out", "local-"+time.Now().Format("20060102-150405"))
 	if err := os.MkdirAll(out, 0o755); err != nil {
 		die(err.Error())
 	}
 	absOut, _ := filepath.Abs(out)
+	// seeds — корпус документів для тесту «ворожі файли» (hostile); немає теки — крок пропускається.
 	seeds := filepath.Join(home(), "docscan-ci", "seeds")
 	if !isDir(seeds) {
 		seeds = ""
 	}
+	// self — шлях до цієї програми (при go run — тимчасовий бінарник у кеші Go): так задача windows
+	// запускає той самий код, що й зараз виконується.
 	self, err := os.Executable()
 	if err != nil {
 		die(err.Error())
 	}
+	// winEnv — середовище задачі windows: коміт, тека виводу, доступ до git і облікові записи обох
+	// Windows-машин з hosts.json (WIN11_* — ВМ, WIN216_* — запасний ПК). Паролі йдуть лише в
+	// середовище дочірнього процесу, ніде не друкуються.
 	winEnv := append(os.Environ(), "SHA="+sha, "CI_OUT="+filepath.Join(absOut, "windows-work"),
 		"GIT_URL="+gitURL, "GIT_TOKEN="+gitToken)
 	for _, m := range [][2]string{{"WIN11", "vm"}, {"WIN216", "216"}} {
@@ -271,10 +353,11 @@ func runLocal(sha, gitURL, gitToken string) (string, bool) {
 			winEnv = append(winEnv, m[0]+"_HOST="+p.s("host"), m[0]+"_USER="+p.s("user"), m[0]+"_PASS="+p.s("password"))
 		}
 	}
+	// jobs — що запускати: ім'я задачі (воно ж ім'я логу і теки артефактів), команда і її середовище.
 	jobs := []struct {
-		name string
-		cmd  []string
-		env  []string
+		name string   // "macos" або "windows"
+		cmd  []string // програма і аргументи
+		env  []string // змінні середовища для неї
 	}{
 		{"macos", []string{"sh", "docscan-project/ci/build-test-unix.sh"},
 			append(os.Environ(), "CI_OUT="+filepath.Join(absOut, "macos-work"), "FUZZ_SECONDS="+opt.fuzz, "CI_SEEDS="+seeds)},
@@ -282,9 +365,10 @@ func runLocal(sha, gitURL, gitToken string) (string, bool) {
 	}
 
 	say("local mode: macOS here + Windows over WinRM (fuzzing %ss)", opt.fuzz)
-	var wg sync.WaitGroup
-	var mu sync.Mutex
-	allOK := true
+	var wg sync.WaitGroup // чекає завершення обох задач
+	var mu sync.Mutex     // один друк у термінал за раз (задачі й progress пишуть з різних горутин)
+	allOK := true         // стає false, якщо хоч одна задача завершилась не з 0
+	// Трекери ходу (progress.go): що показувати для кожної задачі й де лежить її лог.
 	mac := &tracker{job: "macos", where: thisMac(), log: filepath.Join(out, "macos.log"), steps: macSteps(opt.fuzz), done: map[string]bool{}}
 	win := &tracker{job: "windows", where: "?", log: filepath.Join(out, "windows.log"), steps: winSteps(), done: map[string]bool{}}
 	say("    [macos] this Mac: %s", mac.where)
@@ -293,13 +377,14 @@ func runLocal(sha, gitURL, gitToken string) (string, bool) {
 	prog.start()
 	for _, j := range jobs {
 		wg.Add(1)
+		// Кожна задача — окрема горутина: запускає команду з виводом у лог, чекає її, забирає артефакти.
 		go func(name string, cmd, env []string) {
 			defer wg.Done()
 			t := time.Now()
 			work := filepath.Join(out, name+"-work")
 			os.MkdirAll(work, 0o755)
 			logPath := filepath.Join(out, name+".log")
-			rc := 1
+			rc := 1 // код виходу задачі; 1 — якщо лог навіть не вдалося створити
 			if log, err := os.Create(logPath); err == nil {
 				c := exec.Command(cmd[0], cmd[1:]...)
 				c.Env, c.Stdout, c.Stderr = env, log, log
@@ -310,7 +395,7 @@ func runLocal(sha, gitURL, gitToken string) (string, bool) {
 				copyDir(filepath.Join(work, "artifacts"), filepath.Join(out, name))
 			}
 			mu.Lock()
-			prog.finish(name)
+			prog.finish(name) // спершу дочитати лог (останні кроки), потім рядок про задачу
 			allOK = allOK && rc == 0
 			say("    %-10s %-8s %4ds   %d%%   (log: %s)", name, map[bool]string{true: "success", false: "failure"}[rc == 0],
 				int(time.Since(t).Seconds()), prog.percent(), logPath)
@@ -319,19 +404,24 @@ func runLocal(sha, gitURL, gitToken string) (string, bool) {
 	}
 	wg.Wait()
 	prog.stop()
-	for _, j := range jobs { // the artifacts are copied out; the work folders (fuzz build tree etc.) go
+	for _, j := range jobs { // артефакти вже скопійовано; робочі теки (дерево збірки фазерів тощо) видаляємо
 		os.RemoveAll(filepath.Join(out, j.name+"-work"))
 	}
 	return out, allOK
 }
 
-// --------------------------------------------------------- deployment set --
+// --------------------------------------------------------- набір для розгортання --
 
+// deployment — готовий набір для розгортання і куди його викладати.
 type deployment struct {
-	dir, pkg, base string
-	fs             profile
+	dir  string  // тека набору (ci-out/<прогін>/deploy або --publish-dir)
+	pkg  string  // ім'я файлу пакета, напр. DocScan-20261111-179a8839.zip
+	base string  // HTTP-адреса теки на сервері, напр. http://<сервер>:8080/docscan
+	fs   profile // профіль «fs» з hosts.json: host, user, password, deploy_dir — для scp/ssh
 }
 
+// deployBase повертає HTTP-адресу теки розгортання: deploy_url з профілю «fs», а якщо його немає —
+// http://<host>:8080/docscan (або заглушку <server>, якщо немає й host). Без «/» у кінці.
 func deployBase(fs profile) string {
 	if u := fs.s("deploy_url"); u != "" {
 		return strings.TrimRight(u, "/")
@@ -339,6 +429,15 @@ func deployBase(fs profile) string {
 	return "http://" + orStr(fs.s("host"), "<server>") + ":8080/docscan"
 }
 
+// deploySet складає набір для розгортання в <out>/deploy і повертає його опис (nil — у прогоні немає
+// пакета Windows). Як:
+//  1. бере найновіший <out>/*/DocScan-*.zip (його зробила задача windows) і його .sha256;
+//  2. пише DocScan-latest.txt з іменем пакета (його читає DocScan-Install.ps1 на ПК);
+//  3. копіює DocScan-Install.ps1;
+//  4. з шаблону DocScan-Setup.ps1 робить три завантажувачі з підставленою адресою сервера:
+//     звичайний, -Pilot (лише детект, '-DetectOnly') і -Critical (з третім проходом, '-Critical');
+//     шаблон має бути лише ASCII (його виконує «irm | iex»), рядки — CRLF для Windows;
+//  5. якщо задано правила E5Search (DOCSCAN_CRITICAL_RULES або critical_rules у «fs») — critical-rules.yar.
 func deploySet(out string) *deployment {
 	zips, _ := filepath.Glob(filepath.Join(out, "*", "DocScan-*.zip"))
 	if len(zips) == 0 {
@@ -346,7 +445,7 @@ func deploySet(out string) *deployment {
 		return nil
 	}
 	sort.Strings(zips)
-	zipPath := zips[len(zips)-1]
+	zipPath := zips[len(zips)-1] // імена містять дату, тому останній після сортування — найновіший
 	fs := hosts["fs"]
 	base := deployBase(fs)
 	d := filepath.Join(out, "deploy")
@@ -358,7 +457,7 @@ func deploySet(out string) *deployment {
 	mustCopy(zipPath, filepath.Join(d, pkg))
 	mustCopy(zipPath+".sha256", filepath.Join(d, pkg+".sha256"))
 	mustWrite(filepath.Join(d, "DocScan-latest.txt"), pkg+"\n")
-	deploy := filepath.Join("docscan-project", "deploy")
+	deploy := filepath.Join("docscan-project", "deploy") // тека з джерелами скриптів розгортання
 	mustCopy(filepath.Join(deploy, "DocScan-Install.ps1"), filepath.Join(d, "DocScan-Install.ps1"))
 
 	raw, err := os.ReadFile(filepath.Join(deploy, "DocScan-Setup.ps1"))
@@ -370,9 +469,11 @@ func deploySet(out string) *deployment {
 			die("DocScan-Setup.ps1 must be ASCII only (it is run by irm | iex)")
 		}
 	}
+	// tpl — шаблон з LF-рядками і вже підставленою адресою (і в лапках, і без)
 	tpl := strings.ReplaceAll(string(raw), "\r\n", "\n")
 	tpl = strings.ReplaceAll(tpl, "'http://<server>:8080/docscan'", "'"+base+"'")
 	tpl = strings.ReplaceAll(tpl, "http://<server>:8080/docscan", base)
+	// v[0] — ім'я файлу, v[1] — аргумент для інсталятора ($InstallArg), порожньо — без аргументу
 	for _, v := range [][2]string{{"DocScan-Setup.ps1", ""}, {"DocScan-Setup-Pilot.ps1", "'-DetectOnly'"}, {"DocScan-Setup-Critical.ps1", "'-Critical'"}} {
 		t := tpl
 		if v[1] != "" {
@@ -398,6 +499,8 @@ func deploySet(out string) *deployment {
 	return &deployment{dir: d, pkg: pkg, base: base, fs: fs}
 }
 
+// publishOnly — режим --publish-dir: викладає вже готовий набір з теки dir без збірки. Пакетом
+// вважається найновіший DocScan-*.zip у теці. Друкує RESULT і завершується з кодом 1, якщо не вдалося.
 func publishOnly(dir string) {
 	dir, _ = filepath.Abs(dir)
 	zips, _ := filepath.Glob(filepath.Join(dir, "DocScan-*.zip"))
@@ -413,18 +516,24 @@ func publishOnly(dir string) {
 	}
 }
 
-// publish uploads the set with scp (password from hosts.json via sshpass), checks the package sha256 on
-// the server and only then switches DocScan-latest.txt; finally checks it over HTTP.
+// publish викладає набір d на сервер розгортання і повертає true, якщо все перевірено. Як:
+//  1. ssh: mkdir -p <deploy_dir> на сервері;
+//  2. scp: усі файли набору, КРІМ DocScan-latest.txt (пароль з hosts.json через sshpass -e,
+//     тобто через змінну SSHPASS, а не в командному рядку);
+//  3. ssh: sha256sum -c — пакет на сервері збігається з його .sha256? Ні — стоп, latest не чіпаємо;
+//  4. scp: DocScan-latest.txt — лише тепер ПК почнуть ставити новий пакет (ніхто не отримає
+//     недокачаний чи пошкоджений архів);
+//  5. HTTP: DocScan-latest.txt віддає ім'я нового пакета, а DocScan-Setup.ps1 містить адресу сервера.
 func publish(d *deployment) bool {
 	host, user, pass := d.fs.s("host"), d.fs.s("user"), d.fs.s("password")
 	if host == "" || user == "" || pass == "" {
 		say("! publishing: no server in ~/.docscan/hosts.json profile 'fs' (host, user, password)")
 		return false
 	}
-	rdir := orStr(d.fs.s("deploy_dir"), "scripts/docscan")
+	rdir := orStr(d.fs.s("deploy_dir"), "scripts/docscan") // тека на сервері (відносно домашньої)
 	target := user + "@" + host
-	env := append(os.Environ(), "SSHPASS="+pass)
-	var files []string
+	env := append(os.Environ(), "SSHPASS="+pass) // середовище для sshpass -e
+	var files []string                           // усі файли набору, крім DocScan-latest.txt
 	entries, _ := os.ReadDir(d.dir)
 	for _, e := range entries {
 		if e.Name() != "DocScan-latest.txt" {
@@ -432,7 +541,10 @@ func publish(d *deployment) bool {
 		}
 	}
 	say("\npublish to %s:%s", target, rdir)
+	// ssh — початок команди ssh до сервера; новий ключ хоста приймається автоматично (accept-new),
+	// змінений — ні; 10 с на з'єднання.
 	ssh := []string{"sshpass", "-e", "ssh", "-o", "StrictHostKeyChecking=accept-new", "-o", "ConnectTimeout=10", target}
+	// scp копіює файли src у теку rdir на сервері; true — успішно.
 	scp := func(src ...string) bool {
 		args := append([]string{"-e", "scp", "-q"}, src...)
 		return runCmd(env, "sshpass", append(args, target+":"+rdir+"/")...) == 0
@@ -465,15 +577,18 @@ func publish(d *deployment) bool {
 	return ok
 }
 
-// ---------------------------------------------------------------- helpers --
+// ---------------------------------------------------------------- допоміжні --
 
+// say друкує рядок у термінал (як Printf, але з переводом рядка в кінці).
 func say(format string, a ...any) { fmt.Printf(format+"\n", a...) }
 
+// die друкує повідомлення в stderr і завершує програму з кодом 1.
 func die(msg string) {
 	fmt.Fprintln(os.Stderr, msg)
 	os.Exit(1)
 }
 
+// envOr повертає значення змінної середовища name, а якщо вона порожня або не задана — def.
 func envOr(name, def string) string {
 	if v := os.Getenv(name); v != "" {
 		return v
@@ -481,6 +596,7 @@ func envOr(name, def string) string {
 	return def
 }
 
+// orStr повертає s, а якщо s порожній — def.
 func orStr(s, def string) string {
 	if s != "" {
 		return s
@@ -488,11 +604,13 @@ func orStr(s, def string) string {
 	return def
 }
 
+// home повертає домашню теку користувача (напр. /Users/<ім'я>).
 func home() string {
 	h, _ := os.UserHomeDir()
 	return h
 }
 
+// expandHome розгортає «~/...» у повний шлях від домашньої теки; інші шляхи повертає як є.
 func expandHome(p string) string {
 	if strings.HasPrefix(p, "~/") {
 		return filepath.Join(home(), p[2:])
@@ -500,12 +618,14 @@ func expandHome(p string) string {
 	return p
 }
 
+// isDir повертає true, якщо p існує і це тека.
 func isDir(p string) bool {
 	st, err := os.Stat(p)
 	return err == nil && st.IsDir()
 }
 
-// mustGit runs git and returns its output without the trailing newline; stops on an error.
+// mustGit запускає git з аргументами і повертає його вивід без кінцевого переводу рядка.
+// Якщо git завершився з помилкою — програма зупиняється (die).
 func mustGit(args ...string) string {
 	b, err := exec.Command("git", args...).Output()
 	if err != nil {
@@ -514,19 +634,23 @@ func mustGit(args ...string) string {
 	return strings.TrimRight(string(b), "\r\n")
 }
 
+// mustRun запускає команду з виводом у термінал; не 0 — програма зупиняється.
 func mustRun(name string, args ...string) {
 	if runCmd(nil, name, args...) != 0 {
 		die(name + " " + strings.Join(args, " ") + " failed")
 	}
 }
 
-// runCmd runs a command with the output on this terminal and returns its exit code.
+// runCmd запускає команду з виводом у цей термінал і повертає її код виходу.
+// env — змінні середовища (nil — успадкувати поточні).
 func runCmd(env []string, name string, args ...string) int {
 	c := exec.Command(name, args...)
 	c.Env, c.Stdout, c.Stderr = env, os.Stdout, os.Stderr
 	return exitCode(c.Run())
 }
 
+// exitCode перетворює помилку exec на код виходу: nil — 0, програма завершилась з кодом N — N,
+// програму не вдалося навіть запустити (немає файлу тощо) — 127, як у shell.
 func exitCode(err error) int {
 	if err == nil {
 		return 0
@@ -537,6 +661,8 @@ func exitCode(err error) int {
 	return 127
 }
 
+// reachable перевіряє, чи відповідає сервер з адреси raw (http://host:port/...) на TCP-з'єднання.
+// Без порту в адресі — 443 для https, 80 для http. Сам HTTP-запит не робиться.
 func reachable(raw string) bool {
 	u, err := url.Parse(raw)
 	if err != nil || u.Hostname() == "" {
@@ -549,6 +675,8 @@ func reachable(raw string) bool {
 	return tcpOpen(net.JoinHostPort(u.Hostname(), port))
 }
 
+// tcpOpen повертає true, якщо на addr ("host:port") вдалося відкрити TCP-з'єднання за 4 секунди.
+// З'єднання одразу закривається — це лише перевірка «машина і порт живі».
 func tcpOpen(addr string) bool {
 	c, err := net.DialTimeout("tcp", addr, 4*time.Second)
 	if err != nil {
@@ -558,6 +686,7 @@ func tcpOpen(addr string) bool {
 	return true
 }
 
+// httpGet завантажує сторінку u і повертає її текст (тайм-аут 15 с). Відповідь не 200 — помилка.
 func httpGet(u string) (string, error) {
 	c := http.Client{Timeout: 15 * time.Second}
 	r, err := c.Get(u)
@@ -572,18 +701,21 @@ func httpGet(u string) (string, error) {
 	return string(b), err
 }
 
+// mustWrite записує текст у файл (створює або перезаписує); помилка — програма зупиняється.
 func mustWrite(path, text string) {
 	if err := os.WriteFile(path, []byte(text), 0o644); err != nil {
 		die(err.Error())
 	}
 }
 
+// mustCopy копіює файл src у dst; помилка — програма зупиняється.
 func mustCopy(src, dst string) {
 	if err := copyFile(src, dst); err != nil {
 		die(err.Error())
 	}
 }
 
+// copyFile копіює вміст файлу src у dst (dst створюється або перезаписується).
 func copyFile(src, dst string) error {
 	in, err := os.Open(src)
 	if err != nil {
@@ -601,6 +733,8 @@ func copyFile(src, dst string) error {
 	return out.Close()
 }
 
+// copyDir рекурсивно копіює теку src у dst (зі збереженням підтек). Так задачі локального режиму
+// віддають свої артефакти з робочої теки в теку прогону.
 func copyDir(src, dst string) error {
 	return filepath.WalkDir(src, func(p string, e fs.DirEntry, err error) error {
 		if err != nil {
