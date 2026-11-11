@@ -47,6 +47,11 @@ go run -C docscan-project/ci/cirun . --local         # без Forgejo, прям�
 go run -C docscan-project/ci/cirun . -h              # усі прапорці
 ```
 
+У локальному режимі хід видно одразу: на якій машині й IP іде кожна задача, кожен завершений крок з
+результатом і загальним відсотком (`[windows 10.0.0.5 (fallback PC)] build PASS (57s)   74%`), а раз на 30 с —
+рядок стану (`... macos: fuzz 95s/190s | windows: documents 40s   ~63%`). Відсоток — оцінка за звичайною
+тривалістю кроків. Повні логи — `ci-out/local-<час>/macos.log` і `windows.log`.
+
 `go run` сам компілює програму (перший раз — кілька секунд, потім із кешу). Python для оркестрації більше не
 потрібен; тести (`check_verdicts.py`, `test-critical/*.py`) і далі на Python — їх запускає збірка.
 

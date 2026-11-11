@@ -285,6 +285,12 @@ func runLocal(sha, gitURL, gitToken string) (string, bool) {
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 	allOK := true
+	mac := &tracker{job: "macos", where: thisMac(), log: filepath.Join(out, "macos.log"), steps: macSteps(opt.fuzz), done: map[string]bool{}}
+	win := &tracker{job: "windows", where: "?", log: filepath.Join(out, "windows.log"), steps: winSteps(), done: map[string]bool{}}
+	say("    [macos] this Mac: %s", mac.where)
+	say("    [windows] picking the build machine (VM, else the fallback PC) ...")
+	prog := newProgress(&mu, mac, win)
+	prog.start()
 	for _, j := range jobs {
 		wg.Add(1)
 		go func(name string, cmd, env []string) {
@@ -304,13 +310,15 @@ func runLocal(sha, gitURL, gitToken string) (string, bool) {
 				copyDir(filepath.Join(work, "artifacts"), filepath.Join(out, name))
 			}
 			mu.Lock()
+			prog.finish(name)
 			allOK = allOK && rc == 0
-			say("    %-10s %-8s %4ds   (log: %s)", name, map[bool]string{true: "success", false: "failure"}[rc == 0],
-				int(time.Since(t).Seconds()), logPath)
+			say("    %-10s %-8s %4ds   %d%%   (log: %s)", name, map[bool]string{true: "success", false: "failure"}[rc == 0],
+				int(time.Since(t).Seconds()), prog.percent(), logPath)
 			mu.Unlock()
 		}(j.name, j.cmd, j.env)
 	}
 	wg.Wait()
+	prog.stop()
 	for _, j := range jobs { // the artifacts are copied out; the work folders (fuzz build tree etc.) go
 		os.RemoveAll(filepath.Join(out, j.name+"-work"))
 	}
