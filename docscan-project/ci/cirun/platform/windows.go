@@ -223,16 +223,32 @@ exit $LASTEXITCODE
 		defer w.t.Run(context.Background(), w.fill(`Remove-Item "{{W}}\tests" -Recurse -Force -EA 0`), nil)
 		get := w.step(ctx, "assets", py+`
 $t = "$w\tests"; Remove-Item $t -Recurse -Force -EA 0; New-Item -ItemType Directory -Force $t | Out-Null
+# без смуги прогресу: у Windows PowerShell 5.1 вона сповільнює завантаження великих файлів у рази
+$ProgressPreference = 'SilentlyContinue'
+$sw = [Diagnostics.Stopwatch]::StartNew()
+function lap($what) { "{0,-22} {1,6:N0} s" -f $what, $sw.Elapsed.TotalSeconds; $sw.Restart() }
 $h = @{ Authorization = 'token `+w.assets.Token+`' }
 Invoke-WebRequest -UseBasicParsing -Uri '`+w.assets.CorpusURL+`' -Headers $h -OutFile "$t\corpus.tar.gz"
+lap "corpus download"
 tar.exe -xzf "$t\corpus.tar.gz" -C $t; if ($LASTEXITCODE) { "tar failed"; exit 1 }
 Remove-Item "$t\corpus.tar.gz"
+lap "corpus unpack"
 $mal = '`+w.assets.MalwareURL+`'
 if ($mal) {
   Invoke-WebRequest -UseBasicParsing -Uri $mal -Headers $h -OutFile "$t\malware.zip"
-  & $py -c "import zipfile,sys; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2], pwd=b'`+assets.MalwareZipKey+`')" "$t\malware.zip" "$t\malware"
-  if ($LASTEXITCODE) { "unzip failed"; exit 1 }
+  lap "malware download"
+  # tar.exe (bsdtar / libarchive) читає запаролений zip сам і швидко; Python zipfile розшифровує ZipCrypto
+  # на чистому Python (дуже повільно на 1 ГБ) — лише запасний шлях, якщо tar.exe не впорався
+  New-Item -ItemType Directory -Force "$t\malware" | Out-Null
+  tar.exe -xf "$t\malware.zip" --passphrase '`+assets.MalwareZipKey+`' -C "$t\malware" 2>&1 | Select-Object -Last 3
+  if ($LASTEXITCODE) {
+    "tar.exe could not unpack malware.zip - falling back to Python"
+    Remove-Item "$t\malware" -Recurse -Force -EA 0
+    & $py -c "import zipfile,sys; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2], pwd=b'`+assets.MalwareZipKey+`')" "$t\malware.zip" "$t\malware"
+    if ($LASTEXITCODE) { "unzip failed"; exit 1 }
+  }
   Remove-Item "$t\malware.zip"
+  lap "malware unpack"
 }
 "corpus: " + (Get-ChildItem "$t\corpus" -Recurse -File).Count + " files, seeds: " + (Get-ChildItem "$t\seeds" -File -EA 0).Count + ", malware: " + (Get-ChildItem "$t\malware" -Recurse -File -EA 0).Count
 `, 3)

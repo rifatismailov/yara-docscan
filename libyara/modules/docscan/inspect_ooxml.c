@@ -463,7 +463,9 @@ static void inspect_archive(docscan_zip* z, int count, docscan_result_t* r)
         docscan_zip_entry_encrypted(z, i))
       continue;
     uint64_t sz = docscan_zip_entry_size(z, i);
-    if (sz == 0 || sz > DOCSCAN_ZIP_MAX_ENTRY || sz > budget || name[strlen(name) - 1] == '/')
+    // name[0] == 0: an entry with an empty name (hostile zip) - strlen - 1 would read before the buffer
+    if (sz == 0 || sz > DOCSCAN_ZIP_MAX_ENTRY || sz > budget || name[0] == '\0' ||
+        name[strlen(name) - 1] == '/')
       continue;
     size_t n = 0;
     uint8_t* d = docscan_zip_extract(z, i, &n);
