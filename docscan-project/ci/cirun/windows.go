@@ -199,7 +199,7 @@ exit $rc
 
 	// ---- 3. тести і пакет
 	if ok {
-		// documents: 30 зразків (з них 6 — макроси VBA проти хибних тривог) — вердикт, лікування, повторний скан, оригінали не змінені (check_verdicts.ps1)
+		// documents: 31 зразок (з них 7 — макроси VBA проти хибних тривог) — вердикт, лікування, повторний скан, оригінали не змінені (check_verdicts.ps1)
 		w.step("documents", fill(common+`
 Set-Location $repo
 powershell -NoProfile -ExecutionPolicy Bypass -File docscan-project\ci\check_verdicts.ps1 -Yara '{{Y}}' -Rules docscan-project\rules\docscan-index.yar -Samples docscan-project\test-samples\generated -Expected docscan-project\ci\expected-verdicts.tsv -WorkDir "$w\tmp"

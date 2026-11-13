@@ -26,11 +26,11 @@ VS Code ─► ci-run (Go): git push на GitHub → Forgejo оновлює дз
 | `docscan-project/ci/cirun/windows.go` (`ci-run windows`) | runner з міткою `winrm` або Мак (локальний режим) | Вибирає Windows-машину (ВМ, інакше 216), точний коміт (git або zip), MSBuild, тести, `build_package.ps1`, забирає zip |
 | `docscan-project/ci/check_verdicts.ps1` | Windows | Перевірка документів без Python (те саме, що `check_verdicts.py`) |
 | `docscan-project/ci/check_verdicts.py` | усі ОС | Документи: копія → детект + лікування → повторний скан, порівняння з `expected-verdicts.tsv` |
-| `docscan-project/ci/expected-verdicts.tsv` | — | Еталон для 30 зразків `test-samples/generated` (оновлювати свідомо: `check_verdicts.py --write`) |
+| `docscan-project/ci/expected-verdicts.tsv` | — | Еталон для 31 зразка `test-samples/generated` (оновлювати свідомо: `check_verdicts.py --write`) |
 | `docscan-project/ci/cirun/` (Go: `main.go`, `forgejo.go`) | ваш Мак | «Кнопка»: коміт змін (з перевіркою) → push → синхронізація дзеркала → запуск Дії → стеження → артефакти → набір для розгортання → публікація |
 | `.vscode/tasks.json` | VS Code | Завдання «DocScan CI» (Cmd+Shift+B), «без фазингу», «локально на Маку без push» |
 
-Тести в кожному прогоні: **документи** (30 зразків, серед них 6 макросів VBA для перевірки хибних тривог: вердикт, лікування, повторний скан, оригінали не змінені),
+Тести в кожному прогоні: **документи** (31 зразок, серед них 7 макросів VBA для перевірки хибних тривог: вердикт, лікування, повторний скан, оригінали не змінені),
 **3-й прохід** (`test-critical/run_tests.py`, 299 перевірок), **ворожі файли** (35, якщо на runner-і є корпус),
 **фазинг** (обидва фазери, ASan + UBSan; на Windows не запускається — libFuzzer там лише через clang-cl).
 

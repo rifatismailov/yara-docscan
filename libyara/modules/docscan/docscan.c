@@ -69,6 +69,12 @@ begin_declarations
   declare_string("lnk_target");
   declare_string("lnk_args");
   declare_string("vba_code");  // full decompressed VBA (for Layer-2 rescan)
+  // The same code as statements for the policy: YARA's "matches" only tries match
+  // starts in the first YR_RE_SCAN_LIMIT (4 KB) of a string, so a keyword deep in a
+  // long module would be missed. One item = one VBA statement (" _" continuations
+  // joined); comments / Rem / Attribute lines left out; long ones cut into overlapping
+  // pieces that each fit the limit.
+  declare_string_array("vba_lines");
 
   // --- raw facts for policy rules (docscan-policy.yar decides severity) ---
   begin_struct_array("external_rels");  // TargetMode="External" relationships
@@ -117,6 +123,73 @@ begin_declarations
   declare_integer("number_of_parts");
   declare_integer("parts_truncated");   // caps reached: some parts were not handed over
 end_declarations
+
+// --- vba_lines: the VBA code as statements, each short enough for "matches" ---------
+#define VBA_PIECE 4000      // < YR_RE_SCAN_LIMIT (4096): every start position is tried
+#define VBA_OVERLAP 400     // a keyword cut by a piece border is whole in the next one
+#define VBA_MAX_ITEMS 50000
+
+static int vba_skip_statement(const char* s, size_t n)
+{
+  while (n > 0 && (*s == ' ' || *s == '\t'))
+    s++, n--;
+  if (n == 0 || *s == '\'')
+    return 1;  // blank or comment
+  if (n >= 4 && (s[0] | 32) == 'r' && (s[1] | 32) == 'e' && (s[2] | 32) == 'm' &&
+      (s[3] == ' ' || s[3] == '\t'))
+    return 1;  // Rem comment
+  if (n >= 10 && memcmp(s, "Attribute ", 10) == 0)
+    return 1;  // module / procedure attributes, never executed
+  return 0;
+}
+
+static void set_vba_lines(const char* code, size_t len, YR_OBJECT* module_object)
+{
+  int items = 0;
+  char* stmt = (char*) malloc(len + 1);  // one statement, continuations joined
+  if (stmt == NULL || code == NULL)
+  {
+    free(stmt);
+    return;
+  }
+
+  const char* p = code;
+  const char* end = code + len;
+  while (p < end && items < VBA_MAX_ITEMS)
+  {
+    size_t n = 0;
+    // collect physical lines while the previous one ends with " _" (continuation)
+    for (;;)
+    {
+      const char* eol = (const char*) memchr(p, '\n', (size_t) (end - p));
+      const char* stop = eol != NULL ? eol : end;
+      const char* last = stop;
+      while (last > p && (last[-1] == '\r' || last[-1] == ' ' || last[-1] == '\t'))
+        last--;
+      int cont = last - p >= 2 && last[-1] == '_' && (last[-2] == ' ' || last[-2] == '\t');
+      size_t take = cont ? (size_t) (last - 1 - p) : (size_t) (last - p);
+      memcpy(stmt + n, p, take);
+      n += take;
+      p = eol != NULL ? eol + 1 : end;
+      if (!cont || p >= end)
+        break;
+      stmt[n++] = ' ';
+    }
+
+    if (vba_skip_statement(stmt, n))
+      continue;
+
+    for (size_t off = 0; off < n && items < VBA_MAX_ITEMS; off += VBA_PIECE - VBA_OVERLAP)
+    {
+      size_t piece = n - off < VBA_PIECE ? n - off : VBA_PIECE;
+      yr_set_sized_string(stmt + off, piece, module_object, "vba_lines[%i]", items);
+      items++;
+      if (off + piece >= n)
+        break;
+    }
+  }
+  free(stmt);
+}
 
 int module_initialize(YR_MODULE* module)
 {
@@ -225,6 +298,7 @@ int module_load(
   {
     yr_set_sized_string(
         r->vba_code, r->vba_code_len, module_object, "vba_code");
+    set_vba_lines(r->vba_code, r->vba_code_len, module_object);
     free(r->vba_code);
   }
   else

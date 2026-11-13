@@ -140,19 +140,38 @@ rule DS_EXTERNAL_FRAME
 // docscan.vba_pcode_nosrc = largest compiled p-code (bytes) in a module whose
 //   source defines no procedure. Empty sheet modules: ~760-1300 bytes, forms up to ~5 KB.
 
-// A VBA project with something to run. Excel keeps a VBA project with empty sheet
-// modules (only "Attribute VB_..." lines) in many ordinary workbooks: no
-// procedures = nothing can run, so no finding. Still MEDIUM when the source
-// could not be read at all (encrypted / damaged / unknown layout).
+// Macro policy: a macro is judged by what it CAN DO, not by the fact that it exists.
+// Business macros (PivotTable refresh, formatting, recorded macros) stay inside the
+// workbook; malicious ones always reach outside it: run programs, use the network,
+// write files or the registry, call the Windows API, change VBA code, hide strings.
+//   * MACRO_PRESENT / MACRO_AUTOEXEC   - INFO: facts in the result, no alert;
+//   * MACRO_COM / _API / _FILES / _REGISTRY / _SYSTEM / _SELFCODE / _OBFUSCATED,
+//     MACRO_NETWORK, MACRO_STOMPED, MACRO_UNREADABLE - MEDIUM;
+//   * MACRO_SUSPICIOUS (runs programs / downloads)  - HIGH + disarm.
+
+// A VBA project with code. Excel keeps a VBA project with empty sheet modules (only
+// "Attribute VB_..." lines) in many ordinary workbooks: no procedures = nothing can run,
+// so not even this fact.
 rule DS_MACRO_PRESENT
 {
   meta:
-    severity = "MEDIUM"
+    severity = "INFO"
     text     = "Документ містить макроси VBA"
     finding  = "MACRO_PRESENT"
   condition:
-    docscan.macro_present == 1 and
-    (docscan.vba_procedures > 0 or docscan.vba_code == "")
+    docscan.macro_present == 1 and docscan.vba_procedures > 0
+}
+
+// A VBA project whose source could not be read at all (damaged, unknown layout, or the
+// source fully erased): what it does is unknown -> stay careful.
+rule DS_MACRO_UNREADABLE
+{
+  meta:
+    severity = "MEDIUM"
+    text     = "Документ містить макрос VBA, код якого не вдалося прочитати"
+    finding  = "MACRO_UNREADABLE"
+  condition:
+    docscan.macro_present == 1 and docscan.vba_code == ""
 }
 
 // The source has no procedures, the project names an auto-run procedure AND a module
@@ -183,21 +202,111 @@ rule DS_MACRO_SUSPICIOUS
     disarm   = "macro"
     mitre    = "T1204.002"
   condition:
-    docscan.vba_code matches /\b(Shell|ShellExecute|WScript\.Shell|Shell\.Application|powershell|pwsh|cmd\.exe|mshta|rundll32|regsvr32|certutil|bitsadmin|URLDownloadToFile|DownloadFile|DownloadString|FromBase64String|StrReverse)\b/i or
+    for any l in docscan.vba_lines : (l matches /\b(Shell|ShellExecute|WScript\.Shell|Shell\.Application|powershell|pwsh|cmd\.exe|mshta|rundll32|regsvr32|certutil|bitsadmin|URLDownloadToFile|DownloadFile|DownloadString|FromBase64String|StrReverse)\b/i) or
     // .Run / .Exec on a shell object: CreateObject(..).Run, objShell.Run, WshShell.Exec.
     // Not Application.Run "Macro" (calls another macro) or Selection.Find.Execute.
-    docscan.vba_code matches /(\)|shell|wsh)\s*\.(Run|Exec)\s*[\(" ]/i
+    for any l in docscan.vba_lines : (l matches /(\)|shell|wsh)\s*\.(Run|Exec)\s*[\(" ]/i)
 }
 
-// Runs by itself on open/close. Normal for many business macros -> MEDIUM.
+// Runs by itself on open/close. Normal for business macros (report refresh on open) ->
+// INFO: what makes it dangerous is a capability below, not the auto-start itself.
 rule DS_MACRO_AUTOEXEC
 {
   meta:
-    severity = "MEDIUM"
+    severity = "INFO"
     text     = "Макрос виконується автоматично при відкритті (AutoOpen, Document_Open…)"
     finding  = "MACRO_AUTOEXEC"
   condition:
-    docscan.vba_code matches /\b(AutoOpen|Auto_Open|AutoExec|Auto_Exec|AutoClose|Auto_Close|Document_Open|Document_Close|Workbook_Open|Workbook_BeforeClose)\b/i
+    for any l in docscan.vba_lines : (l matches /\b(AutoOpen|Auto_Open|AutoExec|Auto_Exec|AutoClose|Auto_Close|Document_Open|Document_Close|Workbook_Open|Workbook_BeforeClose)\b/i)
+}
+
+// ---- capabilities: the macro can reach outside the document (MEDIUM each) ----
+
+// COM objects: other programs and system objects (FileSystemObject, WScript, Outlook, ...).
+rule DS_MACRO_COM
+{
+  meta:
+    severity = "MEDIUM"
+    text     = "Макрос створює COM-об'єкти (CreateObject / GetObject): керує іншими програмами чи системою"
+    finding  = "MACRO_COM"
+    mitre    = "T1559.001"
+  condition:
+    for any l in docscan.vba_lines : (l matches /\b(CreateObject|GetObject)\b/i)
+}
+
+// Direct Windows API calls (Declare ... Lib "kernel32" ...).
+rule DS_MACRO_API
+{
+  meta:
+    severity = "MEDIUM"
+    text     = "Макрос викликає функції Windows API (Declare … Lib)"
+    finding  = "MACRO_API"
+    mitre    = "T1106"
+  condition:
+    for any l in docscan.vba_lines : (l matches /\bDeclare\s+(PtrSafe\s+)?(Function|Sub)\b/i) or
+    for any l in docscan.vba_lines : (l matches /\bLib\s+"/i)
+}
+
+// Writes, deletes or copies files outside the workbook.
+rule DS_MACRO_FILES
+{
+  meta:
+    severity = "MEDIUM"
+    text     = "Макрос пише, видаляє або копіює файли (Open … For Output/Binary, Kill, FileCopy, FileSystemObject, ADODB.Stream)"
+    finding  = "MACRO_FILES"
+  condition:
+    for any l in docscan.vba_lines : (l matches /\bOpen\s+[^\r\n]+\s+For\s+(Output|Append|Binary|Random)\b/i) or
+    for any l in docscan.vba_lines : (l matches /\b(Kill|FileCopy|MkDir|RmDir|SaveToFile|FileSystemObject)\b/i) or
+    for any l in docscan.vba_lines : (l matches /ADODB\.Stream/i)
+}
+
+// Registry access (autostart, settings of other programs).
+rule DS_MACRO_REGISTRY
+{
+  meta:
+    severity = "MEDIUM"
+    text     = "Макрос працює з реєстром Windows (RegWrite, SaveSetting, HKCU/HKLM)"
+    finding  = "MACRO_REGISTRY"
+    mitre    = "T1112"
+  condition:
+    for any l in docscan.vba_lines : (l matches /\b(RegWrite|RegRead|RegDelete|SaveSetting|DeleteSetting)\b/i) or
+    for any l in docscan.vba_lines : (l matches /\bHK(EY_|CU\b|LM\b)/i)
+}
+
+// System access: environment, simulated keystrokes, dynamic calls, Excel 4.0 macros.
+rule DS_MACRO_SYSTEM
+{
+  meta:
+    severity = "MEDIUM"
+    text     = "Макрос звертається до системи (Environ, SendKeys, CallByName, ExecuteExcel4Macro)"
+    finding  = "MACRO_SYSTEM"
+  condition:
+    for any l in docscan.vba_lines : (l matches /\b(Environ|SendKeys|CallByName|ExecuteExcel4Macro)\b/i)
+}
+
+// Reads or changes VBA code (self-modifying, spreading to other documents).
+rule DS_MACRO_SELFCODE
+{
+  meta:
+    severity = "MEDIUM"
+    text     = "Макрос читає або змінює код VBA (VBProject, VBComponents, CodeModule)"
+    finding  = "MACRO_SELFCODE"
+  condition:
+    for any l in docscan.vba_lines : (l matches /\b(VBProject|VBComponents|CodeModule)\b/i)
+}
+
+// Hidden strings: Chr(n)&Chr(n)&Chr(n)... chains or long hex blobs. A single
+// Chr(65 + m) (column letter) is not a chain.
+rule DS_MACRO_OBFUSCATED
+{
+  meta:
+    severity = "MEDIUM"
+    text     = "Макрос ховає рядки: ланцюжки Chr(n)&Chr(n)… або довгі hex-рядки"
+    finding  = "MACRO_OBFUSCATED"
+    mitre    = "T1027"
+  condition:
+    for any l in docscan.vba_lines : (l matches /(ChrW?\$?\(\s*\d+\s*\)\s*[&+]\s*){3,}/i) or
+    for any l in docscan.vba_lines : (l matches /[0-9A-Fa-f]{64,}/)
 }
 
 // Network access without an obvious execution step.
@@ -208,7 +317,7 @@ rule DS_MACRO_NETWORK
     text     = "Макрос звертається до мережі (XMLHTTP, WinHttp, WebClient)"
     finding  = "MACRO_NETWORK"
   condition:
-    docscan.vba_code matches /\b(XMLHTTP|ServerXMLHTTP|WinHttp|InternetOpen|Net\.WebClient)\b/i
+    for any l in docscan.vba_lines : (l matches /\b(XMLHTTP|ServerXMLHTTP|WinHttp|InternetOpen|Net\.WebClient)\b/i)
 }
 
 // ================================= RTF =====================================

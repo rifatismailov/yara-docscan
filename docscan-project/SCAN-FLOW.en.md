@@ -252,6 +252,7 @@ for compatibility and convenience; the policy mostly works with the facts below.
 | | `vba_procedures` | fact | procedures (`Sub`/`Function`/`Property`) in the source; 0 = only `Attribute` lines, declarations, comments |
 | | `vba_autoexec_names` | fact | an auto-run name (`Workbook_Open`, `AutoOpen`…) anywhere in the raw VBA project, also in the `_VBA_PROJECT` identifier table (it keeps names of both erased and deleted code) |
 | | `vba_pcode_nosrc` | fact | largest compiled p-code (bytes) in a module without procedures; empty sheet modules ~760–1300, forms up to ~5 KB |
+| | `vba_lines[]` | fact | the VBA code as statements (` _` continuations joined; comments, `Rem`, `Attribute` left out; long ones in 4000-byte pieces overlapping by 400). The macro policy checks this: YARA `matches` tries match starts only in the first 4 KB of a string (`YR_RE_SCAN_LIMIT`), so on the whole `vba_code` a keyword deep in a long module was missed |
 | | `external_ole` | MEDIUM | external `oleObject` relationship |
 | | `external_frame` | MEDIUM | external `frame` relationship |
 | | `dde_link` | HIGH | `DDE ` + cmd/powershell/mshta/rundll32 (not AUTO) |
@@ -569,10 +570,18 @@ A policy rule must not be `private` (YARA never reports private rules).
 | `DS_DDE_LINK` | `DDE ` (not AUTO): Word field, Excel formula `cmd\|'…'!A0`, Excel `ddeLink` — containing cmd/powershell/mshta/rundll32/regsvr32/msiexec/certutil/bitsadmin/wscript/cscript | HIGH | `dde` |
 | `DS_EMBEDDED_PE` / `DS_EMBEDDED_LNK` | `embedded[].is_pe` / `.is_lnk` | HIGH | `embedded` |
 | `DS_EXTERNAL_OLE` / `DS_EXTERNAL_FRAME` | external `oleObject` (not Follina) / `frame` | MEDIUM | — |
-| `DS_MACRO_PRESENT` | VBA with code: `vba_procedures > 0` (or the source could not be read at all). A project with only empty sheet modules is not a finding | MEDIUM | — |
+| `DS_MACRO_PRESENT` | VBA with code (`vba_procedures > 0`); a project with only empty sheet modules is not a finding | **INFO** | — |
+| `DS_MACRO_UNREADABLE` | a VBA project whose source could not be read at all (`vba_code` empty) | MEDIUM | — |
 | `DS_MACRO_STOMPED` | VBA stomping: no procedures in the source, but an auto-run name and a module without source holding p-code ≥ 2 KB (T1564.007) | MEDIUM | — |
-| `DS_MACRO_SUSPICIOUS` | in `vba_code`: Shell, WScript.Shell, powershell, cmd.exe, mshta, rundll32, regsvr32, certutil, bitsadmin, URLDownloadToFile, DownloadFile/String, FromBase64String, StrReverse; `.Run`/`.Exec` on a shell object | HIGH | `macro` |
-| `DS_MACRO_AUTOEXEC` | AutoOpen, Document_Open, Workbook_Open… | MEDIUM | — |
+| `DS_MACRO_SUSPICIOUS` | in `vba_lines`: Shell, WScript.Shell, powershell, cmd.exe, mshta, rundll32, regsvr32, certutil, bitsadmin, URLDownloadToFile, DownloadFile/String, FromBase64String, StrReverse; `.Run`/`.Exec` on a shell object | HIGH | `macro` |
+| `DS_MACRO_AUTOEXEC` | AutoOpen, Document_Open, Workbook_Open… — the auto-start alone is not a danger | **INFO** | — |
+| `DS_MACRO_COM` | CreateObject, GetObject (T1559.001) | MEDIUM | — |
+| `DS_MACRO_API` | Declare … Lib (Windows API, T1106) | MEDIUM | — |
+| `DS_MACRO_FILES` | Open … For Output/Append/Binary/Random, Kill, FileCopy, MkDir, RmDir, SaveToFile, FileSystemObject, ADODB.Stream | MEDIUM | — |
+| `DS_MACRO_REGISTRY` | RegWrite/RegRead/RegDelete, SaveSetting/DeleteSetting, HKEY_/HKCU/HKLM (T1112) | MEDIUM | — |
+| `DS_MACRO_SYSTEM` | Environ, SendKeys, CallByName, ExecuteExcel4Macro | MEDIUM | — |
+| `DS_MACRO_SELFCODE` | VBProject, VBComponents, CodeModule | MEDIUM | — |
+| `DS_MACRO_OBFUSCATED` | `Chr(n)&Chr(n)&Chr(n)…` chains, hex strings ≥ 64 chars (T1027); a single `Chr(65 + m)` is not a chain | MEDIUM | — |
 | `DS_MACRO_NETWORK` | XMLHTTP, WinHttp, InternetOpen, Net.WebClient | MEDIUM | — |
 | `DS_RTF_OBJUPDATE` | RTF and `\objupdate` | HIGH | `rtf_objupdate` |
 | `DS_PDF_LAUNCH` | `/Launch` | HIGH | `quarantine` |
@@ -1186,7 +1195,7 @@ With centrally managed agents (`agent.conf` in a manager group) the same `<local
    | 101302 | 12 | `ACTIVEX_BROWSER` | ActiveX browser (T1203) |
    | 101303 | 12 | `category = general` | malicious exe/dll/script/archive (vendor YARA) |
    | 101310 | **12** | `EXTERNAL_OLE`, `EXTERNAL_FRAME` | external content (T1221) |
-   | 101311 | 7 | `MACRO_AUTOEXEC`, `MACRO_NETWORK`, `MACRO_PRESENT`, `MACRO_STOMPED` | macros (T1059.005) |
+   | 101311 | 7 | `MACRO_NETWORK`, `MACRO_STOMPED`, `MACRO_UNREADABLE`, `MACRO_COM`, `MACRO_API`, `MACRO_FILES`, `MACRO_REGISTRY`, `MACRO_SYSTEM`, `MACRO_SELFCODE`, `MACRO_OBFUSCATED` | macros with dangerous capabilities; `MACRO_PRESENT` and `MACRO_AUTOEXEC` are INFO, no alert (T1059.005) |
    | 101312 | 7 | `PDF_JS`, `PDF_EMBEDDED` | PDF with JS / attachment |
    | 101313 | 7 | `LNK_REMOTE_TARGET`, `LNK_LOLBIN` | shortcut (T1204.001) |
    | 101314 | **12** | `ACTIVEX` | ActiveX control |
@@ -1267,7 +1276,7 @@ agent's `ossec.log` (`localfile` not picked up).
 ## 13. Known limitations and caveats
 
 **Module / policy / disarm**
-- Rules see the whole `vba_code` **including comments**: a commented-out `Shell` also matches.
+- Macro rules see the code through `vba_lines`: comments (`'`, `Rem`) and `Attribute` lines are not in it, so a commented-out `Shell` does not match. Vendor rules (Layer 2) still scan the whole `vba_code`, comments included.
 - Fact arrays are capped (rels 256, entries 512, embedded 64, dde 32); on overflow `*_truncated = 1`.
 - Legacy OLE (`.doc/.xls`) with a disarm action → **quarantine** (not cured in place); RTF with an embedded object (`embedded`) — quarantine too; PDF — only `quarantine` or `detect-only`.
 - Excel: a DDE formula is removed together with `<f>` (the cached value stays); if it is the "master" of a

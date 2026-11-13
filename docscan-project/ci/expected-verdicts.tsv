@@ -12,11 +12,12 @@ excel_dde_formula.xlsx	HIGH	stripped	INFO
 excel_ddelink.xlsx	HIGH	stripped	INFO
 external_ole.docx	MEDIUM	-	MEDIUM
 lnk_lolbin.lnk	HIGH	deleted	DELETED
+macro_deep_shell.docm	HIGH	removed	INFO
 macro_deleted.xls	INFO	-	INFO
 macro_empty_modules.xls	INFO	-	INFO
-macro_pike_mail.xlsm	MEDIUM	-	MEDIUM
-macro_pike_report.xls	MEDIUM	-	MEDIUM
-macro_recorded.xls	MEDIUM	-	MEDIUM
+macro_pike_mail.xlsm	INFO	-	INFO
+macro_pike_report.xls	INFO	-	INFO
+macro_recorded.xls	INFO	-	INFO
 macro_stomped.xls	MEDIUM	-	MEDIUM
 macro_suspicious.docm	HIGH	removed	INFO
 package_script.docx	HIGH	removed	INFO

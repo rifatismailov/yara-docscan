@@ -149,7 +149,7 @@
 
   <rule id="101311" level="7">
     <if_sid>101092</if_sid>
-    <field name="docscan.findings" type="pcre2">MACRO_AUTOEXEC|MACRO_NETWORK|MACRO_PRESENT|MACRO_STOMPED</field>
+    <field name="docscan.findings" type="pcre2">MACRO_(NETWORK|STOMPED|UNREADABLE|COM|API|FILES|REGISTRY|SYSTEM|SELFCODE|OBFUSCATED)</field>
     <description>DocScan MEDIUM — макроси VBA: $(summary) | $(docfile.path)</description>
     <mitre><id>T1059.005</id></mitre>
     <group>docscan_medium,docscan_medium_low,docscan_macro,</group>

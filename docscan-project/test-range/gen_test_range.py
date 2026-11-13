@@ -402,6 +402,14 @@ def vba_module(src, pcode_len):
     (Windows-1251, as Cyrillic Office stores it) in one MS-OVBA chunk."""
     return b"\xAA" * pcode_len + ovba_container(src.replace("\n", "\r\n").encode("cp1251"))
 
+def ovba_multi(text: bytes) -> bytes:
+    """MS-OVBA container with several uncompressed chunks (4096 bytes each, the last shorter)."""
+    out = b"\x01"
+    for i in range(0, len(text), 4096):
+        part = text[i:i + 4096]
+        out += struct.pack("<H", ((len(part) - 1) & 0x0FFF) | 0x3000) + part
+    return out
+
 def vba_identifiers(names):
     """_VBA_PROJECT stand-in: an identifier table (length-prefixed ASCII names)."""
     return b"\xCC\x61\xFF\xFF" + b"".join(bytes([len(n), 0]) + n.encode() for n in names)
@@ -544,6 +552,19 @@ def gen_vba_projects():
     out.append(xls_with_vba("macro_stomped.xls",
                             [("ThisWorkbook", vba_module(BOOK_ATTRS.format("ЭтаКнига"), 3600))] + sheets[:1],
                             base_ids + ["Workbook_Open"]))
+    # 27. The dangerous call deep in a long module: ~5 KB of harmless code first, then an
+    #     inert "Shell" string. YARA "matches" only tries the first 4 KB of a string, so
+    #     the policy must see it through docscan.vba_lines -> HIGH (MACRO_SUSPICIOUS).
+    filler = "".join("Sub Fill%03d()\n    Range(\"A%d\").Value = %d\nEnd Sub\n" % (k, k + 1, k)
+                     for k in range(120))
+    deep = ('Attribute VB_Name = "Module1"\n' + filler +
+            'Sub Workbook_Open()\n    Dim s As String\n    s = "Shell"\n    \' inert test - no execution\nEnd Sub\n')
+    src = deep.replace("\n", "\r\n").encode("cp1251")
+    assert len(src) > 5000
+    write_docx("macro_deep_shell.docm", {"word/vbaProject.bin": build_cfb_multi(
+        [("Module1", b"\xAA" * 900 + ovba_multi(src)),
+         ("_VBA_PROJECT", vba_identifiers(["Module1", "Workbook_Open", "Fill000"]))])})
+    out.append("macro_deep_shell.docm")
     return out
 
 # ---------- minimal LNK ----------

@@ -252,6 +252,7 @@ docscan-project/
 | | `vba_procedures` | факт | скільки процедур (`Sub`/`Function`/`Property`) у вихідному коді; 0 — лише рядки `Attribute`, оголошення, коментарі |
 | | `vba_autoexec_names` | факт | ім'я автозапуску (`Workbook_Open`, `AutoOpen`…) будь-де в сирому VBA-проєкті, також у таблиці ідентифікаторів `_VBA_PROJECT` (вона зберігає імена і стертого, і видаленого коду) |
 | | `vba_pcode_nosrc` | факт | найбільший скомпільований p-code (байти) у модулі без процедур; порожні модулі аркушів — ~760–1300, форми — до ~5 КБ |
+| | `vba_lines[]` | факт | код VBA по інструкціях (продовження ` _` склеєні; коментарі, `Rem`, `Attribute` — ні; довгі — шматками по 4000 з перекриттям 400). Політика перевіряє макроси по ньому: `matches` у YARA пробує початок збігу лише в перших 4 КБ рядка (`YR_RE_SCAN_LIMIT`), тож по цілому `vba_code` ключове слово в довгому модулі губилося |
 | | `external_ole` | MEDIUM | external `oleObject` relationship |
 | | `external_frame` | MEDIUM | external `frame` relationship |
 | | `dde_link` | HIGH | `DDE ` + cmd/powershell/mshta/rundll32 (не AUTO) |
@@ -569,10 +570,18 @@ MS-OVBA. Ланцюжок: **CFB → потоки → пошук контейн�
 | `DS_DDE_LINK` | `DDE ` (не AUTO): поле Word, формула Excel `cmd\|'…'!A0`, Excel `ddeLink` — і в ній cmd/powershell/mshta/rundll32/regsvr32/msiexec/certutil/bitsadmin/wscript/cscript | HIGH | `dde` |
 | `DS_EMBEDDED_PE` / `DS_EMBEDDED_LNK` | `embedded[].is_pe` / `.is_lnk` | HIGH | `embedded` |
 | `DS_EXTERNAL_OLE` / `DS_EXTERNAL_FRAME` | external `oleObject` (не Follina) / `frame` | MEDIUM | — |
-| `DS_MACRO_PRESENT` | є VBA з кодом: `vba_procedures > 0` (або вихідний код не прочитався зовсім). Проєкт лише з порожніми модулями аркушів — не знахідка | MEDIUM | — |
+| `DS_MACRO_PRESENT` | є VBA з кодом (`vba_procedures > 0`); проєкт лише з порожніми модулями аркушів — не знахідка | **INFO** | — |
+| `DS_MACRO_UNREADABLE` | є VBA-проєкт, але код не прочитався зовсім (`vba_code` порожній) | MEDIUM | — |
 | `DS_MACRO_STOMPED` | VBA stomping: процедур у коді 0, але є ім'я автозапуску і модуль без коду з p-code ≥ 2 КБ (T1564.007) | MEDIUM | — |
-| `DS_MACRO_SUSPICIOUS` | у `vba_code`: Shell, WScript.Shell, powershell, cmd.exe, mshta, rundll32, regsvr32, certutil, bitsadmin, URLDownloadToFile, DownloadFile/String, FromBase64String, StrReverse; `.Run`/`.Exec` на об'єкті оболонки | HIGH | `macro` |
-| `DS_MACRO_AUTOEXEC` | AutoOpen, Document_Open, Workbook_Open… | MEDIUM | — |
+| `DS_MACRO_SUSPICIOUS` | у `vba_lines`: Shell, WScript.Shell, powershell, cmd.exe, mshta, rundll32, regsvr32, certutil, bitsadmin, URLDownloadToFile, DownloadFile/String, FromBase64String, StrReverse; `.Run`/`.Exec` на об'єкті оболонки | HIGH | `macro` |
+| `DS_MACRO_AUTOEXEC` | AutoOpen, Document_Open, Workbook_Open… — запуск сам по собі не небезпека | **INFO** | — |
+| `DS_MACRO_COM` | CreateObject, GetObject (T1559.001) | MEDIUM | — |
+| `DS_MACRO_API` | Declare … Lib (Windows API, T1106) | MEDIUM | — |
+| `DS_MACRO_FILES` | Open … For Output/Append/Binary/Random, Kill, FileCopy, MkDir, RmDir, SaveToFile, FileSystemObject, ADODB.Stream | MEDIUM | — |
+| `DS_MACRO_REGISTRY` | RegWrite/RegRead/RegDelete, SaveSetting/DeleteSetting, HKEY_/HKCU/HKLM (T1112) | MEDIUM | — |
+| `DS_MACRO_SYSTEM` | Environ, SendKeys, CallByName, ExecuteExcel4Macro | MEDIUM | — |
+| `DS_MACRO_SELFCODE` | VBProject, VBComponents, CodeModule | MEDIUM | — |
+| `DS_MACRO_OBFUSCATED` | ланцюжки `Chr(n)&Chr(n)&Chr(n)…`, hex-рядки ≥ 64 символів (T1027); один `Chr(65 + m)` — не ланцюжок | MEDIUM | — |
 | `DS_MACRO_NETWORK` | XMLHTTP, WinHttp, InternetOpen, Net.WebClient | MEDIUM | — |
 | `DS_RTF_OBJUPDATE` | RTF і `\objupdate` | HIGH | `rtf_objupdate` |
 | `DS_PDF_LAUNCH` | `/Launch` | HIGH | `quarantine` |
@@ -1188,7 +1197,7 @@ watcher → C:\ProgramData\DocScan\results\docscan-results.json (JSON Lines)
    | 101302 | 12 | `ACTIVEX_BROWSER` | ActiveX-браузер (T1203) |
    | 101303 | 12 | `category = general` | шкідливий exe/dll/скрипт/архів (вендорні YARA) |
    | 101310 | **12** | `EXTERNAL_OLE`, `EXTERNAL_FRAME` | зовнішній вміст (T1221) |
-   | 101311 | 7 | `MACRO_AUTOEXEC`, `MACRO_NETWORK`, `MACRO_PRESENT`, `MACRO_STOMPED` | макроси (T1059.005) |
+   | 101311 | 7 | `MACRO_NETWORK`, `MACRO_STOMPED`, `MACRO_UNREADABLE`, `MACRO_COM`, `MACRO_API`, `MACRO_FILES`, `MACRO_REGISTRY`, `MACRO_SYSTEM`, `MACRO_SELFCODE`, `MACRO_OBFUSCATED` | макроси з небезпечними можливостями; `MACRO_PRESENT` і `MACRO_AUTOEXEC` — INFO, без алерту (T1059.005) |
    | 101312 | 7 | `PDF_JS`, `PDF_EMBEDDED` | PDF з JS / вкладенням |
    | 101313 | 7 | `LNK_REMOTE_TARGET`, `LNK_LOLBIN` | ярлик (T1204.001) |
    | 101314 | **12** | `ACTIVEX` | ActiveX-елемент |
@@ -1269,7 +1278,7 @@ yara_descriptions[{rule, description}], details[]}`. В індексі все ц
 ## 13. Відомі обмеження і нюанси
 
 **Модуль / політика / лікування**
-- Правила бачать `vba_code` повністю, **включно з коментарями**: закоментований `Shell` теж спрацює.
+- Правила макросів бачать код через `vba_lines`: коментарі (`'`, `Rem`) і рядки `Attribute` туди не входять, тож закоментований `Shell` не спрацює. Вендорні правила (Шар 2) і далі сканують весь `vba_code`, разом з коментарями.
 - Масиви фактів обмежені (rels 256, entries 512, embedded 64, dde 32); при переповненні `*_truncated = 1`.
 - Legacy OLE (`.doc/.xls`) з дією лікування → **карантин** (не лікується на місці); RTF з вбудованим об'єктом (`embedded`) — теж карантин; PDF — лише `quarantine` або `detect-only`.
 - Excel: DDE-формула видаляється разом з `<f>` (лишається збережене значення); якщо це «головна» спільна
