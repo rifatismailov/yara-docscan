@@ -39,10 +39,45 @@ typedef struct
 // Cure `path` (UTF-8) in place. Backs the original up first (backup_dir or
 // "<path>.docscan-bak"); if the backup fails nothing is changed.
 // Writes a short action summary into out_action. Returns 0 on success/no-op.
+// = docscan_disarm_plan() on the file's bytes + docscan_disarm_apply().
 int docscan_disarm(
     const char* path,
     const docscan_disarm_info* info,
     char* out_action,
     size_t out_action_sz);
+
+// The two halves of docscan_disarm, for the Windows sandbox: the PLAN parses the (hostile) document and
+// cures it in memory - it runs in the locked-down worker and touches no file; the APPLY only does file
+// operations (backup, delete, replace with the cured bytes) - it runs in the broker and parses nothing.
+#define DOCSCAN_DISARM_NONE    0  // nothing to do (detect-only, nothing changed); action says why
+#define DOCSCAN_DISARM_DELETE  1  // back up, then delete the file (quarantine, bad LNK)
+#define DOCSCAN_DISARM_REPLACE 2  // back up, then replace the file with *cured
+#define DOCSCAN_DISARM_FAILED  3  // the document could not be cured; action says why (may be empty)
+
+// Decide and cure in memory. On DOCSCAN_DISARM_REPLACE *cured / *cured_len hold the new file
+// (free with docscan_disarm_free). action: what was / will be done ("removed:vbaProject.bin", ...).
+int docscan_disarm_plan(
+    const unsigned char* data,
+    size_t len,
+    const docscan_disarm_info* info,
+    unsigned char** cured,
+    size_t* cured_len,
+    char* action,
+    size_t action_sz);
+
+// Carry out a plan on `path` (UTF-8): backup (backup_dir or "<path>.docscan-bak"), then delete or
+// replace. plan_action is the action of the plan; out_action gets the final result (the plan's action,
+// or "failed:backup" / "failed:delete" / "failed:write" / "failed:replace"). Returns 0 on success.
+int docscan_disarm_apply(
+    const char* path,
+    const char* backup_dir,
+    int kind,
+    const unsigned char* cured,
+    size_t cured_len,
+    const char* plan_action,
+    char* out_action,
+    size_t out_action_sz);
+
+void docscan_disarm_free(unsigned char* p);
 
 #endif

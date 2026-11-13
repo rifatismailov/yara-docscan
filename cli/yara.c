@@ -60,6 +60,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include "args.h"
 #include "common.h"
+#include "docscan_sandbox.h"
 #include "threading.h"
 #include "unicode.h"
 
@@ -209,7 +210,12 @@ static char* docscan_extract = NULL;
 // so a path with non-ANSI characters (e.g. Cyrillic) is written to exactly.
 static char docscan_extract_utf8[4096];
 static bool docscan_disarm_flag = false;
-static bool docscan_confine_check = false;  // --docscan-confine-check (Windows test of docscan_confine)
+static bool docscan_confine_check = false;  // --docscan-confine-check (Windows test of the sandbox)
+// Windows sandbox (docscan_sandbox.h): a docscan run of one file parses it in a locked-down worker.
+// --docscan-worker=<pipe> - internal, the broker starts the worker with it; --docscan-no-sandbox - parse
+// in this process (only confined by the job object / removed privileges), for diagnostics.
+static char* docscan_worker_arg = NULL;
+static bool docscan_no_sandbox = false;
 // --docscan-backup-dir. The arg parser hands string options over as ANSI on
 // Windows (lossy for Cyrillic), so there the UTF-8 value is taken from the
 // original wide argv in _tmain (docscan_backup_dir_utf8).
@@ -283,7 +289,20 @@ args_option_t options[] = {
         0,
         _T("docscan-confine-check"),
         &docscan_confine_check,
-        _T("Windows: show the self-confinement of a docscan run and try to start cmd.exe (must be blocked)")),
+        _T("Windows: test the sandbox of a docscan run (worker: read/write/registry/cmd.exe must be blocked)")),
+
+    OPT_BOOLEAN(
+        0,
+        _T("docscan-no-sandbox"),
+        &docscan_no_sandbox,
+        _T("Windows: parse in this process instead of the locked-down worker (diagnostics)")),
+
+    OPT_STRING(
+        0,
+        _T("docscan-worker"),
+        &docscan_worker_arg,
+        _T("internal: run as the sandboxed worker of a docscan run (started by yara itself)"),
+        _T("PIPE")),
 
     OPT_STRING(
         0,
@@ -638,7 +657,9 @@ static const char* file_vars_type(const uint8_t* h, size_t n, const char* ext)
   return "";
 }
 
-static void file_vars_set(YR_SCANNER* scanner, const char_t* path)
+// head / head_len: the file's first bytes when already in memory (sandbox worker: it cannot open files);
+// NULL - read them from path
+static void file_vars_set(YR_SCANNER* scanner, const char_t* path, const uint8_t* head, size_t head_len)
 {
   // absolute path, as THOR/LOKI see it
   char p[4096];
@@ -674,11 +695,19 @@ static void file_vars_set(YR_SCANNER* scanner, const char_t* path)
       ;
   uint8_t h[16];
   size_t n = 0;
-  FILE* fh = _tfopen(path, _T("rb"));
-  if (fh != NULL)
+  if (head != NULL)
   {
-    n = fread(h, 1, sizeof(h), fh);
-    fclose(fh);
+    n = head_len < sizeof(h) ? head_len : sizeof(h);
+    memcpy(h, head, n);
+  }
+  else
+  {
+    FILE* fh = _tfopen(path, _T("rb"));
+    if (fh != NULL)
+    {
+      n = fread(h, 1, sizeof(h), fh);
+      fclose(fh);
+    }
   }
   // errors ignored: a rule set that does not use a variable does not know it
   yr_scanner_define_string_variable(scanner, "filename", name);
@@ -767,6 +796,20 @@ static int scan_dir(const char_t* dir, SCAN_OPTIONS* scan_opts)
 
 static int scan_file(YR_SCANNER* scanner, const char_t* filename)
 {
+  // sandbox worker: the file was mapped before the lockdown, nothing can be opened now
+  if (docscan_worker_active())
+  {
+    size_t size = 0;
+    int open_failed = 0;
+    const uint8_t* data = docscan_worker_data(&size, &open_failed);
+    if (open_failed)
+      return ERROR_COULD_NOT_OPEN_FILE;
+    static const uint8_t empty[1] = {0};
+    if (file_vars)
+      file_vars_set(scanner, filename, data ? data : empty, data ? size : 0);
+    return yr_scanner_scan_mem(scanner, data ? data : empty, data ? size : 0);
+  }
+
   YR_FILE_DESCRIPTOR fd = CreateFile(
       filename,
       GENERIC_READ,
@@ -780,7 +823,7 @@ static int scan_file(YR_SCANNER* scanner, const char_t* filename)
     return ERROR_COULD_NOT_OPEN_FILE;
 
   if (file_vars)
-    file_vars_set(scanner, filename);
+    file_vars_set(scanner, filename, NULL, 0);
 
   int result = yr_scanner_scan_fd(scanner, fd);
 
@@ -977,7 +1020,7 @@ static int scan_file(YR_SCANNER* scanner, const char_t* filename)
     return ERROR_COULD_NOT_OPEN_FILE;
 
   if (file_vars)
-    file_vars_set(scanner, filename);
+    file_vars_set(scanner, filename, NULL, 0);
 
   int result = yr_scanner_scan_fd(scanner, fd);
 
@@ -1836,6 +1879,30 @@ static void print_docscan_json(DOCSCAN_STATE* st)
 static void do_disarm(const char_t* file_path, docscan_disarm_info* ds)
 {
   char action[256];
+#if defined(_WIN32)
+  // sandbox worker: cure in memory (the parsing half), the broker backs up / replaces / deletes and
+  // prints the "docscan-disarm:" line
+  if (docscan_worker_active())
+  {
+    size_t size = 0;
+    int open_failed = 0;
+    const uint8_t* data = docscan_worker_data(&size, &open_failed);
+    unsigned char* cured = NULL;
+    size_t cured_len = 0;
+    char plan[256] = "";
+    int kind = open_failed ? DOCSCAN_DISARM_FAILED
+                           : docscan_disarm_plan(data ? data : (const uint8_t*) "", data ? size : 0, ds,
+                                                 &cured, &cured_len, plan, sizeof(plan));
+    char head[1 + sizeof(plan)];
+    head[0] = (char) kind;
+    size_t pl = strlen(plan);
+    memcpy(head + 1, plan, pl + 1);
+    if (!docscan_worker_send(DOCSCAN_REC_DISARM, head, 1 + pl + 1, cured, cured_len))
+      fprintf(stderr, "error: docscan worker: cannot pass the disarm result to the broker\n");
+    docscan_disarm_free(cured);
+    return;
+  }
+#endif
 #if defined(_WIN32) && defined(_UNICODE)
   char utf8[4096];
   WideCharToMultiByte(
@@ -1988,37 +2055,59 @@ static void critical_process(const char_t* file_path)
     ext[k] = '\0';
   }
 
-  // read the file
-#if defined(_WIN32) && defined(_UNICODE)
-  FILE* fh = _wfopen(file_path, L"rb");
-#else
-  FILE* fh = fopen(file_path, "rb");
-#endif
-  if (fh == NULL)
-    return;
-  uint8_t* data = NULL;
+  // the file: read it, or (sandbox worker) the view mapped before the lockdown
+  const uint8_t* data = NULL;
+  uint8_t* owned = NULL;  // what to free
   size_t size = 0;
+  long long fsz = 0;
 #if defined(_WIN32)
-  _fseeki64(fh, 0, SEEK_END);
-  long long fsz = _ftelli64(fh);
-  _fseeki64(fh, 0, SEEK_SET);
-#else
-  fseeko(fh, 0, SEEK_END);
-  long long fsz = (long long) ftello(fh);
-  fseeko(fh, 0, SEEK_SET);
-#endif
-  if (fsz > 0 && (unsigned long long) fsz <= CRITICAL_MAX_FILE)
+  if (docscan_worker_active())
   {
-    data = (uint8_t*) malloc((size_t) fsz);
-    if (data != NULL)
-      size = fread(data, 1, (size_t) fsz, fh);
+    int open_failed = 0;
+    size_t wsz = 0;
+    const uint8_t* view = docscan_worker_data(&wsz, &open_failed);
+    if (open_failed)
+      return;
+    fsz = (long long) wsz;
+    if (wsz > 0 && wsz <= CRITICAL_MAX_FILE)
+    {
+      data = view;
+      size = wsz;
+    }
   }
-  fclose(fh);
+  else
+#endif
+  {
+#if defined(_WIN32) && defined(_UNICODE)
+    FILE* fh = _wfopen(file_path, L"rb");
+#else
+    FILE* fh = fopen(file_path, "rb");
+#endif
+    if (fh == NULL)
+      return;
+#if defined(_WIN32)
+    _fseeki64(fh, 0, SEEK_END);
+    fsz = _ftelli64(fh);
+    _fseeki64(fh, 0, SEEK_SET);
+#else
+    fseeko(fh, 0, SEEK_END);
+    fsz = (long long) ftello(fh);
+    fseeko(fh, 0, SEEK_SET);
+#endif
+    if (fsz > 0 && (unsigned long long) fsz <= CRITICAL_MAX_FILE)
+    {
+      owned = (uint8_t*) malloc((size_t) fsz);
+      if (owned != NULL)
+        size = fread(owned, 1, (size_t) fsz, fh);
+      data = owned;
+    }
+    fclose(fh);
+  }
   if (data == NULL || size == 0)
   {
     if (fsz > 0 && (unsigned long long) fsz > CRITICAL_MAX_FILE)
       critical_print(stderr, "docscan-critical: skipped (file larger than 100 MB)\n");
-    free(data);
+    free(owned);
     return;
   }
 
@@ -2028,7 +2117,7 @@ static void critical_process(const char_t* file_path)
   {
     snprintf(msg, sizeof(msg), "docscan-critical: skipped (%s)\n", docscan_text_strerror(rc));
     critical_print(stderr, msg);
-    free(data);
+    free(owned);
     return;
   }
 
@@ -2049,7 +2138,7 @@ static void critical_process(const char_t* file_path)
   if (sr != ERROR_SUCCESS || m.n == 0)
   {
     docscan_text_free(&t);
-    free(data);
+    free(owned);
     return;
   }
 
@@ -2063,13 +2152,13 @@ static void critical_process(const char_t* file_path)
              " overlap 0..size/2) - not queued\n", csize, cover);
     critical_print(stderr, msg);
     docscan_text_free(&t);
-    free(data);
+    free(owned);
     return;
   }
 
   char sha[65];
   docscan_sha256_hex(data, size, sha);
-  free(data);
+  free(owned);
 
   // file-system dates when the document has none of its own
   char fs_created[32] = "", fs_modified[32] = "";
@@ -2077,7 +2166,17 @@ static void critical_process(const char_t* file_path)
   {
 #if defined(_WIN32) && defined(_UNICODE)
     WIN32_FILE_ATTRIBUTE_DATA fa;
-    if (GetFileAttributesExW(file_path, GetFileExInfoStandard, &fa))
+    FILETIME wc, wm;
+    if (docscan_worker_active())
+    {
+      // taken from the file handle before the lockdown
+      if (docscan_worker_times(&wc, &wm))
+      {
+        filetime_utc(&wc, fs_created, sizeof(fs_created));
+        filetime_utc(&wm, fs_modified, sizeof(fs_modified));
+      }
+    }
+    else if (GetFileAttributesExW(file_path, GetFileExInfoStandard, &fa))
     {
       filetime_utc(&fa.ftCreationTime, fs_created, sizeof(fs_created));
       filetime_utc(&fa.ftLastWriteTime, fs_modified, sizeof(fs_modified));
@@ -2122,6 +2221,23 @@ static void critical_process(const char_t* file_path)
     return;
   }
 
+  size_t o = (size_t) snprintf(msg, sizeof(msg), "docscan-critical: queued fragments=%d rules=", nfrag);
+  for (int i = 0; i < m.n && o + 2 < sizeof(msg); i++)
+    o += (size_t) snprintf(msg + o, sizeof(msg) - o, "%s%s", i ? "," : "", m.names[i]);
+  if (o + 2 < sizeof(msg))
+    snprintf(msg + o, sizeof(msg) - o, "\n");
+
+#if defined(_WIN32)
+  // sandbox worker: the broker appends to the queue and prints the message if that worked
+  if (docscan_worker_active())
+  {
+    if (!docscan_worker_send(DOCSCAN_REC_CRITICAL, msg, strlen(msg) + 1, json, jl))
+      critical_print(stderr, "docscan-critical: could not write the queue file - not queued\n");
+    free(json);
+    return;
+  }
+#endif
+
   // one line, one write, appended; the reader takes the file by renaming it
   cli_mutex_lock(&output_mutex);
 #if defined(_WIN32)
@@ -2133,14 +2249,7 @@ static void critical_process(const char_t* file_path)
   if (q != NULL && fclose(q) != 0)
     ok = 0;
   if (ok)
-  {
-    size_t o = (size_t) snprintf(msg, sizeof(msg), "docscan-critical: queued fragments=%d rules=", nfrag);
-    for (int i = 0; i < m.n && o + 2 < sizeof(msg); i++)
-      o += (size_t) snprintf(msg + o, sizeof(msg) - o, "%s%s", i ? "," : "", m.names[i]);
-    if (o + 2 < sizeof(msg))
-      snprintf(msg + o, sizeof(msg) - o, "\n");
     critical_print(stdout, msg);
-  }
   else
     critical_print(stderr, "docscan-critical: could not write the queue file - not queued\n");
   cli_mutex_unlock(&output_mutex);
@@ -2297,6 +2406,15 @@ static int callback(
         if (docscan_extract != NULL)
         {
           SIZED_STRING* vc = yr_object_get_string(object, "vba_code");
+#if defined(_WIN32)
+          // sandbox worker: the broker writes the file
+          if (vc != NULL && vc->length > 0 && docscan_worker_active())
+          {
+            if (!docscan_worker_send(DOCSCAN_REC_EXTRACT, vc->c_string, (size_t) vc->length, NULL, 0))
+              fprintf(stderr, "error: docscan worker: cannot pass the macro code to the broker\n");
+          }
+          else
+#endif
           if (vc != NULL && vc->length > 0)
           {
 #if defined(_WIN32)
@@ -2521,105 +2639,37 @@ static void unload_modules_data()
 }
 
 #if defined(_WIN32)
-// ---- self-confinement of a docscan run (Windows) ----
-// The watcher runs as SYSTEM, so yara64 does too. If a crafted document ever exploited a parser bug, the
-// code would run with SYSTEM rights. Two cheap limits make that much less useful, without changing what
-// yara64 can legitimately do (read the file, disarm it, write backups / queue / macro copy — file access
-// comes from the ACLs, not from privileges):
-//   1. a job object with ActiveProcessLimit = 1 (only this process): starting cmd / powershell / any
-//      child process fails; UI limits (no clipboard, desktops, system settings, logoff);
-//   2. every privilege is REMOVED from the token (SeDebug, SeImpersonate, SeTakeOwnership, SeLoadDriver,
-//      SeBackup/SeRestore, SeTcb ...) except SeChangeNotify (path traversal).
-// Best effort: a failure is reported by --docscan-confine-check and never stops the scan.
-static int docscan_confined_job = 0;    // 1 — the job object is applied
-static int docscan_privs_removed = -1;  // number of privileges removed (-1 — not done)
-
-static void docscan_confine(void)
+static int warmup_callback(YR_SCAN_CONTEXT* context, int message, void* message_data, void* user_data)
 {
-  HANDLE job = CreateJobObjectW(NULL, NULL);
-  if (job != NULL)
-  {
-    JOBOBJECT_EXTENDED_LIMIT_INFORMATION li;
-    memset(&li, 0, sizeof(li));
-    li.BasicLimitInformation.LimitFlags =
-        JOB_OBJECT_LIMIT_ACTIVE_PROCESS | JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION |
-        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-    li.BasicLimitInformation.ActiveProcessLimit = 1;
-    JOBOBJECT_BASIC_UI_RESTRICTIONS ui;
-    ui.UIRestrictionsClass = JOB_OBJECT_UILIMIT_DESKTOP | JOB_OBJECT_UILIMIT_DISPLAYSETTINGS |
-                             JOB_OBJECT_UILIMIT_EXITWINDOWS | JOB_OBJECT_UILIMIT_GLOBALATOMS |
-                             JOB_OBJECT_UILIMIT_READCLIPBOARD | JOB_OBJECT_UILIMIT_WRITECLIPBOARD |
-                             JOB_OBJECT_UILIMIT_SYSTEMPARAMETERS | JOB_OBJECT_UILIMIT_HANDLES;
-    if (SetInformationJobObject(job, JobObjectExtendedLimitInformation, &li, sizeof(li)) &&
-        SetInformationJobObject(job, JobObjectBasicUIRestrictions, &ui, sizeof(ui)) &&
-        AssignProcessToJobObject(job, GetCurrentProcess()))
-      docscan_confined_job = 1;  // the handle stays open for the life of the process
-    else
-      CloseHandle(job);
-  }
-
-  HANDLE tok;
-  if (OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &tok))
-  {
-    DWORD len = 0;
-    GetTokenInformation(tok, TokenPrivileges, NULL, 0, &len);
-    TOKEN_PRIVILEGES* tp = len ? (TOKEN_PRIVILEGES*) malloc(len) : NULL;
-    if (tp != NULL && GetTokenInformation(tok, TokenPrivileges, tp, len, &len))
-    {
-      LUID keep;
-      LookupPrivilegeValueW(NULL, L"SeChangeNotifyPrivilege", &keep);
-      DWORD n = 0;
-      for (DWORD i = 0; i < tp->PrivilegeCount; i++)
-      {
-        LUID l = tp->Privileges[i].Luid;
-        if (l.LowPart == keep.LowPart && l.HighPart == keep.HighPart)
-          continue;
-        tp->Privileges[n].Luid = l;
-        tp->Privileges[n].Attributes = SE_PRIVILEGE_REMOVED;  // gone for good, cannot be re-enabled
-        n++;
-      }
-      tp->PrivilegeCount = n;
-      if (n == 0 || (AdjustTokenPrivileges(tok, FALSE, tp, 0, NULL, NULL) && GetLastError() == ERROR_SUCCESS))
-        docscan_privs_removed = (int) n;
-    }
-    free(tp);
-    CloseHandle(tok);
-  }
+  (void) context;
+  (void) message;
+  (void) message_data;
+  (void) user_data;
+  return CALLBACK_CONTINUE;
 }
 
-// --docscan-confine-check: the state of the confinement and a real attempt to start cmd.exe.
-static int docscan_confine_report(void)
+// Sandbox worker, before the lockdown: libraries that initialise lazily (the OpenSSL digests behind the
+// hash and pe modules may load providers / read their configuration on first use) do it now, while files
+// and the registry are still reachable - otherwise their first use in the scan could fail silently.
+static void docscan_worker_warmup(void)
 {
-  int privs_left = -1;
-  HANDLE tok;
-  if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &tok))
+  YR_COMPILER* c = NULL;
+  YR_RULES* r = NULL;
+  if (yr_compiler_create(&c) != ERROR_SUCCESS)
+    return;
+  if (yr_compiler_add_string(
+          c,
+          "import \"hash\" rule docscan_warmup { condition: hash.md5(0, filesize) == \"\" or "
+          "hash.sha1(0, filesize) == \"\" or hash.sha256(0, filesize) == \"\" or hash.crc32(0, filesize) == 0 }",
+          NULL) == 0 &&
+      yr_compiler_get_rules(c, &r) == ERROR_SUCCESS)
   {
-    DWORD len = 0;
-    GetTokenInformation(tok, TokenPrivileges, NULL, 0, &len);
-    TOKEN_PRIVILEGES* tp = len ? (TOKEN_PRIVILEGES*) malloc(len) : NULL;
-    if (tp != NULL && GetTokenInformation(tok, TokenPrivileges, tp, len, &len))
-      privs_left = (int) tp->PrivilegeCount;
-    free(tp);
-    CloseHandle(tok);
+    uint8_t buf[64];
+    memset(buf, 0, sizeof(buf));
+    yr_rules_scan_mem(r, buf, sizeof(buf), 0, warmup_callback, NULL, 0);
+    yr_rules_destroy(r);
   }
-  wchar_t cmd[] = L"cmd.exe /c exit 0";
-  STARTUPINFOW si;
-  PROCESS_INFORMATION pi;
-  memset(&si, 0, sizeof(si));
-  si.cb = sizeof(si);
-  BOOL started = CreateProcessW(NULL, cmd, NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, NULL, &si, &pi);
-  if (started)
-  {
-    WaitForSingleObject(pi.hProcess, 5000);
-    CloseHandle(pi.hThread);
-    CloseHandle(pi.hProcess);
-  }
-  printf("job object: %s\n", docscan_confined_job ? "applied (1 active process, UI limits)" : "NOT applied");
-  printf("privileges removed: %d, left: %d\n", docscan_privs_removed, privs_left);
-  printf("child process: %s\n", started ? "STARTED (not confined)" : "blocked");
-  int ok = docscan_confined_job && !started && privs_left >= 0 && privs_left <= 1;
-  printf("RESULT: %s\n", ok ? "CONFINED" : "NOT CONFINED");
-  return ok ? EXIT_SUCCESS : EXIT_FAILURE;
+  yr_compiler_destroy(c);
 }
 #endif
 
@@ -2675,21 +2725,6 @@ int _tmain(int argc, const char_t** argv)
   if (docscan_json)
     file_vars = true;
 
-#if defined(_WIN32)
-  // a docscan run (the watcher's) confines itself before reading any file
-  if (docscan_json || docscan_disarm_flag || docscan_extract != NULL || critical_rules_arg != NULL ||
-      docscan_confine_check)
-    docscan_confine();
-  if (docscan_confine_check)
-    return docscan_confine_report();
-#else
-  if (docscan_confine_check)
-  {
-    printf("RESULT: SKIP (self-confinement is implemented for Windows)\n");
-    return EXIT_SUCCESS;
-  }
-#endif
-
 #if !(defined(_WIN32) && defined(_UNICODE))
   if (docscan_backup_dir != NULL)
     snprintf(docscan_backup_dir_utf8, sizeof(docscan_backup_dir_utf8), "%s",
@@ -2700,6 +2735,65 @@ int _tmain(int argc, const char_t** argv)
     snprintf(critical_out_utf8, sizeof(critical_out_utf8), "%s", critical_out_arg);
   if (docscan_extract != NULL)
     snprintf(docscan_extract_utf8, sizeof(docscan_extract_utf8), "%s", docscan_extract);
+#endif
+
+#if defined(_WIN32)
+  // A docscan run (the watcher's) never parses a document with its own rights (docscan_sandbox.h):
+  //   --docscan-worker  this process IS the sandboxed worker - it locks itself down before the scan;
+  //   one file          this process becomes the BROKER: the worker parses, the broker only applies;
+  //   otherwise         (a folder, a list, --docscan-no-sandbox, the worker cannot start) in-process,
+  //                     confined by the job object and removed privileges.
+  if (docscan_worker_arg != NULL)
+  {
+    if (!docscan_worker_init(docscan_worker_arg))
+    {
+      fprintf(stderr, "error: --docscan-worker is internal (yara starts it itself)\n");
+      return EXIT_FAILURE;
+    }
+    if (docscan_confine_check)
+      return docscan_worker_confine_check();
+  }
+  else if (docscan_json || docscan_disarm_flag || docscan_extract != NULL || critical_rules_arg != NULL ||
+           docscan_confine_check)
+  {
+#if defined(_UNICODE)
+    DWORD fa = argc >= 2 ? GetFileAttributesW(argv[argc - 1]) : INVALID_FILE_ATTRIBUTES;
+    bool one_file = fa != INVALID_FILE_ATTRIBUTES && !(fa & FILE_ATTRIBUTE_DIRECTORY) && !scan_list_search;
+    if (!docscan_no_sandbox && !show_help && !show_version && (one_file || docscan_confine_check))
+    {
+      char target_utf8[4096] = "";
+      if (one_file)
+        WideCharToMultiByte(CP_UTF8, 0, argv[argc - 1], -1, target_utf8, (int) sizeof(target_utf8), NULL, NULL);
+      docscan_broker_cfg cfg;
+      cfg.target = one_file ? argv[argc - 1] : NULL;
+      cfg.target_utf8 = target_utf8;
+      cfg.extract_utf8 = docscan_extract != NULL ? docscan_extract_utf8 : "";
+      cfg.critical_utf8 = critical_out_utf8;
+      cfg.backup_utf8 = docscan_backup_dir_utf8;
+      cfg.timeout = timeout;
+      cfg.confine_check = docscan_confine_check;
+      int brc = docscan_broker_run(&cfg);
+      if (brc >= 0)
+        return brc;
+      DWORD err = GetLastError();
+      if (docscan_confine_check)
+      {
+        printf("sandbox: the worker could not be started (%lu)\nRESULT: NOT CONFINED\n", err);
+        return EXIT_FAILURE;
+      }
+      fprintf(stderr, "docscan-sandbox: the worker could not be started (%lu) - scanning in-process\n", err);
+    }
+#endif
+    docscan_confine();
+    if (docscan_confine_check)
+      return docscan_confine_report();
+  }
+#else
+  if (docscan_confine_check)
+  {
+    printf("RESULT: SKIP (the sandbox is implemented for Windows)\n");
+    return EXIT_SUCCESS;
+  }
 #endif
 
   scan_opts.follow_symlinks = follow_symlinks;
@@ -2908,6 +3002,17 @@ int _tmain(int argc, const char_t** argv)
     flags |= SCAN_FLAGS_FAST_MODE;
 
   scan_opts.deadline = time(NULL) + timeout;
+
+#if defined(_WIN32)
+  // sandbox worker: rules are loaded; map the file, then drop to the lockdown token. From here on
+  // nothing can be opened - the scan, the second pass, the text and the disarm plan work in memory.
+  if (docscan_worker_active())
+  {
+    docscan_worker_warmup();
+    if (!docscan_worker_lockdown(argv[argc - 1]))
+      exit_with_code(EXIT_FAILURE);
+  }
+#endif
 
   arg_is_dir = is_directory(argv[argc - 1]);
 

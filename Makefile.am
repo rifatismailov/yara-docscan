@@ -304,6 +304,8 @@ yara_SOURCES = \
   cli/args.h \
   cli/common.c \
   cli/common.h \
+  cli/docscan_sandbox.c \
+  cli/docscan_sandbox.h \
   cli/threading.c \
   cli/threading.h \
   cli/yara.c

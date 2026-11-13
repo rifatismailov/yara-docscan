@@ -177,7 +177,7 @@ docscan-project/
     docscan.yar                     include docscan-policy.yar (тільки наш детект)
     docscan-index.yar               docscan-policy.yar + file-index.yar (детект + vendor + Шар 2)
     file-index.yar                  vendor-правила (по файлу й по розпакованому VBA)
-    general/, maldoc/               ГЕНЕРУЮТЬСЯ: 5594 vendor-правила з публічних джерел, 1365 файлів (§6.2)
+    general/, maldoc/               ГЕНЕРУЮТЬСЯ: 8068 vendor-правил з публічних джерел, 1654 файли (§6.2)
   watcher/docscan-watcher.ps1       авто-скан нових файлів → results\docscan-results.json
   deploy/                           пакет розгортання: build_package.ps1, install.ps1, uninstall.ps1, README.txt,
                                     DocScan-Setup.ps1 (irm | iex), DocScan-Install.ps1, manager/ (Wazuh)
@@ -422,9 +422,11 @@ MS-OVBA. Ланцюжок: **CFB → потоки → пошук контейн�
 
 | Функція | Що робить |
 |---|---|
-| `docscan_disarm(path, info, out_action, sz)` | Диспетчер: немає жодної дії → `detect-only`; legacy OLE (`.doc/.xls`) з будь-якою дією → карантин (вилікувати на місці неможливо); RTF з `embedded` (Equation, Package) → карантин; PDF без `quarantine` → `detect-only`; **бекап** — якщо не вдався, файл не чіпається (`failed:backup`); `quarantine` або LNK з `lnk_bad` → видалення (`quarantined` / `deleted:lnk`); RTF → `cure_rtf`; OOXML → `cure_ooxml`. |
-| `cure_ooxml(path, info, action, sz)` | Перепаковує ZIP через miniz у `<file>.docscan-tmp`: **не копіює** `vbaProject.bin`/`vbaData.xml` (макрос) і `embeddings/oleObject*.bin`; у `*.rels` видаляє `<Relationship>` з маркерами `vbaProject` / `oleObject` / `attachedTemplate` / усі обробники протоколів (`ms-msdt:`, `search-ms:`, `search:`, `ms-officecmd:`, `mhtml:`, `ms-word:`, `ms-excel:`, `ms-powerpoint:`, `!x-usc:`); у `[Content_Types].xml` — `<Override>` з `vbaProject`; у `word/document.xml`/header/footer `DDEAUTO` → `REMOVED`. Потім підміняє оригінал. Якщо будь-яку частину не вдалося прочитати (чи вона > 64 МБ) — лікування скасовується, оригінал не змінюється, дія `failed:unreadable-part`. Дії: `removed:vbaProject.bin`, `removed:embeddings`, `removed:remote-template`, `removed:protocol-rel`, `stripped:dde`. |
-| `cure_rtf(path, action, sz)` | `\objupdate` → `\objupdatX` (керуюче слово зламане, довжина та сама) → `stripped:objupdate`. |
+| `docscan_disarm(path, info, out_action, sz)` | = читає файл → `docscan_disarm_plan` → `docscan_disarm_apply`. Так працюють Мак/Linux і `--docscan-no-sandbox`. |
+| `docscan_disarm_plan(data, len, info, &cured, &cured_len, action, sz)` | **Розбір, без жодної файлової операції** (на Windows — у пісочниці, §4.11). Рішення: немає жодної дії → `detect-only`; legacy OLE (`.doc/.xls`) з будь-якою дією → карантин (вилікувати на місці неможливо); RTF з `embedded` (Equation, Package) → карантин; ZIP-архів → карантин; PDF без `quarantine` → `detect-only`; `quarantine` або LNK з `lnk_bad` → `DELETE` (`quarantined` / `deleted:lnk`); RTF → `cure_rtf_mem`, OOXML → `cure_ooxml_mem` → `REPLACE` + вилікувані байти. Результат: `NONE` / `DELETE` / `REPLACE` / `FAILED`. |
+| `docscan_disarm_apply(path, backup_dir, kind, cured, len, plan_action, out, sz)` | **Лише файлові операції, нічого не розбирає** (на Windows — брокер). **Бекап** — якщо не вдався, файл не чіпається (`failed:backup`); `DELETE` → видалення (`failed:delete`); `REPLACE` → `<file>.docscan-tmp`, видалення оригіналу, перейменування (`failed:write` / `failed:replace` — оригінал лишається, якщо його тримає Word). |
+| `cure_ooxml_mem(data, len, info, &out, …)` | Перепаковує ZIP через miniz **у пам'ять**: **не копіює** `vbaProject.bin`/`vbaData.xml` (макрос) і `embeddings/oleObject*.bin`; у `*.rels` видаляє `<Relationship>` з маркерами `vbaProject` / `oleObject` / `attachedTemplate` / усі обробники протоколів (`ms-msdt:`, `search-ms:`, `search:`, `ms-officecmd:`, `mhtml:`, `ms-word:`, `ms-excel:`, `ms-powerpoint:`, `!x-usc:`); у `[Content_Types].xml` — `<Override>` з `vbaProject`; у `word/document.xml`/header/footer `DDEAUTO` → `REMOVED`. Оригінал підміняє `docscan_disarm_apply`. Якщо будь-яку частину не вдалося прочитати (чи вона > 64 МБ) — лікування скасовується, оригінал не змінюється, дія `failed:unreadable-part`. Дії: `removed:vbaProject.bin`, `removed:embeddings`, `removed:remote-template`, `removed:protocol-rel`, `stripped:dde`. |
+| `cure_rtf_mem(data, len, &out, …)` | Копія з `\objupdate` → `\objupdatX` (керуюче слово зламане, довжина та сама) → `stripped:objupdate`; нічого ламати — копії немає. |
 | `remove_elements(in, len, markers, n, &out_len)` | Копіює XML, викидаючи елементи `<Relationship …>` / `<Override …>`, що містять будь-який маркер. |
 | `strip_dde(buf, len)` | На місці, тієї ж довжини: `DDEAUTO` → `REMOVED`, `DDE ` → `REM `. Без урахування регістру (як детекція) і лише на початку інструкції поля (після `>` або `"` і пробілів) — звичайний текст зі словом «DDE» не чіпається. |
 | `backup(path, backup_dir)` | Копія оригіналу: з `backup_dir` — `<тека>\<ім'я>.<n>.docscan-bak` (унікальне `n`, старі бекапи не перезаписуються), інакше `<path>.docscan-bak`. При помилці — повідомлення в stderr з шляхом і `errno`. |
@@ -443,7 +445,9 @@ MS-OVBA. Ланцюжок: **CFB → потоки → пошук контейн�
 | `--docscan-extract=FILE` | `docscan_extract_utf8` | пише розпакований `vba_code` у FILE (до лікування; шлях UTF-8, на Windows — з оригінальних Unicode-аргументів, як `--docscan-backup-dir`); watcher так зберігає код макросів (`macros\`) |
 | `--docscan-disarm` | `docscan_disarm_flag` | після скану лікує файл за `meta.disarm` правил, що спрацювали; HIGH без дій → `detect-only` |
 | `--docscan-backup-dir=DIR` | `docscan_backup_dir_utf8` | бекапи й карантин у DIR (має існувати). На Windows значення береться з оригінальних Unicode-аргументів (парсер YARA віддає рядкові опції в ANSI — кирилиця б загубилась) |
-| `--docscan-confine-check` | `docscan_confine_report` | Windows: перевірка самообмеження і спроба запустити `cmd.exe` (має бути заблоковано); `RESULT: CONFINED`. Крок CI `confine` на кожній Windows-машині. **Самообмеження** (`docscan_confine`) діє в кожному запуску в режимі DocScan, ще до читання файлу: job object з лімітом 1 активний процес (жодних дочірніх процесів — навіть зламаний розбір не запустить cmd/powershell) і UI-обмеженнями; з токена **видалено всі привілеї** SYSTEM, крім `SeChangeNotify`. Доступ до файлів (читання, лікування, бекапи, черга) дають ACL, тож робота DocScan не змінюється |
+| `--docscan-confine-check` | `docscan_worker_confine_check` + `confine_lines` | Windows: перевірка пісочниці (§4.11). Воркер після lockdown пробує прочитати свій exe і `%WINDIR%\win.ini`, записати в `%TEMP%` і `C:\ProgramData`, відкрити `HKLM\SOFTWARE`, запустити `cmd.exe` — **усе має бути заблоковано**, рівень цілісності — untrusted, привілеїв ≤ 1; брокер — job object, привілеї видалено, `cmd.exe` заблоковано. `RESULT: CONFINED` (код 0). Крок CI `confine` на кожній Windows-машині |
+| `--docscan-no-sandbox` | `docscan_no_sandbox` | Windows, діагностика: розбирати в цьому ж процесі (лише job object + видалені привілеї, як до пісочниці) |
+| `--docscan-worker=PIPE` | `docscan_worker_arg` | **внутрішній**: так брокер запускає воркер (номер дескриптора каналу результатів); вручну не викликається |
 | `--critical-rules=FILE` | `critical_rules` | третій прохід: правила E5Search (окремий набір, компілюється на старті); шукаються в **тексті** документа (§15) |
 | `--critical-out=FILE` | `critical_out_utf8` | черга: збіг → один рядок JSON (схема 2.0) дописується в FILE; без нього `--critical-rules` — помилка |
 | `--critical-chunk=SIZE,OVERLAP` | `critical_chunk_size/overlap` | розмір фрагментів (за замовчуванням 700,120; межі 200..1500 і 0..size/2); `meta` правила має пріоритет |
@@ -507,6 +511,42 @@ MS-OVBA. Ланцюжок: **CFB → потоки → пошук контейн�
 | `docscan_critical_json` | `critical.c` | Один рядок JSON (схема 2.0): `document` (name, format, size_bytes, sha256, path), `metadata` (автор, дати, `source`, `received_at`, `yara_matches`), `text_info`, `fragments[]`. |
 | `docscan_sha256_hex` | `critical.c` | SHA-256 файлу (власна реалізація). |
 | `docscan_cfb_get_stream` / `docscan_cfb_has_stream` | `cfb.c` | Один потік CFB за назвою (до 64 МБ) / чи є такий потік — для тексту старих форматів. |
+
+### 4.11 Пісочниця (Windows): `cli/docscan_sandbox.c`
+
+Watcher запускає `yara64` від SYSTEM. Якби зловмисний документ скористався помилкою парсера, його код
+виконувався б із правами SYSTEM. Тому на Windows **той самий `yara64.exe`** працює у двох ролях (задача 3121, крок 4):
+
+```
+watcher ── yara64 --docscan-json [--docscan-disarm ...] файл         ← той самий виклик, що й раніше
+             БРОКЕР (SYSTEM): нічого не розбирає
+               1. запускає себе: yara64 --docscan-worker=<канал> <ті самі аргументи>
+                    ВОРКЕР: lockdown-токен, job object
+                      поки головний потік ще імперсонує звичайний токен: правила, файл (відкрити + відобразити в пам'ять)
+                      RevertToSelf → далі доступу немає ні до чого
+                      модуль, правила, другий прохід, текст, план лікування — у пам'яті
+                      stdout/stderr (JSON) → брокер → watcher;  записи 'X' 'C' 'D' → канал результатів
+               2. записи: 'X' → файл --docscan-extract, 'C' → дописати в --critical-out,
+                          'D' → docscan_disarm_apply (бекап / заміна / видалення) + рядок docscan-disarm:
+```
+
+| Що | Як |
+|---|---|
+| **Токен воркера** (lockdown) | `CreateRestrictedToken`: користувач і всі групи — deny-only, єдиний обмежувальний SID — NULL SID (будь-яка перевірка доступу не проходить), `DISABLE_MAX_PRIVILEGE` (лишається `SeChangeNotify`); воркер сам знижує рівень цілісності до **untrusted** |
+| **Старт воркера** | `CreateProcessAsUserW` (призупинений) → job object (1 активний процес, UI-обмеження, `KILL_ON_JOB_CLOSE`) → `SetThreadToken` головного потоку — «початковий» токен (обмежений, але з тим самим доступом, що й брокер: Windows дає обмеженому процесу імперсонувати лише обмежений токен) → `ResumeThread`. Так воркер завантажує DLL і правила, відкриває файл; потім `RevertToSelf()` і перевірка, що імперсонації більше немає |
+| **Що воркер успадковує** | рівно 4 дескриптори (`PROC_THREAD_ATTRIBUTE_HANDLE_LIST`): `NUL` як stdin, канали stdout / stderr / результатів |
+| **Файл** | відображається в пам'ять до lockdown (`CreateFileMapping`); скан — `yr_scanner_scan_mem`, змінні THOR (`filetype`) — з перших байтів, дати файлу для третього проходу — з дескриптора |
+| **Розігрів** | до lockdown воркер один раз проганяє правило з `hash.md5/sha1/sha256/crc32`: OpenSSL ініціалізується ліниво (провайдери, конфігурація) — після lockdown це могло б тихо не вдатися |
+| **`user32.dll`** | `yara64.exe` імпортує його лише через OpenSSL (`MessageBoxW`, `GetProcessWindowStation` — фатальні помилки); у `yara.vcxproj` — `/DELAYLOAD:user32.dll`, щоб він не вантажився на старті: lockdown-процес не має доступу до window station |
+| **Брокер** | після старту воркера сам застосовує `docscan_confine()` (job object з 1 процесом, привілеї видалено); чекає воркер (тайм-аут `--timeout` + 30 с, не більше 630 с — потім `TerminateJobObject`) |
+| **Захист від підміни файлу** | брокер запам'ятовує розмір і час зміни файлу до старту воркера; якщо до лікування файл змінився — нічого не чіпає, дія `failed:changed` (watcher повторить) |
+| **Збій воркера** | код NTSTATUS передається як є (`error: docscan worker crashed (0x…)`), JSON немає → watcher пише `ERROR`, як і раніше при падінні |
+| **Коли пісочниці немає** | тека чи список файлів, `--docscan-no-sandbox`, воркер не стартував (`docscan-sandbox: the worker could not be started … - scanning in-process` у stderr) → розбір у цьому ж процесі з `docscan_confine()`. `--docscan-confine-check` у цьому разі — `NOT CONFINED` (CI червоний) |
+
+Інтерфейс для watcher не змінився: той самий командний рядок, ті самі рядки (`{json}`, `docscan-disarm: … -> …`,
+`docscan-critical: queued …`, `error…`). Ціна — ще один процес на файл (десятки мс). Перевірка в CI: крок `confine`
+і всі кроки Windows (documents з лікуванням, hostile, corpus, malware) — вони йдуть через пісочницю, а вердикти
+корпусу мусять точно збігатися з Маком, де пісочниці немає.
 
 ## 5. Поведінка: як проходить скан
 
@@ -640,8 +680,8 @@ rule ORG_HUGE_PART { meta: severity = "MEDIUM" finding = "HUGE_PART"
 | `rules/docscan-policy.yar` | політика | `import "docscan"` + правила `DS_*` |
 | `rules/docscan.yar` | тільки наш детект | `include "docscan-policy.yar"` |
 | `rules/docscan-index.yar` | **повний скан** (watcher, run_tests) | `include "docscan-policy.yar"` + `include "file-index.yar"` |
-| `rules/file-index.yar` | vendor-правила (**генерується**) | 1365 файлів, 5594 правила: `general/` (signature-base), `general/elastic/` (Elastic protections-artifacts, Windows/Multi), `general/bartblaze/`, `general/inquest/`, `maldoc/signature-base/`, `maldoc/community/`, `maldoc/bartblaze/`, `maldoc/inquest/`, `maldoc/ditekshen/` + `maldoc/vba_plaintext.yar` |
-| `rules/general/**`, `rules/maldoc/**` (крім `vba_plaintext.yar`) | vendor-правила (**генеруються**, не правити руками) | signature-base + Elastic + Yara-Rules + bartblaze + InQuest, відфільтровано по кожному правилу |
+| `rules/file-index.yar` | vendor-правила (**генерується**) | 1654 файли, 8068 правил: `general/` (signature-base; ReversingLabs `*.yara`; YARA-Forge `yara-rules-core.yar`), `general/elastic/` (Elastic protections-artifacts, Windows/Multi), `general/bartblaze/`, `general/inquest/`, `maldoc/signature-base/`, `maldoc/community/`, `maldoc/bartblaze/`, `maldoc/inquest/`, `maldoc/ditekshen/` + `maldoc/vba_plaintext.yar` |
+| `rules/general/**`, `rules/maldoc/**` (крім `vba_plaintext.yar`) | vendor-правила (**генеруються**, не правити руками) | signature-base + Elastic + Yara-Rules + bartblaze + InQuest + ditekSHen + ReversingLabs + YARA-Forge, відфільтровано по кожному правилу |
 | `rules/maldoc/vba_plaintext.yar` | наші правила на розпакований VBA | правиться руками |
 | `rules/tools/build_vendor_rules.py` | генератор | джерела на зафіксованих комітах, фільтр, перейменування, теги, перевірка компіляції |
 | `rules/tools/vendor-selection.txt` | які файли джерел беремо | `<тека> <джерело> <шлях>` |
@@ -652,8 +692,14 @@ rule ORG_HUGE_PART { meta: severity = "MEDIUM" finding = "HUGE_PART"
 **Як збирається vendor-набір** (`python3 rules/tools/build_vendor_rules.py [--fetch]`):
 1. Джерела — `docscan-project/vendor-sources/` (не в git), коміти зафіксовані в `SOURCES`:
    Neo23x0/signature-base, Yara-Rules/rules, elastic/protections-artifacts, bartblaze/Yara-rules,
-   InQuest/yara-rules, ditekshen/detection (**власних правил ми не пишемо — лише готові публічні**);
-   `--fetch` клонує/перемикає на них.
+   InQuest/yara-rules, ditekshen/detection, reversinglabs/reversinglabs-yara-rules; YARA-Forge — не git, а
+   зафіксований реліз (`release:20261108`, zip пакета `core`) (**власних правил ми не пишемо — лише готові
+   публічні**); `--fetch` клонує/перемикає на них.
+   **YARA-Forge** — збірка правил з десятків репозиторіїв. Беремо лише правила з репозиторіїв у
+   `FORGE_SOURCES` (перевірка за `source_url` у meta, `forge_reason`): з дозвільною ліцензією і ті, яких
+   у нас ще немає як окремого джерела (SEKOIA, Mandiant, Volexity, CAPEv2, Chronicle, ESET, Trellix ATR,
+   WithSecure, elceef, cod3nym, craiu, dr4k0nia, Synacktiv, deadbits). Решта (signature-base, Elastic,
+   ditekSHen… — уже тут; без ліцензії) відкидається з причиною у звіті;
 2. Беруться файли з `vendor-selection.txt`; кожне правило перевіряється окремо:
    - **відкидається**, якщо не може спрацювати на робочій станції Windows: умова вимагає ELF / Mach-O /
      Java `.class`, Android, назва правила `LNX_`/`ESXi`/`_SH_`/`_PY_` без перевірки типу, вихідний код
@@ -718,6 +764,24 @@ Windows 10 вони дали ~2900 хибних HIGH на .NET/Adobe/Acronis/MSI
 | хибні / неефективні на робочій станції Windows 10 (повний диск, з `C:\Users`) | 3 | InQuest `PE.rule` (будь-який PE), `Embedded_PE.rule` (555 .NET-образів), `ClamAV_Emotet_String_Aggregrate.rule` (`Microsoft.CSharp.dll`) |
 
 Кожне видалене правило з причиною — у `rules/tools/vendor-report.md`. Регресія 23 зразків не змінилась.
+
+**Крок 5 (2026-11-13) — ReversingLabs і YARA-Forge.** Додано reversinglabs-yara-rules (MIT; 288 файлів,
+1464 правила; PE-родини, .NET-бекдори й шифрувальники, сертифікати з чорного списку) і YARA-Forge core
+(1258 правил з 14 джерел, див. вище). Разом: **8068 правил** (було 5594). Перевірка:
+
+| Набір | Результат |
+|---|---|
+| 7531 легітимний файл (POI, Tika, oletools, pdf.js, LNK, RTF, plaso) | рішення DocScan не змінилися; **0** збігів правил з нових джерел |
+| шкідливе ПЗ: майнер, EICAR, theZoo, InQuest, MalwareBazaar — 949 зразків | виявлено **437** (до нових джерел — 296 зі старого набору; Bazaar: xls/xlsm 20/20, lnk 19/20, docm 18/20, doc 17/20, zip 15/20, rtf 11/15, one 7/10; exe 3/25, dll 3/10; iso/pdf/vbs/msi/xll — 0) |
+| швидкість | компіляція < 1 с; корпус 7531 файл — 70 с на Маці (паралельно) |
+
+Нові правила додають найбільше на PE і у другому проході (обфускатори ConfuserEx/Eazfuscator, PowerShell
+Empire у OneNote, WannaCry, TeslaCrypt, Raccoon); документи вже ловили політика й старі джерела. Слабкі місця
+— чисті PE, скрипти (vbs/js/ps1), iso/msi/pdf: це межа публічних правил, своїх сигнатур не пишемо.
+Під час перевірки знайдено два давні хибні спрацювання у другому проході (частини документа) — у `DROP`:
+`INDICATOR_OLE_RemoteTemplate` (ditekSHen: шукає рядки по всьому `.rels`, тому локальний вбудований об'єкт +
+будь-яке гіперпосилання = збіг; правильну перевірку робить політика `DS_EXTERNAL_OLE`) і `Brooxml_Hunting`
+(signature-base, «hunting»: збігалося з кожним OOXML, вбудованим як OLE-об'єкт).
 
 **Крок 4 (2026-11-05) — техніки в документах.** Готові правила: ditekSHen/detection `indicator_office.yar`
 (BSD-2-Clause; ActiveX, Equation, вбудовані файли в RTF/OLE, Excel 4.0, віддалені шаблони) + те, що вже було:
@@ -1358,7 +1422,11 @@ Protobuf). Офіційний шлях — лише порт логіки на Y
 **Ліцензії:** форк — BSD-3-Clause YARA (`COPYING`); miniz — public domain / MIT;
 `rules/general/` і `rules/maldoc/signature-base/` — Detection Rule License 1.1 (кілька правил — CC BY 4.0,
 Volexity); `rules/general/elastic/` — Elastic License 2.0; `rules/maldoc/community/` — GNU GPLv2;
-`rules/*/bartblaze/`, `rules/*/inquest/` — MIT; `rules/maldoc/ditekshen/` — BSD-2-Clause. Тексти ліцензій — `rules/LICENSE-*`. Заголовки й поле `license` у правилах не прибирати.
+`rules/*/bartblaze/`, `rules/*/inquest/` — MIT; `rules/maldoc/ditekshen/` — BSD-2-Clause;
+`rules/general/*.yara` (ReversingLabs) — MIT; `rules/general/yara-rules-core.yar` (YARA-Forge) — ліцензія
+кожного правила в його `meta` (`license_url`): DRL 1.1 (SEKOIA, cod3nym, dr4k0nia, Synacktiv), BSD-2-Clause
+(Mandiant, Volexity, ESET, WithSecure), Apache-2.0 (Chronicle, Trellix ATR), GPL-3.0 (CAPEv2, craiu), MIT
+(elceef), Unlicense (deadbits); усі тексти — `rules/LICENSE-yara-forge`. Тексти ліцензій — `rules/LICENSE-*`. Заголовки й поле `license` у правилах не прибирати.
 
 ---
 

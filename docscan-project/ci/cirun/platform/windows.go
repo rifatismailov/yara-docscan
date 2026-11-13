@@ -196,8 +196,9 @@ Set-Location $repo
 powershell -NoProfile -ExecutionPolicy Bypass -File docscan-project\ci\check_verdicts.ps1 -Yara '{{Y}}' -Rules docscan-project\rules\docscan-index.yar -Samples docscan-project\test-samples\generated -Expected docscan-project\ci\expected-verdicts.tsv -WorkDir "$w\tmp"
 exit $LASTEXITCODE
 `, -1)}
-	// confine: yara64 у режимі DocScan сам обмежує себе (job object: жодних дочірніх процесів; привілеї SYSTEM
-	// видалено) — перевірка, що це справді діє на цій машині
+	// confine: пісочниця DocScan (cli/docscan_sandbox.c) — yara64 розбирає файл у процесі-воркері з
+	// lockdown-токеном; воркер пробує читати/писати файли, реєстр, запустити cmd.exe — усе має бути
+	// заблоковано; брокер — job object і без привілеїв. RESULT: CONFINED → код 0
 	steps = append(steps, w.step(ctx, "confine", `
 & '{{Y}}' --docscan-confine-check x 2>&1 | % { "$_" }
 exit $LASTEXITCODE

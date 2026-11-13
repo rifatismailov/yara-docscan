@@ -146,32 +146,37 @@ static void append(char* dst, size_t sz, const char* s)
     snprintf(dst + l, sz - l, "%s%s", l ? "," : "", s);
 }
 
-// ---- RTF: break the \objupdate control word ----
-static int cure_rtf(const char* path, char* action, size_t asz)
+// ---- RTF: break the \objupdate control word (in memory) ----
+// -> a cured copy in *out (NULL if nothing changed)
+static int cure_rtf_mem(const unsigned char* in, size_t n, unsigned char** out, size_t* out_len,
+                        char* action, size_t asz)
 {
-  unsigned char* b;
-  size_t n;
-  if (read_file(path, &b, &n) != 0)
-    return -1;
-  int changed = 0;
+  *out = NULL;
+  *out_len = 0;
+  unsigned char* b = NULL;
   for (size_t i = 0; i + 10 <= n; i++)
   {
     // only the real control word (the same test as detection): escaped text "\\objupdate" in a
     // document is left untouched
-    if (b[i] == '\\' && docscan_rtf_control_word_at(b, n, i, "objupdate"))
+    if (in[i] == '\\' && docscan_rtf_control_word_at(in, n, i, "objupdate"))
     {
+      if (b == NULL)
+      {
+        b = (unsigned char*) malloc(n);
+        if (b == NULL)
+          return -1;
+        memcpy(b, in, n);
+      }
       b[i + 9] = 'X';  // \objupdate -> \objupdatX (control word broken)
-      changed = 1;
     }
   }
-  int rc = 0;
-  if (changed)
+  if (b != NULL)
   {
-    rc = write_file(path, b, n);
-    append(action, asz, rc == 0 ? "stripped:objupdate" : "failed:write");
+    *out = b;
+    *out_len = n;
+    append(action, asz, "stripped:objupdate");
   }
-  free(b);
-  return rc;
+  return 0;
 }
 
 // ---- OOXML string edits ----
@@ -400,32 +405,23 @@ static int name_is(const char* name, const char* suffix)
   return ln >= ls && strcmp(name + ln - ls, suffix) == 0;
 }
 
-static int cure_ooxml(const char* path, const docscan_disarm_info* info,
-                      char* action, size_t asz)
+// The cured zip is built in memory (*out, malloc'ed); the caller writes it. miniz's own file API uses
+// ANSI fopen() and fails on non-ANSI paths on Windows - and in the sandbox there is no file access at all.
+static int cure_ooxml_mem(const unsigned char* buf, size_t size, const docscan_disarm_info* info,
+                          unsigned char** out, size_t* out_len, char* action, size_t asz)
 {
-  unsigned char* buf;
-  size_t size;
-  if (read_file(path, &buf, &size) != 0)
-    return -1;
-
+  *out = NULL;
+  *out_len = 0;
   mz_zip_archive zin;
   memset(&zin, 0, sizeof(zin));
   if (!mz_zip_reader_init_mem(&zin, buf, size, 0))
-  {
-    free(buf);
     return -1;
-  }
 
-  char tmp[4096];
-  snprintf(tmp, sizeof(tmp), "%s.docscan-tmp", path);
-  // Build the cured zip in memory and write it with write_file(): miniz's own
-  // file API uses ANSI fopen() and fails on non-ANSI paths on Windows.
   mz_zip_archive zout;
   memset(&zout, 0, sizeof(zout));
   if (!mz_zip_writer_init_heap(&zout, 0, 0))
   {
     mz_zip_reader_end(&zin);
-    free(buf);
     return -1;
   }
 
@@ -515,35 +511,26 @@ static int cure_ooxml(const char* path, const docscan_disarm_info* info,
   size_t zsize = 0;
   if (!failed)
     failed = !mz_zip_writer_finalize_heap_archive(&zout, &zbuf, &zsize);
-  int write_failed = 0;
   if (!failed)
-    failed = write_failed = write_file(tmp, zbuf, zsize) != 0;
+  {
+    // hand over a malloc'ed copy (miniz memory is freed with mz_free)
+    *out = (unsigned char*) malloc(zsize ? zsize : 1);
+    if (*out == NULL)
+      failed = 1;
+    else
+    {
+      memcpy(*out, zbuf, zsize);
+      *out_len = zsize;
+    }
+  }
   if (zbuf)
     mz_free(zbuf);
   mz_zip_writer_end(&zout);
   mz_zip_reader_end(&zin);
-  free(buf);
 
   if (failed)
   {
-    ds_remove(tmp);
-    append(action, asz, write_failed ? "failed:write" : "failed:unreadable-part");
-    return -1;
-  }
-
-  // replace original with cured temp. If the original cannot be removed (open
-  // in another program, e.g. Word holds it) leave it untouched and report it,
-  // so the caller can retry later; the backup already exists.
-  if (ds_remove(path) != 0)
-  {
-    ds_remove(tmp);  // original still in place
-    append(action, asz, "failed:replace");
-    return -1;
-  }
-  if (ds_rename(tmp, path) != 0)
-  {
-    // original gone, rename failed: keep the cured copy as <file>.docscan-tmp
-    append(action, asz, "failed:replace");
+    append(action, asz, "failed:unreadable-part");
     return -1;
   }
 
@@ -555,13 +542,20 @@ static int cure_ooxml(const char* path, const docscan_disarm_info* info,
   return 0;
 }
 
-int docscan_disarm(const char* path, const docscan_disarm_info* info,
-                   char* out_action, size_t out_action_sz)
+void docscan_disarm_free(unsigned char* p)
 {
-  if (out_action && out_action_sz)
-    out_action[0] = 0;
+  free(p);
+}
+
+int docscan_disarm_plan(const unsigned char* data, size_t len, const docscan_disarm_info* info,
+                        unsigned char** cured, size_t* cured_len, char* action, size_t asz)
+{
+  *cured = NULL;
+  *cured_len = 0;
+  if (action && asz)
+    action[0] = 0;
   if (!info || !info->present)
-    return 0;
+    return DOCSCAN_DISARM_NONE;
 
   int any = info->macro || info->remote_template || info->protocol_handler ||
             info->dde_auto || info->embedded || info->rtf_objupdate ||
@@ -570,8 +564,8 @@ int docscan_disarm(const char* path, const docscan_disarm_info* info,
   // HIGH verdict but the policy asked for no action: report it.
   if (!any)
   {
-    append(out_action, out_action_sz, "detect-only");
-    return 0;
+    append(action, asz, "detect-only");
+    return DOCSCAN_DISARM_NONE;
   }
 
   // Legacy OLE (.doc/.xls) cannot be cured in place reliably -> quarantine.
@@ -584,36 +578,111 @@ int docscan_disarm(const char* path, const docscan_disarm_info* info,
   // PDF: only quarantine is possible.
   if (info->type == 4 && !quarantine)
   {
-    append(out_action, out_action_sz, "detect-only");
-    return 0;
+    append(action, asz, "detect-only");
+    return DOCSCAN_DISARM_NONE;
+  }
+
+  // Quarantine / LNK: the file itself goes away (the backup keeps it).
+  if (quarantine || (info->type == 5 && info->lnk_bad))
+  {
+    append(action, asz, info->type == 5 && !quarantine ? "deleted:lnk" : "quarantined");
+    return DOCSCAN_DISARM_DELETE;
+  }
+
+  if (info->type == 3 && info->rtf_objupdate)
+  {
+    if (cure_rtf_mem(data, len, cured, cured_len, action, asz) != 0)
+      return DOCSCAN_DISARM_FAILED;
+    return *cured ? DOCSCAN_DISARM_REPLACE : DOCSCAN_DISARM_NONE;  // nothing to break: unchanged
+  }
+
+  if (info->type == 1)
+    return cure_ooxml_mem(data, len, info, cured, cured_len, action, asz) == 0 ? DOCSCAN_DISARM_REPLACE
+                                                                                : DOCSCAN_DISARM_FAILED;
+
+  append(action, asz, "detect-only");
+  return DOCSCAN_DISARM_NONE;
+}
+
+int docscan_disarm_apply(const char* path, const char* backup_dir, int kind, const unsigned char* cured,
+                         size_t cured_len, const char* plan_action, char* out_action, size_t out_action_sz)
+{
+  if (out_action && out_action_sz)
+    out_action[0] = 0;
+  if (kind == DOCSCAN_DISARM_NONE || kind == DOCSCAN_DISARM_FAILED)
+  {
+    append(out_action, out_action_sz, plan_action ? plan_action : "");
+    return kind == DOCSCAN_DISARM_FAILED ? -1 : 0;
   }
 
   // Never modify or delete a file whose backup could not be written.
-  if (backup(path, info->backup_dir) != 0)
+  if (backup(path, backup_dir) != 0)
   {
     append(out_action, out_action_sz, "failed:backup");
     return -1;
   }
 
-  // Quarantine / LNK: the file itself goes away (the backup keeps it).
-  if (quarantine || (info->type == 5 && info->lnk_bad))
+  if (kind == DOCSCAN_DISARM_DELETE)
   {
     if (ds_remove(path) != 0)
     {
       append(out_action, out_action_sz, "failed:delete");
       return -1;
     }
-    append(out_action, out_action_sz,
-           info->type == 5 && !quarantine ? "deleted:lnk" : "quarantined");
+    append(out_action, out_action_sz, plan_action);
     return 0;
   }
 
-  if (info->type == 3 && info->rtf_objupdate)
-    return cure_rtf(path, out_action, out_action_sz);
-
-  if (info->type == 1)
-    return cure_ooxml(path, info, out_action, out_action_sz);
-
-  append(out_action, out_action_sz, "detect-only");
+  // replace the original with the cured copy through a temp file. If the original cannot be removed
+  // (open in another program, e.g. Word holds it) leave it untouched and report it, so the caller can
+  // retry later; the backup already exists.
+  char tmp[4096];
+  snprintf(tmp, sizeof(tmp), "%s.docscan-tmp", path);
+  if (write_file(tmp, cured, cured_len) != 0)
+  {
+    ds_remove(tmp);
+    append(out_action, out_action_sz, "failed:write");
+    return -1;
+  }
+  if (ds_remove(path) != 0)
+  {
+    ds_remove(tmp);  // original still in place
+    append(out_action, out_action_sz, "failed:replace");
+    return -1;
+  }
+  if (ds_rename(tmp, path) != 0)
+  {
+    // original gone, rename failed: keep the cured copy as <file>.docscan-tmp
+    append(out_action, out_action_sz, "failed:replace");
+    return -1;
+  }
+  append(out_action, out_action_sz, plan_action);
   return 0;
+}
+
+int docscan_disarm(const char* path, const docscan_disarm_info* info,
+                   char* out_action, size_t out_action_sz)
+{
+  if (out_action && out_action_sz)
+    out_action[0] = 0;
+  if (!info || !info->present)
+    return 0;
+
+  unsigned char* data = NULL;
+  size_t len = 0;
+  if (read_file(path, &data, &len) != 0)
+  {
+    fprintf(stderr, "docscan-disarm: cannot read %s (errno %d)\n", path, errno);
+    append(out_action, out_action_sz, "failed:read");
+    return -1;
+  }
+  char plan[256] = "";
+  unsigned char* cured = NULL;
+  size_t cured_len = 0;
+  int kind = docscan_disarm_plan(data, len, info, &cured, &cured_len, plan, sizeof(plan));
+  free(data);
+  int rc = docscan_disarm_apply(path, info->backup_dir, kind, cured, cured_len, plan, out_action,
+                                out_action_sz);
+  docscan_disarm_free(cured);
+  return rc;
 }

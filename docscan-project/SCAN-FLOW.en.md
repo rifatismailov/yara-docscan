@@ -177,7 +177,7 @@ docscan-project/
     docscan.yar                     include docscan-policy.yar (our detection only)
     docscan-index.yar               docscan-policy.yar + file-index.yar (detection + vendor + Layer 2)
     file-index.yar                  vendor rules (on the file and on the decompressed VBA)
-    general/, maldoc/               GENERATED: 5594 vendor rules from public sources, 1365 files (§6.2)
+    general/, maldoc/               GENERATED: 8068 vendor rules from public sources, 1654 files (§6.2)
   watcher/docscan-watcher.ps1       auto-scan of new files → results\docscan-results.json
   deploy/                           deployment package: build_package.ps1, install.ps1, uninstall.ps1, README.txt,
                                     DocScan-Setup.ps1 (irm | iex), DocScan-Install.ps1, manager/ (Wazuh)
@@ -422,9 +422,11 @@ memory (`mz_zip_writer_init_heap`) and written by our `write_file` — miniz's f
 
 | Function | What it does |
 |---|---|
-| `docscan_disarm(path, info, out_action, sz)` | Dispatcher: no action → `detect-only`; legacy OLE (`.doc/.xls`) with any action → quarantine (cannot be cured in place); RTF with `embedded` (Equation, Package) → quarantine; PDF without `quarantine` → `detect-only`; **backup** — if it fails the file is not touched (`failed:backup`); `quarantine` or LNK with `lnk_bad` → delete (`quarantined` / `deleted:lnk`); RTF → `cure_rtf`; OOXML → `cure_ooxml`. |
-| `cure_ooxml(path, info, action, sz)` | Repacks the ZIP with miniz into `<file>.docscan-tmp`: **does not copy** `vbaProject.bin`/`vbaData.xml` (macro) or `embeddings/oleObject*.bin`; in `*.rels` removes `<Relationship>` elements with the markers `vbaProject` / `oleObject` / `attachedTemplate` / every protocol handler (`ms-msdt:`, `search-ms:`, `search:`, `ms-officecmd:`, `mhtml:`, `ms-word:`, `ms-excel:`, `ms-powerpoint:`, `!x-usc:`); in `[Content_Types].xml` the `<Override>` with `vbaProject`; in `word/document.xml`/header/footer `DDEAUTO` → `REMOVED`. Then replaces the original. If any part cannot be read (or is > 64 MB) the cure is aborted, the original is left unchanged and the action is `failed:unreadable-part`. Actions: `removed:vbaProject.bin`, `removed:embeddings`, `removed:remote-template`, `removed:protocol-rel`, `stripped:dde`. |
-| `cure_rtf(path, action, sz)` | `\objupdate` → `\objupdatX` (control word broken, same length) → `stripped:objupdate`. |
+| `docscan_disarm(path, info, out_action, sz)` | = read the file → `docscan_disarm_plan` → `docscan_disarm_apply`. Used on Mac/Linux and with `--docscan-no-sandbox`. |
+| `docscan_disarm_plan(data, len, info, &cured, &cured_len, action, sz)` | **Parsing, no file operation at all** (on Windows: inside the sandbox, §4.11). Decision: no action → `detect-only`; legacy OLE (`.doc/.xls`) with any action → quarantine (cannot be cured in place); RTF with `embedded` (Equation, Package) → quarantine; ZIP archive → quarantine; PDF without `quarantine` → `detect-only`; `quarantine` or LNK with `lnk_bad` → `DELETE` (`quarantined` / `deleted:lnk`); RTF → `cure_rtf_mem`, OOXML → `cure_ooxml_mem` → `REPLACE` + the cured bytes. Result: `NONE` / `DELETE` / `REPLACE` / `FAILED`. |
+| `docscan_disarm_apply(path, backup_dir, kind, cured, len, plan_action, out, sz)` | **File operations only, parses nothing** (on Windows: the broker). **Backup** — if it fails the file is not touched (`failed:backup`); `DELETE` → delete (`failed:delete`); `REPLACE` → `<file>.docscan-tmp`, delete the original, rename (`failed:write` / `failed:replace` — the original stays if Word holds it). |
+| `cure_ooxml_mem(data, len, info, &out, …)` | Repacks the ZIP with miniz **into memory**: **does not copy** `vbaProject.bin`/`vbaData.xml` (macro) or `embeddings/oleObject*.bin`; in `*.rels` removes `<Relationship>` elements with the markers `vbaProject` / `oleObject` / `attachedTemplate` / every protocol handler (`ms-msdt:`, `search-ms:`, `search:`, `ms-officecmd:`, `mhtml:`, `ms-word:`, `ms-excel:`, `ms-powerpoint:`, `!x-usc:`); in `[Content_Types].xml` the `<Override>` with `vbaProject`; in `word/document.xml`/header/footer `DDEAUTO` → `REMOVED`. `docscan_disarm_apply` replaces the original. If any part cannot be read (or is > 64 MB) the cure is aborted, the original is left unchanged and the action is `failed:unreadable-part`. Actions: `removed:vbaProject.bin`, `removed:embeddings`, `removed:remote-template`, `removed:protocol-rel`, `stripped:dde`. |
+| `cure_rtf_mem(data, len, &out, …)` | A copy with `\objupdate` → `\objupdatX` (control word broken, same length) → `stripped:objupdate`; nothing to break — no copy. |
 | `remove_elements(in, len, markers, n, &out_len)` | Copies the XML, dropping `<Relationship …>` / `<Override …>` elements that contain any marker. |
 | `strip_dde(buf, len)` | In place, same length: `DDEAUTO` → `REMOVED`, `DDE ` → `REM `. Case-insensitive (like detection) and only at the start of a field instruction (after `>` or `"` plus spaces) — ordinary text containing "DDE" is left alone. |
 | `backup(path, backup_dir)` | Copy of the original: with `backup_dir` — `<dir>\<name>.<n>.docscan-bak` (unique `n`, earlier backups are never overwritten), otherwise `<path>.docscan-bak`. On failure — a message on stderr with the path and `errno`. |
@@ -443,7 +445,9 @@ memory (`mz_zip_writer_init_heap`) and written by our `write_file` — miniz's f
 | `--docscan-extract=FILE` | `docscan_extract_utf8` | writes the decompressed `vba_code` to FILE (before disarm); the watcher keeps the macro code this way (`macros\`) (UTF-8 path; on Windows taken from the original Unicode arguments, like `--docscan-backup-dir`) |
 | `--docscan-disarm` | `docscan_disarm_flag` | after the scan, disarms the file according to `meta.disarm` of the matching rules; HIGH without actions → `detect-only` |
 | `--docscan-backup-dir=DIR` | `docscan_backup_dir_utf8` | backups and quarantine go to DIR (must exist). On Windows the value is taken from the original Unicode arguments (YARA's parser hands string options over as ANSI — Cyrillic would be lost) |
-| `--docscan-confine-check` | `docscan_confine_report` | Windows: checks the self-confinement and tries to start `cmd.exe` (must be blocked); `RESULT: CONFINED`. CI step `confine` on every Windows machine. **Self-confinement** (`docscan_confine`) applies to every docscan run before any file is read: a job object with an active-process limit of 1 (no child processes — even an exploited parser cannot start cmd/powershell) and UI limits; **every privilege** of the SYSTEM token is removed except `SeChangeNotify`. File access (read, disarm, backups, queue) comes from the ACLs, so DocScan works as before |
+| `--docscan-confine-check` | `docscan_worker_confine_check` + `confine_lines` | Windows: test of the sandbox (§4.11). After the lockdown the worker tries to read its own exe and `%WINDIR%\win.ini`, write to `%TEMP%` and `C:\ProgramData`, open `HKLM\SOFTWARE`, start `cmd.exe` — **all must be blocked**, integrity untrusted, ≤ 1 privilege; the broker: job object, privileges removed, `cmd.exe` blocked. `RESULT: CONFINED` (exit 0). CI step `confine` on every Windows machine |
+| `--docscan-no-sandbox` | `docscan_no_sandbox` | Windows, diagnostics: parse in this process (only the job object + removed privileges, as before the sandbox) |
+| `--docscan-worker=PIPE` | `docscan_worker_arg` | **internal**: how the broker starts the worker (handle number of the result pipe); never called by hand |
 | `--critical-rules=FILE` | `critical_rules` | third pass: the E5Search rules (a separate set, compiled at start), matched against the document **text** (§15) |
 | `--critical-out=FILE` | `critical_out_utf8` | the queue: a match → one JSON line (schema 2.0) appended to FILE; `--critical-rules` without it is an error |
 | `--critical-chunk=SIZE,OVERLAP` | `critical_chunk_size/overlap` | fragment size (default 700,120; limits 200..1500 and 0..size/2); rule `meta` takes priority |
@@ -507,6 +511,42 @@ Every function is described in `CODE-GUIDE.md` §4.11 (Ukrainian).
 | `docscan_critical_json` | `critical.c` | One JSON line (schema 2.0): `document` (name, format, size_bytes, sha256, path), `metadata` (author, dates, `source`, `received_at`, `yara_matches`), `text_info`, `fragments[]`. |
 | `docscan_sha256_hex` | `critical.c` | SHA-256 of the file (own implementation). |
 | `docscan_cfb_get_stream` / `docscan_cfb_has_stream` | `cfb.c` | One CFB stream by name (up to 64 MB) / whether it exists — for the legacy-format text. |
+
+### 4.11 Sandbox (Windows): `cli/docscan_sandbox.c`
+
+The watcher runs `yara64` as SYSTEM. If a malicious document exploited a parser bug, its code would run
+with SYSTEM rights. So on Windows **the same `yara64.exe`** runs in two roles (task 3121, step 4):
+
+```
+watcher ── yara64 --docscan-json [--docscan-disarm ...] file         ← the same call as before
+             BROKER (SYSTEM): parses nothing
+               1. starts itself: yara64 --docscan-worker=<pipe> <the same arguments>
+                    WORKER: lockdown token, job object
+                      while the main thread still impersonates a normal token: rules, file (open + map into memory)
+                      RevertToSelf → no access to anything from here on
+                      module, rules, second pass, text, disarm plan — in memory
+                      stdout/stderr (JSON) → broker → watcher;  records 'X' 'C' 'D' → result pipe
+               2. records: 'X' → the --docscan-extract file, 'C' → append to --critical-out,
+                           'D' → docscan_disarm_apply (backup / replace / delete) + the docscan-disarm: line
+```
+
+| What | How |
+|---|---|
+| **Worker token** (lockdown) | `CreateRestrictedToken`: the user and every group deny-only, the NULL SID as the only restricting SID (any access check fails), `DISABLE_MAX_PRIVILEGE` (only `SeChangeNotify` stays); the worker lowers its own integrity level to **untrusted** |
+| **Worker start** | `CreateProcessAsUserW` (suspended) → job object (1 active process, UI limits, `KILL_ON_JOB_CLOSE`) → `SetThreadToken` on the main thread with the "initial" token (restricted but with the broker's access: Windows lets a restricted process impersonate only a restricted token) → `ResumeThread`. So the worker loads its DLLs and rules and opens the file; then `RevertToSelf()` and a check that it no longer impersonates |
+| **What the worker inherits** | exactly 4 handles (`PROC_THREAD_ATTRIBUTE_HANDLE_LIST`): `NUL` as stdin, the stdout / stderr / result pipes |
+| **The file** | mapped into memory before the lockdown (`CreateFileMapping`); scan — `yr_scanner_scan_mem`, the THOR variables (`filetype`) from the first bytes, the file dates for the third pass from the handle |
+| **Warm-up** | before the lockdown the worker runs one rule with `hash.md5/sha1/sha256/crc32`: OpenSSL initialises lazily (providers, configuration) — after the lockdown that could fail silently |
+| **`user32.dll`** | `yara64.exe` imports it only through OpenSSL (`MessageBoxW`, `GetProcessWindowStation` — fatal errors); `yara.vcxproj` has `/DELAYLOAD:user32.dll` so it is not loaded at start: a lockdown process has no access to the window station |
+| **Broker** | after starting the worker applies `docscan_confine()` to itself (job object with 1 process, privileges removed); waits for the worker (timeout `--timeout` + 30 s, at most 630 s — then `TerminateJobObject`) |
+| **File swap protection** | the broker records the file's size and modification time before starting the worker; if the file changed before the disarm, nothing is touched, action `failed:changed` (the watcher retries) |
+| **Worker failure** | the NTSTATUS code is passed on as is (`error: docscan worker crashed (0x…)`), no JSON → the watcher records `ERROR`, as before on a crash |
+| **No sandbox** | a folder or a file list, `--docscan-no-sandbox`, the worker did not start (`docscan-sandbox: the worker could not be started … - scanning in-process` on stderr) → parsed in this process with `docscan_confine()`. `--docscan-confine-check` then says `NOT CONFINED` (CI red) |
+
+The interface for the watcher is unchanged: the same command line, the same lines (`{json}`, `docscan-disarm: … -> …`,
+`docscan-critical: queued …`, `error…`). The cost is one more process per file (tens of ms). Checked in CI: the `confine`
+step and every Windows step (documents with disarm, hostile, corpus, malware) — they go through the sandbox, and the corpus
+verdicts must match the Mac (no sandbox there) exactly.
 
 ## 5. Behaviour: how a scan runs
 
@@ -640,8 +680,8 @@ PDF: 2 HIGHs on pdf.js test files made exactly for `/Launch` and `launchURL` —
 | `rules/docscan-policy.yar` | policy | `import "docscan"` + the `DS_*` rules |
 | `rules/docscan.yar` | our detection only | `include "docscan-policy.yar"` |
 | `rules/docscan-index.yar` | **full scan** (watcher, run_tests) | `include "docscan-policy.yar"` + `include "file-index.yar"` |
-| `rules/file-index.yar` | vendor rules (**generated**) | 1365 files, 5594 rules: `general/` (signature-base), `general/elastic/` (Elastic protections-artifacts, Windows/Multi), `general/bartblaze/`, `general/inquest/`, `maldoc/signature-base/`, `maldoc/community/`, `maldoc/bartblaze/`, `maldoc/inquest/`, `maldoc/ditekshen/` + `maldoc/vba_plaintext.yar` |
-| `rules/general/**`, `rules/maldoc/**` (except `vba_plaintext.yar`) | vendor rules (**generated**, do not edit) | signature-base + Elastic + Yara-Rules + bartblaze + InQuest, filtered per rule |
+| `rules/file-index.yar` | vendor rules (**generated**) | 1654 files, 8068 rules: `general/` (signature-base; ReversingLabs `*.yara`; YARA-Forge `yara-rules-core.yar`), `general/elastic/` (Elastic protections-artifacts, Windows/Multi), `general/bartblaze/`, `general/inquest/`, `maldoc/signature-base/`, `maldoc/community/`, `maldoc/bartblaze/`, `maldoc/inquest/`, `maldoc/ditekshen/` + `maldoc/vba_plaintext.yar` |
+| `rules/general/**`, `rules/maldoc/**` (except `vba_plaintext.yar`) | vendor rules (**generated**, do not edit) | signature-base + Elastic + Yara-Rules + bartblaze + InQuest + ditekSHen + ReversingLabs + YARA-Forge, filtered per rule |
 | `rules/maldoc/vba_plaintext.yar` | our rules for decompressed VBA | edited by hand |
 | `rules/tools/build_vendor_rules.py` | generator | pinned sources, filter, renames, tags, compile check |
 | `rules/tools/vendor-selection.txt` | which source files are used | `<dir> <source> <path>` |
@@ -652,8 +692,14 @@ PDF: 2 HIGHs on pdf.js test files made exactly for `/Launch` and `launchURL` —
 **How the vendor set is built** (`python3 rules/tools/build_vendor_rules.py [--fetch]`):
 1. Sources live in `docscan-project/vendor-sources/` (not in git), commits pinned in `SOURCES`:
    Neo23x0/signature-base, Yara-Rules/rules, elastic/protections-artifacts, bartblaze/Yara-rules,
-   InQuest/yara-rules, ditekshen/detection (**we do not write our own rules — only ready public ones**);
-   `--fetch` clones/checks them out.
+   InQuest/yara-rules, ditekshen/detection, reversinglabs/reversinglabs-yara-rules; YARA-Forge is not a git
+   clone but a pinned release (`release:20261108`, the `core` package zip) (**we do not write our own rules —
+   only ready public ones**); `--fetch` clones/checks them out.
+   **YARA-Forge** bundles rules from dozens of repositories. Only rules from repositories in `FORGE_SOURCES`
+   are taken (checked by the `source_url` meta, `forge_reason`): permissive licence and not already a source
+   here (SEKOIA, Mandiant, Volexity, CAPEv2, Chronicle, ESET, Trellix ATR, WithSecure, elceef, cod3nym, craiu,
+   dr4k0nia, Synacktiv, deadbits). The rest (signature-base, Elastic, ditekSHen… — already here; no licence)
+   is dropped with a reason in the report;
 2. Files from `vendor-selection.txt` are taken; every rule is checked on its own:
    - **dropped** if it cannot fire on a Windows workstation: the condition requires ELF / Mach-O /
      Java `.class`, Android, a rule named `LNX_`/`ESXi`/`_SH_`/`_PY_` without a file-type check, PHP/JSP/ASPX
@@ -718,6 +764,24 @@ is unique; old, ineffective and non-Windows rules go. Was 7,239 rules, now **5,5
 | false / ineffective on a Windows 10 workstation (whole disk, incl. `C:\Users`) | 3 | InQuest `PE.rule` (any PE), `Embedded_PE.rule` (555 .NET images), `ClamAV_Emotet_String_Aggregrate.rule` (`Microsoft.CSharp.dll`) |
 
 Every dropped rule with its reason is in `rules/tools/vendor-report.md`. The 23-sample regression is unchanged.
+
+**Step 5 (2026-11-13) — ReversingLabs and YARA-Forge.** Added reversinglabs-yara-rules (MIT; 288 files,
+1464 rules; PE families, .NET backdoors and ransomware, blocklisted certificates) and YARA-Forge core
+(1258 rules from 14 sources, see above). Total: **8068 rules** (was 5594). Checks:
+
+| Set | Result |
+|---|---|
+| 7531 legitimate files (POI, Tika, oletools, pdf.js, LNK, RTF, plaso) | DocScan decisions unchanged; **0** matches of rules from the new sources |
+| malware: miner, EICAR, theZoo, InQuest, MalwareBazaar — 949 samples | **437** detected (before the new sources: 296 of the old set; Bazaar: xls/xlsm 20/20, lnk 19/20, docm 18/20, doc 17/20, zip 15/20, rtf 11/15, one 7/10; exe 3/25, dll 3/10; iso/pdf/vbs/msi/xll — 0) |
+| speed | compile < 1 s; corpus of 7531 files — 70 s on the Mac (parallel) |
+
+The new rules add most on PE and in the second pass (ConfuserEx/Eazfuscator obfuscators, PowerShell Empire
+in OneNote, WannaCry, TeslaCrypt, Raccoon); documents were already caught by the policy and the old sources.
+Weak spots — plain PE, scripts (vbs/js/ps1), iso/msi/pdf: the limit of public rules; we write no signatures.
+Two long-standing second-pass (document parts) false positives were found and put in `DROP`:
+`INDICATOR_OLE_RemoteTemplate` (ditekSHen: looks for its strings anywhere in `.rels`, so a local embedded
+object + any hyperlink matched; the policy rule `DS_EXTERNAL_OLE` does the correct check) and
+`Brooxml_Hunting` (signature-base, "hunting": matched every OOXML embedded as an OLE object).
 
 **Step 4 (2026-11-05) — techniques in documents.** Ready rules: ditekSHen/detection `indicator_office.yar`
 (BSD-2-Clause; ActiveX, Equation, files embedded in RTF/OLE, Excel 4.0, remote templates) plus what was there:
@@ -1356,7 +1420,11 @@ Upstream will not accept such a module: YARA is in maintenance mode and new work
 **Licensing:** the fork is under YARA's BSD-3-Clause (`COPYING`); miniz — public domain / MIT;
 `rules/general/` and `rules/maldoc/signature-base/` — Detection Rule License 1.1 (a few rules are
 CC BY 4.0 or Volexity); `rules/general/elastic/` — Elastic License 2.0; `rules/maldoc/community/` — GNU GPLv2;
-`rules/*/bartblaze/`, `rules/*/inquest/` — MIT; `rules/maldoc/ditekshen/` — BSD-2-Clause. License texts — `rules/LICENSE-*`. Do not remove rule headers or the
+`rules/*/bartblaze/`, `rules/*/inquest/` — MIT; `rules/maldoc/ditekshen/` — BSD-2-Clause;
+`rules/general/*.yara` (ReversingLabs) — MIT; `rules/general/yara-rules-core.yar` (YARA-Forge) — the licence
+of each rule is in its `meta` (`license_url`): DRL 1.1 (SEKOIA, cod3nym, dr4k0nia, Synacktiv), BSD-2-Clause
+(Mandiant, Volexity, ESET, WithSecure), Apache-2.0 (Chronicle, Trellix ATR), GPL-3.0 (CAPEv2, craiu), MIT
+(elceef), Unlicense (deadbits); all texts — `rules/LICENSE-yara-forge`. License texts — `rules/LICENSE-*`. Do not remove rule headers or the
 `license` meta field.
 
 ---
