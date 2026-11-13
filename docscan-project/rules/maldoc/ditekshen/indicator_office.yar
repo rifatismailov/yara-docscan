@@ -613,19 +613,6 @@ rule INDICATOR_OLE_Suspicious_MITRE_T1117 : docscan_doc {
         uint16(0) == 0xcfd0 and 2 of them
 }
 
-rule INDICATOR_OLE_RemoteTemplate : docscan_doc {
-    meta:
-        description = "Detects XML relations where an OLE object is refrencing an external target in dropper OOXML documents"
-        author = "ditekSHen"
-    strings:
-        $olerel = "relationships/oleObject" ascii
-        $target1 = "Target=\"http" ascii
-        $target2 = "Target=\"file" ascii
-        $mode = "TargetMode=\"External" ascii
-    condition:
-        $olerel and $mode and 1 of ($target*)
-}
-
 rule INDICATOR_PPT_MasterMana : docscan_doc {
     meta:
         description = "Detects known malicious pattern (MasterMana) in PowerPoint documents."

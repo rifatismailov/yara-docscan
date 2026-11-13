@@ -271,6 +271,7 @@ def gen():
     created += gen_objects()
     created += gen_vba_projects()
     created += gen_fp_regressions()
+    created += gen_archives()
 
     return created
 
@@ -590,6 +591,54 @@ def gen_fp_regressions():
     for name in ("encrypted.docx", "encrypted_macro.xlsm"):
         open(os.path.join(OUT, name), "wb").write(enc)
         out.append(name)
+    return out
+
+# ---------- plain ZIP archives (phishing attachments) ----------
+def write_zip(name, members, encrypted=False):
+    """members: {name: bytes}. encrypted=True sets the 'encrypted' flag (bit 0) in every local and central
+    header - what the scanner looks at; the content itself stays plain (the test needs only the flag)."""
+    p = os.path.join(OUT, name)
+    with zipfile.ZipFile(p, "w", zipfile.ZIP_DEFLATED) as z:
+        for n, data in members.items():
+            z.writestr(n, data)
+    if encrypted:
+        b = bytearray(open(p, "rb").read())
+        for sig, off in ((b"PK\x03\x04", 6), (b"PK\x01\x02", 8)):
+            i = b.find(sig)
+            while i >= 0:
+                b[i + off] |= 0x01
+                i = b.find(sig, i + 4)
+        open(p, "wb").write(bytes(b))
+    return name
+
+def gen_archives():
+    out = []
+    gen = OUT
+    docm = open(os.path.join(gen, "macro_suspicious.docm"), "rb").read()
+    lnk = open(os.path.join(gen, "lnk_lolbin.lnk"), "rb").read()
+    report = open(os.path.join(gen, "macro_pike_report.xls"), "rb").read()
+    readme = b"Invoice documents. DocScan benign test archive.\r\n"
+    # 31. an attachment archive with a macro document that runs programs -> HIGH, quarantine of the archive
+    out.append(write_zip("archive_docm.zip", {"Rakhunok_2026.docm": docm, "readme.txt": readme}))
+    # 32. a shortcut with a double extension inside an archive (classic phishing) -> HIGH (ARCHIVE_SCRIPT)
+    out.append(write_zip("archive_lnk.zip", {"Invoice_2026.pdf.lnk": lnk}))
+    # 33. a program inside an archive -> MEDIUM (ARCHIVE_EXECUTABLE); the "exe" is a text stub
+    out.append(write_zip("archive_exe.zip", {"setup.exe": b"MZ DocScan inert stub, not a program\r\n", "readme.txt": readme}))
+    # 34. an ordinary archive with a business report (PivotTable macro) -> INFO
+    out.append(write_zip("archive_clean.zip", {"report.xls": report, "readme.txt": readme}))
+    # 35. a password-protected archive -> INFO (ARCHIVE_ENCRYPTED)
+    out.append(write_zip("archive_encrypted.zip", {"documents.txt": readme}, encrypted=True))
+    # 36. a deliberately malformed archive with a shortcut (scanners give up, the names are still in the
+    #     central directory): broken local header + wrong central-directory offset -> HIGH (ARCHIVE_SCRIPT,
+    #     ZIP_UNREADABLE), quarantine
+    write_zip("archive_broken.zip", {"Invoice_2026.pdf.lnk": lnk})
+    p = os.path.join(OUT, "archive_broken.zip")
+    b = bytearray(open(p, "rb").read())
+    b[0:4] = b"PK\x03\x00"
+    e = b.rfind(b"PK\x05\x06")
+    struct.pack_into("<I", b, e + 16, struct.unpack("<I", b[e + 16:e + 20])[0] + 7)
+    open(p, "wb").write(bytes(b))
+    out.append("archive_broken.zip")
     return out
 
 # ---------- minimal LNK ----------

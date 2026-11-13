@@ -22,6 +22,9 @@
 #define DOCSCAN_MAX_PARTS    64                   // parts handed to the 2nd (vendor) scan
 #define DOCSCAN_PART_MAX     (8u * 1024 * 1024)   // per part
 #define DOCSCAN_PARTS_BUDGET (32u * 1024 * 1024)  // all parts of one document
+#define DOCSCAN_MAX_ARCHIVE      1024                  // archive entries listed as facts
+#define DOCSCAN_MAX_ARCHIVE_DOCS 32                    // documents inside an archive that are inspected
+#define DOCSCAN_ARCHIVE_BUDGET   (128u * 1024 * 1024)  // bytes extracted from one archive for inspection
 
 typedef struct
 {
@@ -35,6 +38,13 @@ typedef struct
   char name[256];
   uint64_t size;  // uncompressed size from the ZIP header
 } docscan_entry_t;
+
+typedef struct
+{
+  char name[256];   // path inside the archive
+  uint64_t size;    // uncompressed size from the ZIP header
+  int encrypted;    // password-protected entry: its content cannot be read
+} docscan_archive_entry_t;
 
 typedef struct
 {
@@ -93,6 +103,17 @@ typedef struct
   int encrypted;            // password-encrypted Office document: the content (macros, links,
                             // objects) cannot be inspected (OOXML EncryptedPackage, .doc fEncrypted,
                             // .xls FILEPASS, .ppt EncryptedSummary)                   (fact)
+
+  // --- generic ZIP archive (not Office / OpenDocument), first level only ---
+  int is_archive;           // the file is a plain ZIP archive                         (fact)
+  int archive_depth;        // 0 — the file itself; 1 — inspecting a document inside an archive
+  docscan_archive_entry_t archive_entries[DOCSCAN_MAX_ARCHIVE];
+  int n_archive_entries;
+  int archive_truncated;    // more entries than DOCSCAN_MAX_ARCHIVE
+  int archive_encrypted;    // number of password-protected entries
+  int zip_unreadable;       // a ZIP ("PK") that could not be opened: content not inspected  (fact)
+  char archive_docs[DOCSCAN_MAX_ARCHIVE_DOCS][256];  // documents inside that were inspected
+  int n_archive_docs;
 
   // --- parts for the second scan (see docscan_part_t) ---
   docscan_part_t parts[DOCSCAN_MAX_PARTS];

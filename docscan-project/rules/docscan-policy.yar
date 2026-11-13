@@ -324,6 +324,81 @@ rule DS_MACRO_NETWORK
     for any l in docscan.vba_lines : (l matches /\b(XMLHTTP|ServerXMLHTTP|WinHttp|InternetOpen|Net\.WebClient)\b/i)
 }
 
+// ============================== ZIP archives =================================
+// docscan.is_archive = a plain ZIP (not Office / OpenDocument). docscan.archive_entries[] = its first-level
+// files (name, size, encrypted). The documents inside are inspected by the module and their facts are
+// merged into this result, so every document rule (macro, DDE, remote template, LNK...) also fires for a
+// document inside an archive. Disarm of an archive = quarantine of the whole archive.
+
+// Classic phishing: an attachment / download whose archive holds a shortcut or a script, or a file with
+// a double extension ("invoice.pdf.exe").
+rule DS_ARCHIVE_SCRIPT
+{
+  meta:
+    severity = "HIGH"
+    text     = "Архів містить ярлик або скрипт (lnk/js/vbs/hta/wsf/scr…) чи файл з подвійним розширенням — класичний фішинг"
+    finding  = "ARCHIVE_SCRIPT"
+    disarm   = "quarantine"
+    mitre    = "T1566.001"
+  condition:
+    docscan.is_archive == 1 and
+    for any e in docscan.archive_entries : (
+      e.name matches /\.(lnk|url|js|jse|vbs|vbe|wsf|wsh|hta|scr|pif|cpl|msc|chm|xll|reg|appref-ms|library-ms|searchConnector-ms)$/i or
+      e.name matches /\.(pdf|docx?|xlsx?|pptx?|rtf|txt|jpe?g|png|zip|rar)[ \t._-]*\.(exe|scr|com|pif|bat|cmd|lnk|js|vbs)$/i
+    )
+}
+
+// Programs, installers, disk images inside an archive. Software is often shipped in a zip too -> MEDIUM.
+rule DS_ARCHIVE_EXECUTABLE
+{
+  meta:
+    severity = "MEDIUM"
+    text     = "Архів містить програму, інсталятор чи образ диска (exe/msi/bat/ps1/iso/img/vhd…)"
+    finding  = "ARCHIVE_EXECUTABLE"
+  condition:
+    docscan.is_archive == 1 and
+    for any e in docscan.archive_entries : (
+      e.name matches /\.(exe|dll|msi|msix|appx|bat|cmd|ps1|psm1|jar|iso|img|vhd|vhdx)$/i
+    )
+}
+
+// A ZIP ("PK") that could not be opened: malformed - sometimes on purpose, so that scanners give up while
+// Windows still opens it. The content is not checked (the names, if readable, still feed the rules above).
+// An ARCHIVE (a .zip, or the directory shows it is not an Office package) -> MEDIUM: that is where hiding
+// matters. A damaged Office document (truncated download, broken attachment) -> INFO: a fact, no alert.
+rule DS_ZIP_UNREADABLE
+{
+  meta:
+    severity = "MEDIUM"
+    text     = "Архів не вдалося відкрити (пошкоджений або навмисно зіпсований): вміст не перевірено"
+    finding  = "ZIP_UNREADABLE"
+    mitre    = "T1027"
+  condition:
+    docscan.zip_unreadable == 1 and (docscan.is_archive == 1 or extension == ".zip" or extension == "")
+}
+
+rule DS_ZIP_UNREADABLE_DOC
+{
+  meta:
+    severity = "INFO"
+    text     = "Документ Office пошкоджено (ZIP не відкривається): вміст не перевірено"
+    finding  = "ZIP_UNREADABLE"
+  condition:
+    docscan.zip_unreadable == 1 and docscan.is_archive == 0 and extension != ".zip" and extension != ""
+}
+
+// A password-protected archive: its content cannot be checked (the password usually comes in the text
+// of the e-mail). A fact; the names inside are still visible to the two rules above.
+rule DS_ARCHIVE_ENCRYPTED
+{
+  meta:
+    severity = "INFO"
+    text     = "Архів з паролем: вміст не перевірено (імена файлів видно)"
+    finding  = "ARCHIVE_ENCRYPTED"
+  condition:
+    docscan.is_archive == 1 and docscan.archive_encrypted > 0
+}
+
 // ============================== encryption =================================
 // docscan.encrypted = a password-encrypted Office document: macros, links and objects inside
 // cannot be inspected. Excel opens a file encrypted with its default password ("VelvetSweatshop")

@@ -1,6 +1,12 @@
 # file	verdict	disarm	after   (written by check_verdicts.py --write)
 activex_control.docx	HIGH	detect-only	HIGH
 altchunk.docx	MEDIUM	-	MEDIUM
+archive_broken.zip	HIGH	quarantined	DELETED
+archive_clean.zip	INFO	-	INFO
+archive_docm.zip	HIGH	quarantined	DELETED
+archive_encrypted.zip	INFO	-	INFO
+archive_exe.zip	MEDIUM	-	MEDIUM
+archive_lnk.zip	HIGH	quarantined	DELETED
 dde_auto.docx	HIGH	stripped	INFO
 dde_link.docx	HIGH	stripped	INFO
 dde_split.docx	HIGH	stripped	INFO

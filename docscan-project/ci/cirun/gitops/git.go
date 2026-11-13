@@ -60,6 +60,30 @@ var forbidden = []struct {
 	{regexp.MustCompile(`\b[0-9a-f]{40}\b`), "40-hex token (Forgejo/GitHub)"},
 }
 
+// skipChecks — файли, для яких перевірки рядків (усі або окремі) не застосовуються; розмір файлу
+// перевіряється завжди.
+//   - правила постачальників і їхні ліцензії: їх генерує build_vendor_rules.py із закріплених публічних
+//     джерел (чужий публічний текст). Хеші комітів у source_url, SHA-1 зразків у meta, назви фірм із
+//     сертифікатів, рядки атакувальних інструментів (приватні IP у командах, "OpenProcessToken") там — норма.
+//   - build_vendor_rules.py: закріплені коміти джерел (40 hex) — публічні хеші git, не токени.
+var skipChecks = []struct {
+	path *regexp.Regexp
+	what string // "" — усі перевірки рядків
+}{
+	{regexp.MustCompile(`^docscan-project/rules/(general|maldoc)/|^docscan-project/rules/LICENSE-`), ""},
+	{regexp.MustCompile(`^docscan-project/rules/tools/build_vendor_rules\.py$`), "40-hex token (Forgejo/GitHub)"},
+}
+
+// skipped — чи не застосовувати перевірку what до файлу path.
+func skipped(path, what string) bool {
+	for _, s := range skipChecks {
+		if s.path.MatchString(path) && (s.what == "" || s.what == what) {
+			return true
+		}
+	}
+	return false
+}
+
 // surname — прізвище (розбите на шматки); дозволене лише як частина публічного імені облікового запису.
 var surname = regexp.MustCompile(`(?i)` + "isma" + "ilov")
 
@@ -94,11 +118,11 @@ func SafetyCheck() []string {
 				text = text[:100]
 			}
 			for _, f := range forbidden {
-				if f.rx.MatchString(line) {
+				if !skipped(cur, f.what) && f.rx.MatchString(line) {
 					problems = append(problems, fmt.Sprintf("%s: %s:  %s", cur, f.what, text))
 				}
 			}
-			if internalSurname(line) {
+			if !skipped(cur, "internal host / user name") && internalSurname(line) {
 				problems = append(problems, fmt.Sprintf("%s: internal host / user name:  %s", cur, text))
 			}
 		}

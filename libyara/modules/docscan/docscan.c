@@ -116,6 +116,20 @@ begin_declarations
   declare_integer("xlm_macrosheets");   // Excel 4.0 (XLM) macro sheets
   declare_integer("encrypted");         // password-encrypted Office document (content not inspectable)
 
+  // --- a plain ZIP archive (not Office / OpenDocument): first-level entries; the documents inside are
+  //     inspected and their facts are merged into this result ---
+  declare_integer("is_archive");
+  begin_struct_array("archive_entries");
+    declare_string("name");             //   path inside the archive
+    declare_integer("size");            //   uncompressed size
+    declare_integer("encrypted");       //   1 — password-protected entry
+  end_struct_array("archive_entries");
+  declare_integer("number_of_archive_entries");
+  declare_integer("archive_truncated");
+  declare_integer("archive_encrypted"); // number of password-protected entries
+  declare_integer("zip_unreadable");    // a ZIP that could not be opened (names read from its directory)
+  declare_string("archive_docs");       // documents inside that were inspected, "a.docm; b.lnk"
+
   // --- parts for the second scan (the CLI rescans them with the vendor rules) ---
   begin_struct_array("parts");          // decompressed XML / embeddings / payloads
     declare_string("name");             //   e.g. word/embeddings/oleObject1.bin!invoice.vbs
@@ -234,8 +248,9 @@ int module_load(
     switch (r->type)
     {
     case DOCSCAN_TYPE_OOXML:
-      yr_set_integer(1, module_object, "is_ooxml");
       docscan_inspect_ooxml(data, block->size, r);
+      // a plain ZIP archive is not an Office document
+      yr_set_integer(r->is_archive ? 0 : 1, module_object, "is_ooxml");
       break;
     case DOCSCAN_TYPE_OLE:
       yr_set_integer(1, module_object, "is_ole");
@@ -353,6 +368,27 @@ int module_load(
   yr_set_integer(r->n_altchunks, module_object, "number_of_altchunks");
   yr_set_integer(r->xlm_macrosheets, module_object, "xlm_macrosheets");
   yr_set_integer(r->encrypted, module_object, "encrypted");
+
+  yr_set_integer(r->is_archive, module_object, "is_archive");
+  for (int i = 0; i < r->n_archive_entries; i++)
+  {
+    yr_set_string(r->archive_entries[i].name, module_object, "archive_entries[%i].name", i);
+    yr_set_integer((int64_t) r->archive_entries[i].size, module_object, "archive_entries[%i].size", i);
+    yr_set_integer(r->archive_entries[i].encrypted, module_object, "archive_entries[%i].encrypted", i);
+  }
+  yr_set_integer(r->n_archive_entries, module_object, "number_of_archive_entries");
+  yr_set_integer(r->archive_truncated, module_object, "archive_truncated");
+  yr_set_integer(r->archive_encrypted, module_object, "archive_encrypted");
+  yr_set_integer(r->zip_unreadable, module_object, "zip_unreadable");
+  {
+    char docs[2048] = "";
+    for (int i = 0; i < r->n_archive_docs; i++)
+    {
+      size_t l = strlen(docs);
+      snprintf(docs + l, sizeof(docs) - l, "%s%s", i ? "; " : "", r->archive_docs[i]);
+    }
+    yr_set_string(docs, module_object, "archive_docs");
+  }
 
   for (int i = 0; i < r->n_parts; i++)
   {

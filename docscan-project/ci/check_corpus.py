@@ -6,8 +6,8 @@ relative path, verdict, findings, vendor matches). The run fails only if yara cr
 result for a file - a verdict itself is not judged here: cirun compares the TSVs of all platforms, and any
 difference between macOS / Windows / Linux on the same files is a failure there.
 
-Malware mode (--expect FILE): FILE lists relative paths (one per line, # comments) that MUST get at least
-one vendor rule match - a regression test for the curated vendor rules on real samples. The samples are
+Malware mode (--expect FILE): FILE lists relative paths (one per line, # comments) that MUST be detected -
+a vendor rule match or a MEDIUM / HIGH verdict of the policy; a regression test on real samples. The samples are
 only read, never executed.
 
 The rules are compiled once (yarac, the file externals declared empty), then every file is scanned with
@@ -40,7 +40,12 @@ def scan(yara, compiled, path, timeout):
             d = j.get("docscan") if isinstance(j.get("docscan"), dict) else j
             verdict = d.get("verdict") or j.get("verdict") or "NORESULT"
             findings = ",".join(sorted(d.get("findings") or j.get("findings") or []))
-            vendor = ",".join(sorted(set(d.get("yara_file_matches") or j.get("yara_file_matches") or [])))
+            rules = set(d.get("yara_file_matches") or j.get("yara_file_matches") or [])
+            # second pass: parts of the file (document pieces, files inside an archive)
+            for pm in (d.get("yara_part_matches") or j.get("yara_part_matches") or []):
+                if isinstance(pm, dict):
+                    rules.update(pm.get("rules") or [])
+            vendor = ",".join(sorted(rules))
             return verdict, findings, vendor
     return ("CRASH" if p.returncode not in (0, 1) else "NORESULT"), "", ""
 
@@ -97,9 +102,12 @@ def main():
         got = dict(zip(rel, results))
         for w in want:
             v = got.get(w)
-            if v is None or not v[2]:
+            # detected = a vendor rule matched OR the policy gave MEDIUM / HIGH (documents are often caught
+            # by the policy itself: macro that runs programs, DDE, Equation Editor...)
+            if v is None or not (v[2] or v[0] in ("MEDIUM", "HIGH")):
                 missed.append(w)
-            print("  %-45s %s" % (w, "MISSED" if w in missed else "detected: " + v[2][:90]))
+        for w in missed:
+            print("  MISSED: %s" % w)
         print("expected detections: %d/%d" % (len(want) - len(missed), len(want)))
 
     ok = not bad and not missed

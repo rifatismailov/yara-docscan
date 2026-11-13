@@ -38,7 +38,38 @@ SOURCES = {
                 "922e6a8a24027152935b1a1ec8f07912a57dbf2b"),
     "ditekshen": ("https://github.com/ditekshen/detection.git",
                   "e76c93dcdedff04076380ffc60ea54e45b313635"),
+    # ReversingLabs: Windows malware families (MIT)
+    "reversinglabs": ("https://github.com/reversinglabs/reversinglabs-yara-rules.git",
+                      "e0a0be54aa1e11ccfd6854e4f19e9476f328fd84"),
+    # YARA-Forge: a curated, validated aggregate of public rule sets - a RELEASE zip, not a git repo.
+    # Only the sources in FORGE_SOURCES are taken (the others are already DocScan sources or have no
+    # licence that allows redistribution).
+    "yara-forge": ("https://github.com/YARAHQ/yara-forge/releases/download/20261108/yara-forge-rules-core.zip",
+                   "release:20261108"),
 }
+
+# YARA-Forge sources that are taken (repo of the rule's source_url -> licence). Not taken: signature-base,
+# ditekshen, elastic, bartblaze, InQuest, Yara-Rules (already sources here, maintained upstream) and
+# sources without a licence file or with a non-commercial one (malpedia CC BY-NC-SA, StrangerealIntel,
+# RussianPanda95, HarfangLab, avast, embee-research, SIFalcon, mikesxrs, ...).
+FORGE_SOURCES = {
+    "SEKOIA-IO/Community": "DRL-1.1", "mandiant/red_team_tool_countermeasures": "BSD-2-Clause",
+    "volexity/threat-intel": "BSD-2-Clause", "kevoreilly/CAPEv2": "GPL-3.0", "chronicle/GCTI": "Apache-2.0",
+    "eset/malware-ioc": "BSD-2-Clause", "advanced-threat-research/Yara-Rules": "Apache-2.0",
+    "WithSecureLabs/iocs": "BSD-2-Clause", "elceef/yara-rulz": "MIT", "cod3nym/detection-rules": "DRL-1.1",
+    "craiu/yararules": "GPL-3.0", "dr4k0nia/yara-rules": "DRL-1.1", "synacktiv/synacktiv-rules": "DRL-1.1",
+    "deadbits/yara-rules": "Unlicense",
+}
+_FORGE_SRC = re.compile(r'source_url\s*=\s*"https?://github\.com/([^/"]+/[^/"]+)')
+
+
+def forge_reason(src, r):
+    """YARA-Forge: keep a rule only if it comes from a source in FORGE_SOURCES (None = keep)."""
+    if src != "yara-forge":
+        return None
+    m = _FORGE_SRC.search(r['text'][r['hoff']:])
+    repo = m.group(1) if m else "?"
+    return None if repo in FORGE_SOURCES else f"yara-forge: source {repo} not taken (already a source here / licence)"
 
 # the source's OWN classification of a rule as informational -> docscan_info
 # (bartblaze: meta category = "INFO"; InQuest: meta Severity = "0")
@@ -62,6 +93,13 @@ DROP = {
     "Windows_VulnDriver_Csc_856c8393": "FP: matches the inbox Microsoft driver csc.sys",
     "Windows_VulnDriver_SmSerl64_00319890": "FP: matches the inbox Microsoft driver SmSerl64.sys",
     "Windows_VulnDriver_Ksld_c608656e": "FP: matches KslD.sys of Microsoft Defender (found on a clean workstation)",
+    # FP on clean Office files (Apache POI / Tika test documents): the strings are searched in the whole
+    # .rels part, not in one relationship - a LOCAL embedded object (chart, Excel table) plus any ordinary
+    # hyperlink matches. The policy rule EXTERNAL_OLE checks the same relationship, remote targets only.
+    "INDICATOR_OLE_RemoteTemplate": "FP: local embedded OLE object + any hyperlink in the same .rels (policy EXTERNAL_OLE covers it)",
+    # hunting rule (meta category = "hunting"): an OOXML embedded as an OLE object always has a header in
+    # front, so every embedded docx/pptx seen by the 2nd pass (document parts) matched
+    "Brooxml_Hunting": "FP: hunting rule, matches every OOXML embedded as an OLE object (header in front)",
     # exact duplicates (same strings and condition under another name)
     ("maldocs/Maldoc_Dridex.yar", "PHISH_02Dez2015_dropped_p0o6543f"): "duplicate of signature-base PHISH_02Dez2015_dropped_p0o6543f_1",
     ("maldocs/maldoc_somerules.yar", "office_document_vba"): "duplicate of Contains_VBA_macro_code",
@@ -240,6 +278,17 @@ def rename(rule_text, hoff, old, new):
 def ensure_sources(vendor, fetch):
     for name, (url, commit) in SOURCES.items():
         d = vendor / name
+        if commit.startswith("release:"):   # a release zip: unpacked into vendor/<name>, pinned by tag
+            mark = d / ".release"
+            if fetch and (not mark.exists() or mark.read_text().strip() != commit):
+                d.mkdir(parents=True, exist_ok=True)
+                z = d / os.path.basename(url)
+                subprocess.run(["curl", "-fsSL", "-o", str(z), url], check=True)
+                subprocess.run(["unzip", "-o", "-q", str(z), "-d", str(d)], check=True)
+                mark.write_text(commit)
+            if not mark.exists() or mark.read_text().strip() != commit:
+                sys.exit(f"{name}: release {commit} not in {d} (use --fetch)")
+            continue
         if not d.exists():
             if not fetch:
                 sys.exit(f"missing {d} (run with --fetch to clone {url})")
@@ -270,7 +319,8 @@ def build(vendor, out, yarac):
         for r in rules:
             why = None
             if not r['private']:
-                why = DROP.get(r['name']) or DROP.get((rel, r['name'])) or platform_reason(fname, r) or old_reason(r)
+                why = (DROP.get(r['name']) or DROP.get((rel, r['name'])) or forge_reason(src, r)
+                       or platform_reason(fname, r) or old_reason(r))
             r['drop'] = why
         kept_conds = " ".join(r['cond'] for r in rules if not r['drop'])
         for r in rules:
@@ -314,10 +364,21 @@ def build(vendor, out, yarac):
         sys.exit("rule name clashes (different rules, same name) — add RENAME entries:\n  " + "\n  ".join(clashes))
     # licenses of the sources
     for src, lic in (("signature-base", "LICENSE"), ("yara-rules-community", "LICENSE"), ("protections-artifacts", "LICENSE.txt"),
-                     ("bartblaze", "LICENSE"), ("inquest", "LICENSE"), ("ditekshen", "LICENSE.txt")):
+                     ("bartblaze", "LICENSE"), ("inquest", "LICENSE"), ("ditekshen", "LICENSE.txt"),
+                     ("reversinglabs", "LICENSE")):
         p = vendor / src / lic
         if p.exists():
             shutil.copy(p, out / f"LICENSE-{src}")
+    # YARA-Forge: one file with the licence of every source that is taken (DRL / BSD ask to keep it)
+    lic_dir = vendor / "yara-forge" / "licenses"
+    parts = ["Rules in general/yara-rules-core.yar come from YARA-Forge (https://yarahq.github.io/), release "
+             + SOURCES["yara-forge"][1].split(":", 1)[1] + ". Each rule keeps its author / reference / source_url "
+             "meta. Only these sources are taken; their licences follow.\n"]
+    for repo, spdx in sorted(FORGE_SOURCES.items()):
+        f = lic_dir / (repo.replace("/", "_") + ".txt")
+        parts.append("=" * 78 + f"\n{repo} ({spdx}) - https://github.com/{repo}\n" + "=" * 78 + "\n"
+                     + (f.read_text(errors="replace") if f.exists() else f"see https://github.com/{repo}\n"))
+    (out / "LICENSE-yara-forge").write_text("\n".join(parts), encoding="utf-8")
     idx = ["// GENERATED by rules/tools/build_vendor_rules.py from tools/vendor-selection.txt — do not edit.",
            "// Vendor rules (no meta.severity) for docscan: applied to the raw file -> yara_file_matches,",
            "// and to decompressed VBA -> yara_matches. Rules tagged docscan_info -> yara_info_matches",

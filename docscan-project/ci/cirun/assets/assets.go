@@ -39,7 +39,7 @@ var docExt = map[string]bool{}
 func init() {
 	for _, e := range strings.Fields(`.doc .dot .docx .docm .dotx .dotm .xls .xlt .xlsx .xlsm .xltx .xltm .xlsb
 		.xla .xlam .ppt .pps .pot .pptx .pptm .potx .potm .ppsx .ppsm .ppa .ppam .rtf .pdf .lnk .one .iqy .slk
-		.odt .ods .odp`) {
+		.odt .ods .odp .zip`) {
 		docExt[e] = true
 	}
 }

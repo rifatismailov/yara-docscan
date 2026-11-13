@@ -304,7 +304,11 @@ function Scan-File([string]$path, [string]$evt) {
       # vendor rules see the bytes BEFORE disarm: yara collects the matches before --docscan-disarm
       # the same content goes to the E5Search queue once (disarm retries / DisarmPending rescan it)
       $critNew = -not $CritQueued.ContainsKey($rec.docfile.sha256)
-      $ds = Invoke-Scan $path ((-not $NoDisarm) -and $cat -eq "document") ($cat -eq "document") $critNew
+      # a .zip is a "general" file, but the docscan module inspects the documents inside it: disarm
+      # (= quarantine of the whole archive when a document inside is dangerous) and the macro copy apply
+      # to it too; the critical-information check does not (it is for documents themselves)
+      $isZip = [IO.Path]::GetExtension($path).ToLower() -eq ".zip"
+      $ds = Invoke-Scan $path ((-not $NoDisarm) -and ($cat -eq "document" -or $isZip)) ($cat -eq "document" -or $isZip) ($critNew -and $cat -eq "document")
       $rec.errors += $ds.errors
       $rec.critical = $ds.critical
       if ($ds.critical) { $CritQueued[$rec.docfile.sha256] = 1 }
@@ -317,8 +321,9 @@ function Scan-File([string]$path, [string]$evt) {
         $rec.disarm  = $ds.disarm
         $rec.yara_file_matches = @($ds.docscan.yara_file_matches)
         # document rules (tag docscan_doc) - detection only for documents; the same for the second
-        # pass: matches in the extracted document parts and in the macro code
-        if ($cat -eq "document") {
+        # pass: matches in the extracted document parts and in the macro code. A .zip too: its parts are
+        # the files inside the archive (an exe or a miner packed into a zip is found only there)
+        if ($cat -eq "document" -or $isZip) {
           $rec.yara_file_matches += @($ds.docscan.yara_doc_matches | ? { $_ })
           foreach ($pm in @($ds.docscan.yara_part_matches)) { if ($pm) { $rec.yara_file_matches += @($pm.rules) } }
           $rec.yara_file_matches += @($ds.docscan.yara_matches | ? { $_ })

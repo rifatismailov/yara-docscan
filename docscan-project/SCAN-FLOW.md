@@ -282,6 +282,10 @@ docscan-project/
 | `altchunks[]` / `number_of_altchunks` | string array / integer | цілі зв'язків altChunk (`aFChunk`) |
 | `xlm_macrosheets` | integer | макроаркуші Excel 4.0 |
 | `encrypted` | integer | документ зашифровано паролем: OOXML `EncryptedPackage`, `.doc` `fEncrypted`, `.xls` `FILEPASS`, `.ppt` `EncryptedSummary` |
+| `is_archive` | integer | звичайний ZIP-архів (не Office і не OpenDocument): документи першого рівня всередині розбираються тими самими перевірками, їхні факти додаються до результату архіву (тож спрацьовують усі правила документів); `ftype: zip`, лікування — карантин усього архіву |
+| `archive_entries[]` | struct: `name`, `size`, `encrypted` | файли першого рівня архіву (до 1024) |
+| `archive_encrypted`, `archive_docs` | integer, string | кількість частин з паролем; документи всередині, які розібрано (`a.docm; b.lnk`, також у `evidence.archive_docs`) |
+| `zip_unreadable` | integer | ZIP не відкривається (пошкоджений або навмисно зіпсований); імена тоді читаються прямо з центрального каталогу, тож правила за іменами працюють. Файли архіву, що не є документами (exe, dll, скрипти…), ідуть у `parts` — вендорні правила бачать їхні розпаковані байти (напр. майнер чи EICAR у zip; до 8 МБ на файл) |
 | `vba_code`, `lnk_target`, `lnk_args` | string | текст макросу; ціль і аргументи LNK |
 
 Приклад у правилі: `for any rel in docscan.external_rels : (rel.target matches /^https?:/i)`.
@@ -588,6 +592,11 @@ MS-OVBA. Ланцюжок: **CFB → потоки → пошук контейн�
 | `DS_RTF_OBJUPDATE` | RTF і справжнє керувальне слово `\objupdate` (`rtf_objupdate`) | HIGH | `rtf_objupdate` |
 | `DS_ENCRYPTED` | документ зашифровано паролем | INFO | — |
 | `DS_ENCRYPTED_MACRO` | зашифровано **і** ім'я з макросами (docm/xlsm/xlsb/pptm/xlam…) або видно VBA-проєкт: макрос не перевірено, Excel відкриває стандартний пароль (VelvetSweatshop) без запиту (T1027) | MEDIUM | — |
+| `DS_ARCHIVE_SCRIPT` | в архіві ярлик чи скрипт (lnk/url/js/jse/vbs/vbe/wsf/hta/scr/cpl/msc/chm/xll…) або подвійне розширення (`invoice.pdf.exe`) (T1566.001) | HIGH | `quarantine` (весь архів) |
+| `DS_ARCHIVE_EXECUTABLE` | в архіві програма, інсталятор чи образ (exe/dll/msi/bat/cmd/ps1/jar/iso/img/vhd) | MEDIUM | — |
+| `DS_ARCHIVE_ENCRYPTED` | архів з паролем: вміст не перевірено, імена видно | INFO | — |
+| `DS_ZIP_UNREADABLE` | архів не відкривається (`.zip` або в каталозі не пакет Office): вміст не перевірено (T1027) | MEDIUM | — |
+| `DS_ZIP_UNREADABLE_DOC` | пошкоджений документ Office (недокачаний тощо) | INFO | — |
 | `DS_PDF_LAUNCH` | `/Launch` | HIGH | `quarantine` |
 | `DS_PDF_JS_AUTO` / `DS_PDF_JS` | `/JavaScript`/`/JS` з небезпечним API / без | HIGH (`quarantine`) / MEDIUM | |
 | `DS_PDF_OPENACTION` | `/OpenAction`/`/AA` без JS (звичайно — стартова сторінка/масштаб) | INFO | — |
@@ -1308,7 +1317,7 @@ yara_descriptions[{rule, description}], details[]}`. В індексі все ц
 - Документ, який редагують, сканується не частіше ніж раз на `-RescanCooldown`; між сканами проміжні версії
   не перевіряються (перевіряється остання).
 - Шумні індикатори (`invalid_trailer_structure`, `invalid_xref_numbers`, `powershell`, `Contains_VBA_macro_code`, …) мають тег `docscan_info` → `yara_info_matches`, вердикт не змінюють (на 476 легітимних локальних документах: 25 хибних MEDIUM → 0). `DS_PDF_OPENACTION` без JS — INFO (усі 35 таких були легітимні).
-- Архіви скануються як є, без розпакування.
+- ZIP: розбирається лише перший рівень (архів в архіві не відкривається), до 32 документів усередині, кожен ≤ 64 МБ, разом ≤ 128 МБ; не-документи всередині — вендорними правилами (до 8 МБ на файл, 32 МБ разом); зашифровані частини не читаються (лише імена). RAR, 7z, ISO/IMG, VHD — лише вендорні правила на сам файл, без розпакування.
 - Переповнення буфера FileSystemWatcher (тисячі файлів разом) → події втрачаються; вотчер через 60 с
   доскановує файли, змінені з того моменту (обхід `-WatchPath` — на великих профілях займає час).
 - `.odt/.ods/.odp`, `.scf`, `.library-ms`, `.chm`, `.mht/.mhtml` на шкідливе не скануються — готових правил немає

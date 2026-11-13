@@ -89,3 +89,56 @@ void docscan_zip_free(void* p)
 {
   mz_free(p);
 }
+
+int docscan_zip_entry_encrypted(docscan_zip* z, int i)
+{
+  if (z == NULL || i < 0)
+    return 0;
+  return mz_zip_reader_is_file_encrypted(&z->ar, (mz_uint) i) ? 1 : 0;
+}
+
+static uint32_t rd16(const uint8_t* p) { return (uint32_t) p[0] | ((uint32_t) p[1] << 8); }
+static uint32_t rd32(const uint8_t* p) { return rd16(p) | (rd16(p + 2) << 16); }
+
+int docscan_zip_central_names(const uint8_t* data, size_t size, docscan_zip_name_cb cb, void* ud)
+{
+  if (data == NULL || size < 22)
+    return 0;
+  // end-of-central-directory record: in the last 22 + 65535 (max comment) bytes
+  size_t lo = size > 22 + 65535 ? size - 22 - 65535 : 0;
+  size_t e = size - 22;
+  for (;; e--)
+  {
+    if (data[e] == 'P' && data[e + 1] == 'K' && data[e + 2] == 5 && data[e + 3] == 6)
+      break;
+    if (e == lo)
+      return 0;
+  }
+  uint32_t total = rd16(data + e + 10), cd_size = rd32(data + e + 12), cd_off = rd32(data + e + 16);
+  // the central directory ends where the EOCD starts: trust that over a (possibly wrong) stored offset
+  size_t start = cd_size <= e ? e - cd_size : cd_off;
+  if (start + 4 > e || data[start] != 'P' || data[start + 1] != 'K' || data[start + 2] != 1)
+    start = cd_off;
+  int n = 0;
+  size_t p = start;
+  while (n < (int) total && n < 65535 && p + 46 <= e && data[p] == 'P' && data[p + 1] == 'K' &&
+         data[p + 2] == 1 && data[p + 3] == 2)
+  {
+    uint32_t flags = rd16(data + p + 8);
+    uint32_t usize = rd32(data + p + 24);
+    uint32_t nl = rd16(data + p + 28), xl = rd16(data + p + 30), cl = rd16(data + p + 32);
+    if (p + 46 + nl > e)
+      break;
+    char name[256];
+    size_t l = nl < sizeof(name) - 1 ? nl : sizeof(name) - 1;
+    memcpy(name, data + p + 46, l);
+    name[l] = '\0';
+    for (size_t k = 0; k < l; k++)
+      if (name[k] == '\0')
+        name[k] = '?';  // a NUL inside a name would cut it short
+    cb(name, (int) (flags & 1), usize, ud);
+    n++;
+    p += 46 + (size_t) nl + xl + cl;
+  }
+  return n;
+}

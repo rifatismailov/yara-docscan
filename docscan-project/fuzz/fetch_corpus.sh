@@ -13,7 +13,8 @@
 #   lnk       EricZimmerman/Lnk tests    MIT         ~550 LNK from many Windows versions, incl. Bad/
 #   pylnk     strayge/pylnk examples     LGPL-3.0    a few more LNK variants
 #   tika      Apache Tika test-documents Apache-2.0  OneNote .one, dotm/xlam/pptm/ppsm/potm/xlsb, encrypted
-#                                                    Office files, PDFs with JS / attachments
+#                                                    Office files, PDFs with JS / attachments; archives (zip
+#                                                    quine, zip-of-zip, encrypted / malformed zip, rar, 7z...)
 #   oletools  decalage2/oletools tests   BSD-2       DDE, OLE Package exe/lnk, Excel 4.0 macros (xls/xlsb/
 #                                                    xltm/slk), external links, encrypted docs (incl. the
 #                                                    default "VelvetSweatshop" password that opens silently)
@@ -51,5 +52,6 @@ TIKA=tika-parsers/tika-parsers-standard/tika-parsers-standard-modules
 fetch tika   https://github.com/apache/tika.git \
   $TIKA/tika-parser-microsoft-module/src/test/resources/test-documents \
   $TIKA/tika-parser-pdf-module/src/test/resources/test-documents \
-  $TIKA/tika-parser-miscoffice-module/src/test/resources/test-documents
+  $TIKA/tika-parser-miscoffice-module/src/test/resources/test-documents \
+  $TIKA/tika-parser-pkg-module/src/test/resources/test-documents
 fetch oletools https://github.com/decalage2/oletools.git tests/test-data

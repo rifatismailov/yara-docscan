@@ -110,6 +110,7 @@ typedef struct _DOCSCAN_STATE
   char vba_evidence[512];
   char lnk_target[512];
   char lnk_args[512];
+  char archive_docs[1024];   // documents inside a plain ZIP archive that were inspected
   char* vba;                 // copy of docscan.vba_code (Layer-2 re-scan)
   struct ds_part* parts;     // copies of docscan.parts[] (Layer-2 re-scan of document pieces)
   int n_parts;
@@ -1549,13 +1550,17 @@ static void docscan_capture(YR_OBJECT* m, DOCSCAN_STATE* st)
   st->ds.present = 1;
 
   st->ftype = "unknown";
-  if (yr_object_get_integer(m, "is_ooxml") == 1) { st->ftype = "ooxml"; st->ds.type = 1; }
+  // a plain ZIP archive: disarm type 6 = quarantine the whole archive (a document inside a zip is not
+  // cured in place)
+  if (yr_object_get_integer(m, "is_archive") == 1) { st->ftype = "zip"; st->ds.type = 6; }
+  else if (yr_object_get_integer(m, "is_ooxml") == 1) { st->ftype = "ooxml"; st->ds.type = 1; }
   else if (yr_object_get_integer(m, "is_ole") == 1) { st->ftype = "ole"; st->ds.type = 2; }
   else if (yr_object_get_integer(m, "is_rtf") == 1) { st->ftype = "rtf"; st->ds.type = 3; }
   else if (yr_object_get_integer(m, "is_pdf") == 1) { st->ftype = "pdf"; st->ds.type = 4; }
   else if (yr_object_get_integer(m, "is_lnk") == 1) { st->ftype = "lnk"; st->ds.type = 5; }
 
   docscan_copy_string(m, "template_url", st->template_url, sizeof(st->template_url));
+  docscan_copy_string(m, "archive_docs", st->archive_docs, sizeof(st->archive_docs));
   docscan_copy_string(m, "dde_command", st->dde_command, sizeof(st->dde_command));
   docscan_copy_string(m, "vba_evidence", st->vba_evidence, sizeof(st->vba_evidence));
   docscan_copy_string(m, "lnk_target", st->lnk_target, sizeof(st->lnk_target));
@@ -1769,6 +1774,7 @@ static void print_docscan_json(DOCSCAN_STATE* st)
   docscan_json_evidence("vba_evidence", st->vba_evidence, 0, &fe);
   docscan_json_evidence("lnk_target", st->lnk_target, 0, &fe);
   docscan_json_evidence("lnk_args", st->lnk_args, 1, &fe);
+  docscan_json_evidence("archive_docs", st->archive_docs, 0, &fe);
   printf("}");  // close "evidence"
 
   // Layer-2: re-scan the decompressed VBA with the loaded rules.

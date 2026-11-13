@@ -282,6 +282,10 @@ document with junk must not silently hide the interesting part):
 | `altchunks[]` / `number_of_altchunks` | string array / integer | altChunk (`aFChunk`) relationship targets |
 | `xlm_macrosheets` | integer | Excel 4.0 macro sheets |
 | `encrypted` | integer | password-encrypted document: OOXML `EncryptedPackage`, `.doc` `fEncrypted`, `.xls` `FILEPASS`, `.ppt` `EncryptedSummary` |
+| `is_archive` | integer | a plain ZIP archive (not Office, not OpenDocument): the first-level documents inside are inspected by the same checks and their facts are merged into the archive's result (so every document rule fires); `ftype: zip`, disarm = quarantine of the whole archive |
+| `archive_entries[]` | struct: `name`, `size`, `encrypted` | first-level files of the archive (up to 1024) |
+| `archive_encrypted`, `archive_docs` | integer, string | number of password-protected entries; the documents inside that were inspected (`a.docm; b.lnk`, also in `evidence.archive_docs`) |
+| `zip_unreadable` | integer | the ZIP cannot be opened (damaged or malformed on purpose); the names are then read straight from the central directory, so the name rules still work. Files inside an archive that are not documents (exe, dll, scripts…) go to `parts` — the vendor rules see their uncompressed bytes (e.g. a miner or EICAR in a zip; up to 8 MB per file) |
 | `vba_code`, `lnk_target`, `lnk_args` | string | macro source; LNK target and arguments |
 
 Example in a rule: `for any rel in docscan.external_rels : (rel.target matches /^https?:/i)`.
@@ -588,6 +592,11 @@ A policy rule must not be `private` (YARA never reports private rules).
 | `DS_RTF_OBJUPDATE` | RTF and a real `\objupdate` control word (`rtf_objupdate`) | HIGH | `rtf_objupdate` |
 | `DS_ENCRYPTED` | password-encrypted document | INFO | — |
 | `DS_ENCRYPTED_MACRO` | encrypted **and** a macro-enabled name (docm/xlsm/xlsb/pptm/xlam…) or a visible VBA project: the macro is not checked, Excel opens its default password (VelvetSweatshop) without asking (T1027) | MEDIUM | — |
+| `DS_ARCHIVE_SCRIPT` | a shortcut or script in the archive (lnk/url/js/jse/vbs/vbe/wsf/hta/scr/cpl/msc/chm/xll…) or a double extension (`invoice.pdf.exe`) (T1566.001) | HIGH | `quarantine` (the whole archive) |
+| `DS_ARCHIVE_EXECUTABLE` | a program, installer or disk image in the archive (exe/dll/msi/bat/cmd/ps1/jar/iso/img/vhd) | MEDIUM | — |
+| `DS_ARCHIVE_ENCRYPTED` | a password-protected archive: content not checked, names visible | INFO | — |
+| `DS_ZIP_UNREADABLE` | an archive that cannot be opened (`.zip`, or the directory shows no Office package): content not checked (T1027) | MEDIUM | — |
+| `DS_ZIP_UNREADABLE_DOC` | a damaged Office document (truncated download etc.) | INFO | — |
 | `DS_PDF_LAUNCH` | `/Launch` | HIGH | `quarantine` |
 | `DS_PDF_JS_AUTO` / `DS_PDF_JS` | `/JavaScript`/`/JS` with / without a dangerous API | HIGH (`quarantine`) / MEDIUM | |
 | `DS_PDF_OPENACTION` | `/OpenAction`/`/AA` without JS (usually start page/zoom) | INFO | — |
@@ -1306,7 +1315,7 @@ agent's `ossec.log` (`localfile` not picked up).
 - A document being edited is scanned at most once per `-RescanCooldown`; intermediate versions between scans
   are not checked (the latest one is).
 - Noisy indicators (`invalid_trailer_structure`, `invalid_xref_numbers`, `powershell`, `Contains_VBA_macro_code`, …) are tagged `docscan_info` → `yara_info_matches`, no verdict change (on 476 benign local documents: 25 false MEDIUM → 0). `DS_PDF_OPENACTION` without JS is INFO (35 of them were benign).
-- Archives are scanned as-is, not unpacked.
+- ZIP: only the first level is inspected (an archive inside is not opened), up to 32 documents inside, each ≤ 64 MB, ≤ 128 MB in all; non-documents inside — by the vendor rules (up to 8 MB per file, 32 MB in all); encrypted entries are not read (only their names). RAR, 7z, ISO/IMG, VHD — vendor rules on the file itself only, not unpacked.
 - FileSystemWatcher buffer overflow (thousands of files at once) → events are lost; after 60 s the watcher
   rescans files changed since then (walking `-WatchPath` takes a while on big profiles).
 - `.odt/.ods/.odp`, `.scf`, `.library-ms`, `.chm`, `.mht/.mhtml` are not scanned for malware — no ready rules

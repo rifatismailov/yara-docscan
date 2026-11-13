@@ -11,6 +11,7 @@
 */
 
 #include "inspect.h"
+#include "magic.h"
 #include "zip.h"
 #include "rels.h"
 #include "vba.h"
@@ -19,6 +20,17 @@
 #include <ctype.h>
 #include <stdio.h>
 #include <string.h>
+
+static int strncasecmp_portable(const char* a, const char* b, size_t n)
+{
+  for (size_t i = 0; i < n; i++)
+  {
+    int ca = tolower((unsigned char) a[i]), cb = tolower((unsigned char) b[i]);
+    if (ca != cb || ca == 0)
+      return ca - cb;
+  }
+  return 0;
+}
 
 static int ends_with(const char* s, const char* suffix)
 {
@@ -353,14 +365,184 @@ static void scan_embedded_ole(
   }
 }
 
+// Extensions of files inside an archive that are inspected as documents (by their magic bytes, not only
+// the name: a renamed file is still inspected by what it really is).
+static int archive_doc_name(const char* name)
+{
+  static const char* ext[] = {".doc", ".dot", ".docx", ".docm", ".dotx", ".dotm", ".xls", ".xlt", ".xlsx",
+                              ".xlsm", ".xltx", ".xltm", ".xlsb", ".xla", ".xlam", ".ppt", ".pps", ".pot",
+                              ".pptx", ".pptm", ".potx", ".potm", ".ppsx", ".ppsm", ".ppa", ".ppam", ".rtf",
+                              ".pdf", ".lnk", NULL};
+  size_t ln = strlen(name);
+  for (int k = 0; ext[k] != NULL; k++)
+  {
+    size_t le = strlen(ext[k]);
+    if (ln > le && strncasecmp_portable(name + ln - le, ext[k], le) == 0)
+      return 1;
+  }
+  return 0;
+}
+
+// A plain ZIP archive (not Office / OpenDocument): list the first-level entries as facts and inspect
+// the documents inside with the same inspectors as a file of their own. No recursion (an archive inside
+// is not opened), bounded: DOCSCAN_MAX_ARCHIVE_DOCS documents, each <= DOCSCAN_ZIP_MAX_ENTRY, all
+// <= DOCSCAN_ARCHIVE_BUDGET bytes — a zip bomb cannot make the scan expensive.
+static void inspect_archive(docscan_zip* z, int count, docscan_result_t* r)
+{
+  r->is_archive = 1;
+  for (int i = 0; i < count; i++)
+  {
+    char name[256];
+    if (docscan_zip_entry_name(z, i, name, sizeof(name)) != 0)
+      continue;
+    int enc = docscan_zip_entry_encrypted(z, i);
+    r->archive_encrypted += enc;
+    if (r->n_archive_entries < DOCSCAN_MAX_ARCHIVE)
+    {
+      docscan_archive_entry_t* e = &r->archive_entries[r->n_archive_entries++];
+      snprintf(e->name, sizeof(e->name), "%s", name);
+      e->size = docscan_zip_entry_size(z, i);
+      e->encrypted = enc;
+    }
+    else
+    {
+      r->archive_truncated = 1;
+    }
+  }
+
+  size_t budget = DOCSCAN_ARCHIVE_BUDGET;
+  r->archive_depth = 1;
+  for (int i = 0; i < count && r->n_archive_docs < DOCSCAN_MAX_ARCHIVE_DOCS; i++)
+  {
+    char name[256];
+    if (docscan_zip_entry_name(z, i, name, sizeof(name)) != 0 || !archive_doc_name(name) ||
+        docscan_zip_entry_encrypted(z, i))
+      continue;
+    uint64_t sz = docscan_zip_entry_size(z, i);
+    if (sz == 0 || sz > DOCSCAN_ZIP_MAX_ENTRY || sz > budget)
+      continue;
+    size_t n = 0;
+    uint8_t* d = docscan_zip_extract(z, i, &n);
+    if (d == NULL)
+      continue;
+    budget -= n;
+    int inspected = 1;
+    switch (docscan_detect_magic(d, n))
+    {
+    case DOCSCAN_TYPE_OOXML:
+      docscan_inspect_ooxml(d, n, r);  // archive_depth = 1: inspected as Office, not as an archive
+      break;
+    case DOCSCAN_TYPE_OLE:
+      docscan_inspect_ole(d, n, r);
+      break;
+    case DOCSCAN_TYPE_RTF:
+      docscan_inspect_rtf(d, n, r);
+      break;
+    case DOCSCAN_TYPE_PDF:
+      docscan_inspect_pdf(d, n, r);
+      break;
+    case DOCSCAN_TYPE_LNK:
+      docscan_inspect_lnk(d, n, r);
+      break;
+    default:
+      inspected = 0;
+    }
+    docscan_zip_free(d);
+    if (inspected)
+      snprintf(r->archive_docs[r->n_archive_docs++], sizeof(r->archive_docs[0]), "%s", name);
+  }
+  r->archive_depth = 0;
+
+  // Every other file inside (exe, dll, scripts, anything that is not a document): handed to the second
+  // scan as a part, so the vendor rules see its real (uncompressed) bytes - e.g. a miner or EICAR packed
+  // into a zip. Bounded by docscan_add_part (DOCSCAN_PART_MAX per file, DOCSCAN_PARTS_BUDGET in all).
+  for (int i = 0; i < count && r->parts_bytes < DOCSCAN_PARTS_BUDGET && budget > 0; i++)
+  {
+    char name[256];
+    if (docscan_zip_entry_name(z, i, name, sizeof(name)) != 0 || archive_doc_name(name) ||
+        docscan_zip_entry_encrypted(z, i))
+      continue;
+    uint64_t sz = docscan_zip_entry_size(z, i);
+    if (sz == 0 || sz > DOCSCAN_ZIP_MAX_ENTRY || sz > budget || name[strlen(name) - 1] == '/')
+      continue;
+    size_t n = 0;
+    uint8_t* d = docscan_zip_extract(z, i, &n);
+    if (d == NULL)
+      continue;
+    budget -= n;
+    char part[300];
+    snprintf(part, sizeof(part), "archive:%s", name);
+    docscan_add_part(r, part, d, n);
+    docscan_zip_free(d);
+  }
+}
+
+// docscan_zip_central_names callback: names of an unreadable ZIP go to archive_entries.
+static void central_name(const char* name, int encrypted, uint64_t size, void* ud)
+{
+  docscan_result_t* r = (docscan_result_t*) ud;
+  r->archive_encrypted += encrypted;
+  if (strcmp(name, "[Content_Types].xml") == 0 || strcmp(name, "mimetype") == 0)
+    r->archive_truncated |= 2;  // marks an Office / OpenDocument package (see below)
+  if (r->n_archive_entries < DOCSCAN_MAX_ARCHIVE)
+  {
+    docscan_archive_entry_t* e = &r->archive_entries[r->n_archive_entries++];
+    snprintf(e->name, sizeof(e->name), "%s", name);
+    e->size = size;
+    e->encrypted = encrypted;
+  }
+  else
+  {
+    r->archive_truncated |= 1;
+  }
+}
+
 void docscan_inspect_ooxml(const uint8_t* data, size_t size, docscan_result_t* r)
 {
   docscan_zip* z = docscan_zip_open(data, size);
 
   if (z == NULL)
+  {
+    // A "PK" file that miniz refuses (malformed — sometimes on purpose, to get past scanners while
+    // Windows still lists it). The content is not inspected; the names are read straight from the
+    // central directory, so the name rules (shortcut / script inside) still work.
+    if (r->archive_depth == 0)
+    {
+      r->zip_unreadable = 1;
+      if (docscan_zip_central_names(data, size, central_name, r) > 0)
+      {
+        int office = (r->archive_truncated & 2) != 0;
+        r->archive_truncated &= 1;
+        if (office)  // a damaged Office / OpenDocument file, not an archive: keep the names out
+          r->n_archive_entries = 0, r->archive_encrypted = 0;
+        else
+          r->is_archive = 1;
+      }
+    }
     return;
+  }
 
   int count = docscan_zip_count(z);
+
+  // Office ([Content_Types].xml) or OpenDocument (mimetype) — a document; anything else at the top
+  // level — a plain archive
+  if (r->archive_depth == 0)
+  {
+    int office = 0;
+    for (int i = 0; i < count && !office; i++)
+    {
+      char name[256];
+      if (docscan_zip_entry_name(z, i, name, sizeof(name)) == 0 &&
+          (strcmp(name, "[Content_Types].xml") == 0 || strcmp(name, "mimetype") == 0))
+        office = 1;
+    }
+    if (!office)
+    {
+      inspect_archive(z, count, r);
+      docscan_zip_close(z);
+      return;
+    }
+  }
 
   for (int i = 0; i < count; i++)
   {

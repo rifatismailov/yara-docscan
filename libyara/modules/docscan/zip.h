@@ -22,6 +22,15 @@ int docscan_zip_entry_name(docscan_zip* z, int i, char* buf, size_t buf_size);
 // Uncompressed size of entry i as declared in the ZIP header (0 on error).
 uint64_t docscan_zip_entry_size(docscan_zip* z, int i);
 
+// 1 if entry i is encrypted (password-protected ZIP entry): its content cannot be read.
+int docscan_zip_entry_encrypted(docscan_zip* z, int i);
+
+// For a ZIP that miniz refuses (malformed, possibly on purpose to get past scanners): read the names
+// straight from the central directory (found from the end-of-central-directory record). cb gets every
+// entry name, its "encrypted" flag and its uncompressed size; returns the number of entries read.
+typedef void (*docscan_zip_name_cb)(const char* name, int encrypted, uint64_t size, void* ud);
+int docscan_zip_central_names(const uint8_t* data, size_t size, docscan_zip_name_cb cb, void* ud);
+
 // Largest entry we decompress. The size comes from the (untrusted) ZIP header;
 // a 1 KB zip bomb can claim gigabytes. Real OOXML parts are far smaller.
 #define DOCSCAN_ZIP_MAX_ENTRY (64u * 1024 * 1024)

@@ -11,7 +11,7 @@
 typedef struct
 {
   int present;           // docscan module ran on this file
-  int type;              // 1=ooxml 2=ole 3=rtf 4=pdf 5=lnk
+  int type;              // 1=ooxml 2=ole 3=rtf 4=pdf 5=lnk 6=zip archive (quarantine only)
   int high;              // any HIGH finding -> worth curing
 
   // OOXML / OLE vectors
