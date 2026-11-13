@@ -269,6 +269,7 @@ def gen():
     created.append("vendor_shellexec.docm")
 
     created += gen_objects()
+    created += gen_vba_projects()
 
     return created
 
@@ -336,6 +337,213 @@ def gen_objects():
     eof = struct.pack("<HH", 0x000A, 0)
     open(os.path.join(OUT, "xlm_macrosheet.xls"), "wb").write(build_cfb(bof + bs + eof, "Workbook"))
     out.append("xlm_macrosheet.xls")
+    return out
+
+# ---------- VBA projects shaped like real Excel ones (false-positive regression) ----------
+# A real VBA project: one stream per module = [compiled p-code][MS-OVBA source], plus
+# _VBA_PROJECT whose identifier table names every procedure ever compiled (Office does
+# not clean it when a macro is deleted). The macro bodies come from real business
+# workbooks that raised false alerts (PivotTable refresh, no network / shell / files);
+# paths, user and author names are left out.
+
+def build_cfb_multi(streams):
+    """Minimal CFB v3 with several streams [(name, bytes)]; each stream >= 4097 bytes
+    (no mini stream). Directory: Root -> first stream, each stream -> next as right sibling."""
+    SEC = 512
+    ents = [("Root Entry", 5, b"")] + [(n, 2, d) for n, d in streams]
+    ndir = (len(ents) + 3) // 4
+    fat = [FREESECT] * 128
+    fat[0] = FATSECT
+    for i in range(ndir):
+        fat[1 + i] = (2 + i) if i < ndir - 1 else ENDOFCHAIN
+    sec = 1 + ndir
+    body, dirs = b"", b""
+    for idx, (name, typ, data) in enumerate(ents):
+        e = bytearray(128)
+        nb = name.encode("utf-16-le") + b"\x00\x00"
+        e[0:len(nb)] = nb
+        struct.pack_into("<H", e, 64, len(nb))
+        e[66], e[67] = typ, 1                                   # type, black
+        struct.pack_into("<i", e, 68, -1)                       # left
+        struct.pack_into("<i", e, 72, idx + 1 if 0 < idx < len(ents) - 1 else -1)  # right
+        struct.pack_into("<i", e, 76, 1 if idx == 0 and len(ents) > 1 else -1)     # child
+        if typ == 5:
+            struct.pack_into("<i", e, 116, -2)
+        else:
+            d = data + b"\x00" * max(0, 4097 - len(data))
+            size = len(d)
+            d += b"\x00" * ((-len(d)) % SEC)
+            n = len(d) // SEC
+            for s in range(sec, sec + n - 1):
+                fat[s] = s + 1
+            fat[sec + n - 1] = ENDOFCHAIN
+            struct.pack_into("<i", e, 116, sec)
+            struct.pack_into("<I", e, 120, size)
+            body += d
+            sec += n
+        dirs += bytes(e)
+    assert sec <= 128, "too many sectors for one FAT sector"
+    dirs += b"\x00" * (ndir * SEC - len(dirs))
+    h = bytearray(512)
+    h[0:8] = bytes([0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1])
+    struct.pack_into("<HHHHH", h, 24, 0x3E, 3, 0xFFFE, 9, 6)
+    struct.pack_into("<I", h, 44, 1)      # one FAT sector
+    struct.pack_into("<i", h, 48, 1)      # first directory sector
+    struct.pack_into("<I", h, 56, 4096)   # mini stream cutoff
+    struct.pack_into("<i", h, 60, -2)
+    struct.pack_into("<i", h, 68, -2)
+    for i in range(109):
+        struct.pack_into("<I", h, 76 + i * 4, 0 if i == 0 else FREESECT)
+    fatsec = b"".join(struct.pack("<I", x & 0xFFFFFFFF) for x in fat)
+    return bytes(h) + fatsec + dirs + body
+
+def vba_module(src, pcode_len):
+    """Module stream: pcode_len bytes standing in for compiled p-code, then the source
+    (Windows-1251, as Cyrillic Office stores it) in one MS-OVBA chunk."""
+    return b"\xAA" * pcode_len + ovba_container(src.replace("\n", "\r\n").encode("cp1251"))
+
+def vba_identifiers(names):
+    """_VBA_PROJECT stand-in: an identifier table (length-prefixed ASCII names)."""
+    return b"\xCC\x61\xFF\xFF" + b"".join(bytes([len(n), 0]) + n.encode() for n in names)
+
+SHEET_ATTRS = ('Attribute VB_Name = "{0}"\n'
+               'Attribute VB_Base = "0{{00020820-0000-0000-C000-000000000046}}"\n'
+               'Attribute VB_GlobalNameSpace = False\nAttribute VB_Creatable = False\n'
+               'Attribute VB_PredeclaredId = True\nAttribute VB_Exposed = True\n'
+               'Attribute VB_TemplateDerived = False\nAttribute VB_Customizable = True\n')
+BOOK_ATTRS = SHEET_ATTRS.replace("00020820", "00020819")
+
+PIKE_CODE = '''Function GetColumnName(colNum As Integer) As String
+            Dim d As Integer
+            Dim m As Integer
+            Dim name As String
+            d = colNum
+            name = ""
+            Do While (d > 0)
+                m = (d - 1) Mod 26
+                name = Chr(65 + m) + name
+                d = Int((d - m) / 26)
+            Loop
+            GetColumnName = name
+        End Function
+
+Private Sub Workbook_Open()
+
+  Application.ScreenUpdating = False
+  Dim sName As String
+  Dim sFound As Boolean
+  sName = "Настройки"
+  sFound = False
+
+  On Error Resume Next
+        ActiveWorkbook.Sheets(sName).Select
+        If Err = 0 Then sFound = True
+  On Error GoTo 0
+
+    If sFound <> False Then
+            Dim i As Long, n As Long
+            Dim rangeName   As String
+            Dim rangeSheet  As String
+            Dim rangeTop    As Long
+            Dim rangeLeft   As Integer
+            Dim rangeBottom As Long
+            Dim rangeRight  As Integer
+            i = 2
+            Do While Cells(i, 1) <> ""
+               Sheets(sName).Select
+               rangeName = Cells(i, 1) + "_X"
+               rangeSheet = Cells(i, 2)
+               rangeTable = Cells(i, 3)
+               rangeTableSheet = Cells(i, 4)
+
+               rangeTop = Cells(i, 5)
+               rangeLeft = Cells(i, 6)
+               rangeBottom = Cells(i, 7)
+               rangeRight = Cells(i, 8)
+               If (rangeTop > 0) Then
+
+                 Sheets(rangeSheet).Select
+                 ActiveWorkbook.Names.Add name:=rangeName, RefersToR1C1:=Range(Cells(rangeTop, GetColumnName(rangeLeft)), Cells(rangeBottom, GetColumnName(rangeRight)))
+                 ActiveWorkbook.Names(rangeName).Comment = "ReCreate"
+                 Application.ScreenUpdating = True
+
+                 Dim pt As PivotTable
+                 Set pc = ThisWorkbook.PivotCaches.Create(xlDatabase, SourceData:=rangeName)
+                 Set pt = ThisWorkbook.Worksheets(rangeTableSheet).PivotTables(rangeTable)
+                 pt.ChangePivotCache (pc)
+                 pt.RefreshTable
+               End If
+               i = i + 1
+             Loop
+             Sheets("Таблица").Select
+             ThisWorkbook.Sheets("Таблица").Range("D2").Value = Now
+
+    End If
+End Sub
+'''
+
+RPT_REFRESH = '''Attribute VB_Name = "Module1"
+
+Sub RptRefresh()
+
+  ThisWorkbook.Worksheets("Таблица").PivotTables("ТаблицаБаланс").RefreshTable
+  Sheets("Таблица").Select
+  ThisWorkbook.Sheets("Таблица").Range("D2").Value = Now
+End Sub
+'''
+
+RECORDED = '''Attribute VB_Name = "Module1"
+Sub Macros1()
+Attribute Macros1.VB_Description = "Макрос записан 25.01.2005"
+Attribute Macros1.VB_ProcData.VB_Invoke_Func = " \\n14"
+'
+' Macros1 Макрос
+' Макрос записан 25.01.2005
+'
+    ThisWorkbook.Sheets("Table").Range("C3").Value = Now
+    Sheets("Table").Select
+    Range("C11").Select
+    ActiveSheet.PivotTables("СводнаяТаблица1").PivotCache.Refresh
+End Sub
+'''
+
+def xls_with_vba(name, modules, identifiers):
+    """Legacy .xls: Workbook stream (BIFF8 BOF/EOF) + module streams + _VBA_PROJECT."""
+    bof = struct.pack("<HH", 0x0809, 16) + struct.pack("<HHHHII", 0x0600, 0x0005, 0, 0, 0, 0)
+    eof = struct.pack("<HH", 0x000A, 0)
+    streams = [("Workbook", bof + eof)] + modules + [("_VBA_PROJECT", vba_identifiers(identifiers))]
+    open(os.path.join(OUT, name), "wb").write(build_cfb_multi(streams))
+    return name
+
+def gen_vba_projects():
+    out = []
+    sheets = [("Sheet%d" % k, vba_module(SHEET_ATTRS.format("Лист%d" % k), 800)) for k in (1, 2, 3)]
+    book_pike = ("ThisWorkbook", vba_module(BOOK_ATTRS.format("ЭтаКнига") + PIKE_CODE, 2600))
+    book_empty = ("ThisWorkbook", vba_module(BOOK_ATTRS.format("ЭтаКнига"), 1100))
+    base_ids = ["ЭтаКнига", "Лист1", "Лист2", "Лист3", "Workbook", "Worksheet"]
+
+    # 21. Business report: Workbook_Open refreshes PivotTables (real false alert) -> MEDIUM
+    out.append(xls_with_vba("macro_pike_report.xls", [book_pike] + sheets,
+                            base_ids + ["Workbook_Open", "GetColumnName", "colNum", "rangeName"]))
+    # 22. The same report received by mail (+ a module with a plain refresh procedure), xlsm -> MEDIUM
+    write_xlsx("macro_pike_mail.xlsm", sheet_cells='<c r="A1"><v>1</v></c>')
+    with zipfile.ZipFile(os.path.join(OUT, "macro_pike_mail.xlsm"), "a") as z:
+        z.writestr("xl/vbaProject.bin", build_cfb_multi(
+            [("Module1", vba_module(RPT_REFRESH, 700)), book_pike] + sheets[:1]
+            + [("_VBA_PROJECT", vba_identifiers(base_ids + ["Module1", "RptRefresh", "Workbook_Open"]))]))
+    out.append("macro_pike_mail.xlsm")
+    # 23. Recorded macro (PivotCache.Refresh), no auto-run -> MEDIUM (it is real code)
+    out.append(xls_with_vba("macro_recorded.xls", sheets[:2] + [("Module1", vba_module(RECORDED, 900)), book_empty],
+                            base_ids + ["Module1", "Macros1"]))
+    # 24. Only empty sheet modules (Excel keeps a VBA project with no code) -> no finding (INFO)
+    out.append(xls_with_vba("macro_empty_modules.xls", [book_empty] + sheets[:1], base_ids))
+    # 25. A deleted macro: empty modules, but the identifier table still names Workbook_Open -> INFO
+    out.append(xls_with_vba("macro_deleted.xls", [book_empty] + sheets,
+                            base_ids + ["Module1", "Workbook_Open", "SendKeys"]))
+    # 26. VBA stomping (synthetic): no source, sizeable p-code, Workbook_Open in the table -> MACRO_STOMPED
+    out.append(xls_with_vba("macro_stomped.xls",
+                            [("ThisWorkbook", vba_module(BOOK_ATTRS.format("ЭтаКнига"), 3600))] + sheets[:1],
+                            base_ids + ["Workbook_Open"]))
     return out
 
 # ---------- minimal LNK ----------

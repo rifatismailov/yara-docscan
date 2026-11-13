@@ -116,6 +116,13 @@ typedef struct
   int embedded_pe;          // MZ..PE in embedded oleObject               (HIGH)
   int macro_present;        // vbaProject.bin / VBA stream present         (MEDIUM)
   int macro_suspicious;     // VBA source has exec/download constructs     (HIGH)
+  int vba_procedures;       // Sub/Function/Property definitions in the VBA source (fact)
+  int vba_autoexec_names;   // an auto-run name (Workbook_Open, AutoOpen...) anywhere in
+                            // the raw VBA project: also in the p-code identifier table,
+                            // which keeps names of erased AND of deleted code     (fact)
+  int vba_pcode_nosrc;      // largest compiled p-code (bytes) in a module stream whose
+                            // source has no procedures: compiled code without source
+                            // = VBA stomping; empty sheet modules have little  (fact)
   int external_ole;         // external oleObject relationship            (MEDIUM)
   int external_frame;       // external frame relationship                (MEDIUM)
   int dde_link;             // DDE + exec keyword (not AUTO)              (context)

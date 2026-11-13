@@ -75,6 +75,13 @@ static int vba_stream_cb(const uint8_t* data, size_t size, void* ud)
     {
       r->macro_present = 1;
 
+      // The module stream is [compiled p-code][compressed source]; the source
+      // container starts at i, so i = p-code size. Compiled code in a module
+      // whose source defines no procedure = the source was erased (stomping).
+      if (docscan_vba_count_procedures((const char*) dec, dlen) == 0 &&
+          i > (size_t) r->vba_pcode_nosrc && i < (size_t) 0x7fffffff)
+        r->vba_pcode_nosrc = (int) i;
+
       for (int k = 0; SUS[k] != NULL; k++)
       {
         if (docscan_contains_ci(dec, dlen, SUS[k]))
@@ -108,7 +115,107 @@ static int vba_stream_cb(const uint8_t* data, size_t size, void* ud)
   return 0;  // keep scanning other streams
 }
 
+// Auto-run procedure names: the same list as DS_MACRO_AUTOEXEC in docscan-policy.yar.
+static const char* AUTOEXEC[] = {
+    "AutoOpen",      "Auto_Open",      "AutoExec",      "Auto_Exec",
+    "AutoClose",     "Auto_Close",     "Document_Open", "Document_Close",
+    "Workbook_Open", "Workbook_BeforeClose", NULL};
+
 void docscan_scan_vba_container(const uint8_t* cfb, size_t size, docscan_result_t* r)
 {
   docscan_cfb_foreach_stream(cfb, size, vba_stream_cb, r);
+
+  // The whole raw container, not only the decompressed source: the p-code
+  // identifier table (_VBA_PROJECT) keeps procedure names even when the source
+  // was erased ("VBA stomping"), so an empty source + an auto-run name here is
+  // a reason to stay careful (DS_MACRO_STOMPED in the policy).
+  for (int k = 0; AUTOEXEC[k] != NULL; k++)
+  {
+    if (docscan_contains_ci(cfb, size, AUTOEXEC[k]))
+    {
+      r->vba_autoexec_names = 1;
+      break;
+    }
+  }
+}
+
+static int is_blank(char c)
+{
+  return c == ' ' || c == '\t' || c == '\r';
+}
+
+// p..end starts with the word w (ASCII, any case) followed by a space or tab.
+static int starts_word(const char* p, const char* end, const char* w)
+{
+  size_t n = strlen(w);
+
+  if ((size_t) (end - p) <= n)
+    return 0;
+
+  for (size_t i = 0; i < n; i++)
+  {
+    char a = p[i], b = w[i];
+    if (a >= 'A' && a <= 'Z')
+      a = (char) (a + 32);
+    if (b >= 'A' && b <= 'Z')
+      b = (char) (b + 32);
+    if (a != b)
+      return 0;
+  }
+  return p[n] == ' ' || p[n] == '\t';
+}
+
+int docscan_vba_count_procedures(const char* code, size_t len)
+{
+  static const char* MODS[] = {"Public", "Private", "Friend", "Static", NULL};
+  static const char* KINDS[] = {"Sub", "Function", "Property", NULL};
+  const char* p = code;
+  const char* end = code + len;
+  int count = 0;
+
+  if (code == NULL)
+    return 0;
+
+  while (p < end)
+  {
+    const char* eol = (const char*) memchr(p, '\n', (size_t) (end - p));
+    if (eol == NULL)
+      eol = end;
+
+    const char* q = p;
+    while (q < eol && is_blank(*q)) q++;
+
+    // optional access / storage modifiers: "Private Sub", "Public Static Function"
+    for (int again = 1; again;)
+    {
+      again = 0;
+      for (int k = 0; MODS[k] != NULL; k++)
+      {
+        if (starts_word(q, eol, MODS[k]))
+        {
+          q += strlen(MODS[k]);
+          while (q < eol && is_blank(*q)) q++;
+          again = 1;
+          break;
+        }
+      }
+    }
+
+    // "Sub Name", "Function Name", "Property Get Name"; the name may be non-ASCII
+    for (int k = 0; KINDS[k] != NULL; k++)
+    {
+      if (starts_word(q, eol, KINDS[k]))
+      {
+        const char* n = q + strlen(KINDS[k]);
+        while (n < eol && is_blank(*n)) n++;
+        unsigned char c = n < eol ? (unsigned char) *n : 0;
+        if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || c == '_' || c >= 0x80)
+          count++;
+        break;
+      }
+    }
+
+    p = eol + 1;
+  }
+  return count;
 }

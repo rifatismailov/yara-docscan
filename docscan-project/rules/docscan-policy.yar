@@ -133,7 +133,17 @@ rule DS_EXTERNAL_FRAME
 
 // ========================= VBA macros (OOXML + OLE) ========================
 // docscan.vba_code = the decompressed source of all VBA modules.
+// docscan.vba_procedures = Sub/Function/Property definitions in that source.
+// docscan.vba_autoexec_names = an auto-run name anywhere in the raw VBA project
+//   (also the p-code identifier table, which keeps names of erased code - and of
+//   deleted modules: Office does not clean it, so alone it proves nothing).
+// docscan.vba_pcode_nosrc = largest compiled p-code (bytes) in a module whose
+//   source defines no procedure. Empty sheet modules: ~760-1300 bytes, forms up to ~5 KB.
 
+// A VBA project with something to run. Excel keeps a VBA project with empty sheet
+// modules (only "Attribute VB_..." lines) in many ordinary workbooks: no
+// procedures = nothing can run, so no finding. Still MEDIUM when the source
+// could not be read at all (encrypted / damaged / unknown layout).
 rule DS_MACRO_PRESENT
 {
   meta:
@@ -141,7 +151,26 @@ rule DS_MACRO_PRESENT
     text     = "Документ містить макроси VBA"
     finding  = "MACRO_PRESENT"
   condition:
-    docscan.macro_present == 1
+    docscan.macro_present == 1 and
+    (docscan.vba_procedures > 0 or docscan.vba_code == "")
+}
+
+// The source has no procedures, the project names an auto-run procedure AND a module
+// without source holds a sizeable compiled p-code: the code can live only as p-code
+// ("VBA stomping": the source is erased so that source-based scanners see nothing,
+// while Office runs the p-code). Deleted macros leave the names but no such module.
+rule DS_MACRO_STOMPED
+{
+  meta:
+    severity = "MEDIUM"
+    text     = "Макрос без вихідного коду, але з іменем автозапуску і скомпільованим p-code: можливе VBA stomping"
+    finding  = "MACRO_STOMPED"
+    mitre    = "T1564.007"
+  condition:
+    docscan.macro_present == 1 and
+    docscan.vba_procedures == 0 and
+    docscan.vba_autoexec_names == 1 and
+    docscan.vba_pcode_nosrc >= 2048
 }
 
 // Process execution, download or obfuscation: the macro DOES something dangerous.

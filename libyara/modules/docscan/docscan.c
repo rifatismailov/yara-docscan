@@ -16,6 +16,7 @@ See docscan-project/SCAN-FLOW.md.
 
 #include "inspect.h"
 #include "magic.h"
+#include "vba.h"
 
 #define MODULE_NAME docscan
 
@@ -49,6 +50,9 @@ begin_declarations
   declare_integer("embedded_pe");          // HIGH
   declare_integer("macro_present");        // MEDIUM
   declare_integer("macro_suspicious");     // HIGH
+  declare_integer("vba_procedures");       // fact: Sub/Function/Property definitions in the source
+  declare_integer("vba_autoexec_names");   // fact: auto-run name in the raw VBA project (p-code too)
+  declare_integer("vba_pcode_nosrc");      // fact: largest p-code (bytes) in a module without procedures
   declare_integer("external_ole");         // MEDIUM
   declare_integer("external_frame");       // MEDIUM
   declare_integer("dde_link");             // context
@@ -199,6 +203,10 @@ int module_load(
   yr_set_integer(r->embedded_pe, module_object, "embedded_pe");
   yr_set_integer(r->macro_present, module_object, "macro_present");
   yr_set_integer(r->macro_suspicious, module_object, "macro_suspicious");
+  r->vba_procedures = docscan_vba_count_procedures(r->vba_code, r->vba_code_len);
+  yr_set_integer(r->vba_procedures, module_object, "vba_procedures");
+  yr_set_integer(r->vba_autoexec_names, module_object, "vba_autoexec_names");
+  yr_set_integer(r->vba_pcode_nosrc, module_object, "vba_pcode_nosrc");
   yr_set_integer(r->external_ole, module_object, "external_ole");
   yr_set_integer(r->external_frame, module_object, "external_frame");
   yr_set_integer(r->dde_link, module_object, "dde_link");

@@ -249,6 +249,9 @@ docscan-project/
 | | `embedded_lnk` | HIGH | сигнатура LNK у `embeddings/oleObject*.bin` |
 | | `macro_suspicious` | HIGH | у розпакованому VBA є exec/download-конструкції |
 | | `macro_present` | MEDIUM | є `vbaProject.bin` / VBA-модуль |
+| | `vba_procedures` | факт | скільки процедур (`Sub`/`Function`/`Property`) у вихідному коді; 0 — лише рядки `Attribute`, оголошення, коментарі |
+| | `vba_autoexec_names` | факт | ім'я автозапуску (`Workbook_Open`, `AutoOpen`…) будь-де в сирому VBA-проєкті, також у таблиці ідентифікаторів `_VBA_PROJECT` (вона зберігає імена і стертого, і видаленого коду) |
+| | `vba_pcode_nosrc` | факт | найбільший скомпільований p-code (байти) у модулі без процедур; порожні модулі аркушів — ~760–1300, форми — до ~5 КБ |
 | | `external_ole` | MEDIUM | external `oleObject` relationship |
 | | `external_frame` | MEDIUM | external `frame` relationship |
 | | `dde_link` | HIGH | `DDE ` + cmd/powershell/mshta/rundll32 (не AUTO) |
@@ -566,7 +569,8 @@ MS-OVBA. Ланцюжок: **CFB → потоки → пошук контейн�
 | `DS_DDE_LINK` | `DDE ` (не AUTO): поле Word, формула Excel `cmd\|'…'!A0`, Excel `ddeLink` — і в ній cmd/powershell/mshta/rundll32/regsvr32/msiexec/certutil/bitsadmin/wscript/cscript | HIGH | `dde` |
 | `DS_EMBEDDED_PE` / `DS_EMBEDDED_LNK` | `embedded[].is_pe` / `.is_lnk` | HIGH | `embedded` |
 | `DS_EXTERNAL_OLE` / `DS_EXTERNAL_FRAME` | external `oleObject` (не Follina) / `frame` | MEDIUM | — |
-| `DS_MACRO_PRESENT` | є VBA | MEDIUM | — |
+| `DS_MACRO_PRESENT` | є VBA з кодом: `vba_procedures > 0` (або вихідний код не прочитався зовсім). Проєкт лише з порожніми модулями аркушів — не знахідка | MEDIUM | — |
+| `DS_MACRO_STOMPED` | VBA stomping: процедур у коді 0, але є ім'я автозапуску і модуль без коду з p-code ≥ 2 КБ (T1564.007) | MEDIUM | — |
 | `DS_MACRO_SUSPICIOUS` | у `vba_code`: Shell, WScript.Shell, powershell, cmd.exe, mshta, rundll32, regsvr32, certutil, bitsadmin, URLDownloadToFile, DownloadFile/String, FromBase64String, StrReverse; `.Run`/`.Exec` на об'єкті оболонки | HIGH | `macro` |
 | `DS_MACRO_AUTOEXEC` | AutoOpen, Document_Open, Workbook_Open… | MEDIUM | — |
 | `DS_MACRO_NETWORK` | XMLHTTP, WinHttp, InternetOpen, Net.WebClient | MEDIUM | — |
@@ -1184,7 +1188,7 @@ watcher → C:\ProgramData\DocScan\results\docscan-results.json (JSON Lines)
    | 101302 | 12 | `ACTIVEX_BROWSER` | ActiveX-браузер (T1203) |
    | 101303 | 12 | `category = general` | шкідливий exe/dll/скрипт/архів (вендорні YARA) |
    | 101310 | **12** | `EXTERNAL_OLE`, `EXTERNAL_FRAME` | зовнішній вміст (T1221) |
-   | 101311 | 7 | `MACRO_AUTOEXEC`, `MACRO_NETWORK`, `MACRO_PRESENT` | макроси (T1059.005) |
+   | 101311 | 7 | `MACRO_AUTOEXEC`, `MACRO_NETWORK`, `MACRO_PRESENT`, `MACRO_STOMPED` | макроси (T1059.005) |
    | 101312 | 7 | `PDF_JS`, `PDF_EMBEDDED` | PDF з JS / вкладенням |
    | 101313 | 7 | `LNK_REMOTE_TARGET`, `LNK_LOLBIN` | ярлик (T1204.001) |
    | 101314 | **12** | `ACTIVEX` | ActiveX-елемент |

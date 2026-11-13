@@ -178,8 +178,13 @@ function Save-Macro([string]$docSha, $rec, $ds) {
   } else {
     $hdr = "' DocScan macro`r`n' host: $env:COMPUTERNAME`r`n' file: $($rec.docfile.path)`r`n' sha256: $docSha`r`n" +
            "' findings: $(@($ds.findings) -join ', ')`r`n' saved: $((Get-Date).ToString('yyyy-MM-ddTHH:mm:sszzz'))`r`n'`r`n"
-    $bytes = [byte[]]($utf8.GetBytes($hdr) + [IO.File]::ReadAllBytes($MacroTmp))
-    [IO.File]::WriteAllBytes($dst, $bytes)
+    # The VBA source is stored in the project's ANSI code page (e.g. Windows-1251), the header is
+    # UTF-8: write the whole file as UTF-8. Valid UTF-8 (or plain ASCII) is kept as it is,
+    # anything else is decoded with this PC's ANSI code page.
+    $raw = [IO.File]::ReadAllBytes($MacroTmp)
+    try { $code = (New-Object Text.UTF8Encoding($false, $true)).GetString($raw) }
+    catch { $code = [Text.Encoding]::Default.GetString($raw) }
+    [IO.File]::WriteAllBytes($dst, $utf8.GetBytes($hdr + $code))
     Remove-Item -LiteralPath $MacroTmp -Force -EA SilentlyContinue
   }
   return [ordered]@{ file = $dst; size = $len; uploaded = $false }
