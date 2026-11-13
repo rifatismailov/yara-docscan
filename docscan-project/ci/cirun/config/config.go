@@ -36,6 +36,30 @@ type Connection struct {
 type Candidate struct {
 	Name       string     `yaml:"name"`
 	Connection Connection `yaml:"connection"`
+	// FullTests — чи проганяти на цій машині ВСІ тести (третій прохід, ворожі файли, фазинг, корпуси,
+	// шкідливе ПЗ). false — лише збірка і 35 зразків (напр. робоча станція, де не можна тримати
+	// корпуси й шкідливе ПЗ). Не задано — true.
+	FullTests *bool `yaml:"full_tests"`
+}
+
+// Full — FullTests зі значенням за замовчуванням (true).
+func (c Candidate) Full() bool { return c.FullTests == nil || *c.FullTests }
+
+// Tests — тести на файлах поза git: корпуси (документи з корпусів фазингу), корпус для ворожих файлів,
+// справжнє шкідливе ПЗ. Мак збирає з них архіви (package assets) і викладає в приватний сховок пакетів
+// Forgejo; віддалені машини завантажують їх перед тестами і видаляють після.
+type Tests struct {
+	Enabled    bool     `yaml:"enabled"`
+	CorpusDirs []string `yaml:"corpus_dirs"` // теки корпусів (з них беруться лише документи)
+	Seeds      string   `yaml:"seeds"`       // корпус для тесту «ворожі файли»
+	Malware    string   `yaml:"malware"`     // зразки шкідливого ПЗ + expected.txt; порожньо — без цього тесту
+	LocalDir   string   `yaml:"local_dir"`   // Мак: архіви і розпакована копія (поза репозиторієм)
+	Store      struct {
+		URL      string `yaml:"url"`       // Forgejo, напр. http://<сервер>:3000
+		Owner    string `yaml:"owner"`     // власник пакета
+		Package  string `yaml:"package"`   // ім'я generic-пакета
+		TokenRef string `yaml:"token_ref"` // токен лише на пакети
+	} `yaml:"store"`
 }
 
 // Platform — налаштування однієї ОС.
@@ -128,6 +152,7 @@ type Config struct {
 	} `yaml:"repo"`
 	Secrets   Secrets              `yaml:"secrets"`
 	Platforms map[string]*Platform `yaml:"platforms"`
+	Tests     Tests                `yaml:"tests"`
 	Push      Push                 `yaml:"push"`
 	Forgejo   Forgejo              `yaml:"forgejo"`
 	Deploy    Deploy               `yaml:"deploy"`
@@ -199,6 +224,12 @@ func (c *Config) defaults() {
 		for i := range p.Candidates {
 			fix(&p.Candidates[i].Connection)
 		}
+	}
+	if c.Tests.LocalDir == "" {
+		c.Tests.LocalDir = "~/docscan-ci/assets"
+	}
+	if c.Tests.Store.Package == "" {
+		c.Tests.Store.Package = "docscan-tests"
 	}
 	if c.Push.Remote == "" {
 		c.Push.Remote = "docscan"

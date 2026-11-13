@@ -235,7 +235,7 @@ docscan-project/
 | Група | Поле | Рівень | Значення |
 |---|---|---|---|
 | тип | `is_ooxml` `is_ole` `is_rtf` `is_pdf` `is_lnk` | — | тип файлу по magic |
-| RTF | `rtf_objupdate` | HIGH | `\objupdate` — OLE-об'єкт оновлюється (завантажується) при відкритті (T1203) |
+| RTF | `rtf_objupdate` | HIGH | керувальне слово `\objupdate` — OLE-об'єкт оновлюється (завантажується) при відкритті (T1203). Лише справжнє: перед `\` парна кількість `\` (текст `\\objupdate`, напр. у специфікації RTF, — не команда; лікування його теж не чіпає) |
 | | `rtf_embedded_object` | контекст | `\objdata` / `\objlink` / `\objhtml` (часто легітимно; у verdict не йде) |
 | PDF | `pdf_launch` | HIGH | `/Launch` — запуск зовнішньої програми |
 | | `pdf_js_auto` | HIGH | є JS і небезпечний API (див. 4.7) |
@@ -281,6 +281,7 @@ docscan-project/
 | `activex[]` / `number_of_activex` | string array / integer | ActiveX: CLSID з `activeX*.xml` або `ocx` (потік `\x03OCXNAME`) |
 | `altchunks[]` / `number_of_altchunks` | string array / integer | цілі зв'язків altChunk (`aFChunk`) |
 | `xlm_macrosheets` | integer | макроаркуші Excel 4.0 |
+| `encrypted` | integer | документ зашифровано паролем: OOXML `EncryptedPackage`, `.doc` `fEncrypted`, `.xls` `FILEPASS`, `.ppt` `EncryptedSummary` |
 | `vba_code`, `lnk_target`, `lnk_args` | string | текст макросу; ціль і аргументи LNK |
 
 Приклад у правилі: `for any rel in docscan.external_rels : (rel.target matches /^https?:/i)`.
@@ -569,7 +570,7 @@ MS-OVBA. Ланцюжок: **CFB → потоки → пошук контейн�
 | `DS_DDE_AUTO` | `dde[]` починається з `DDEAUTO` | HIGH | `dde` |
 | `DS_DDE_LINK` | `DDE ` (не AUTO): поле Word, формула Excel `cmd\|'…'!A0`, Excel `ddeLink` — і в ній cmd/powershell/mshta/rundll32/regsvr32/msiexec/certutil/bitsadmin/wscript/cscript | HIGH | `dde` |
 | `DS_EMBEDDED_PE` / `DS_EMBEDDED_LNK` | `embedded[].is_pe` / `.is_lnk` | HIGH | `embedded` |
-| `DS_EXTERNAL_OLE` / `DS_EXTERNAL_FRAME` | external `oleObject` (не Follina) / `frame` | MEDIUM | — |
+| `DS_EXTERNAL_OLE` / `DS_EXTERNAL_FRAME` | external `oleObject` на **віддалену** ціль (http/ftp/webdav, `\\сервер`, `file://сервер`; локальний файл — ні, напр. дані діаграми) (не Follina) / `frame` | MEDIUM | — |
 | `DS_MACRO_PRESENT` | є VBA з кодом (`vba_procedures > 0`); проєкт лише з порожніми модулями аркушів — не знахідка | **INFO** | — |
 | `DS_MACRO_UNREADABLE` | є VBA-проєкт, але код не прочитався зовсім (`vba_code` порожній) | MEDIUM | — |
 | `DS_MACRO_STOMPED` | VBA stomping: процедур у коді 0, але є ім'я автозапуску і модуль без коду з p-code ≥ 2 КБ (T1564.007) | MEDIUM | — |
@@ -583,7 +584,9 @@ MS-OVBA. Ланцюжок: **CFB → потоки → пошук контейн�
 | `DS_MACRO_SELFCODE` | VBProject, VBComponents, CodeModule | MEDIUM | — |
 | `DS_MACRO_OBFUSCATED` | ланцюжки `Chr(n)&Chr(n)&Chr(n)…`, hex-рядки ≥ 64 символів (T1027); один `Chr(65 + m)` — не ланцюжок | MEDIUM | — |
 | `DS_MACRO_NETWORK` | XMLHTTP, WinHttp, InternetOpen, Net.WebClient | MEDIUM | — |
-| `DS_RTF_OBJUPDATE` | RTF і `\objupdate` | HIGH | `rtf_objupdate` |
+| `DS_RTF_OBJUPDATE` | RTF і справжнє керувальне слово `\objupdate` (`rtf_objupdate`) | HIGH | `rtf_objupdate` |
+| `DS_ENCRYPTED` | документ зашифровано паролем | INFO | — |
+| `DS_ENCRYPTED_MACRO` | зашифровано **і** ім'я з макросами (docm/xlsm/xlsb/pptm/xlam…) або видно VBA-проєкт: макрос не перевірено, Excel відкриває стандартний пароль (VelvetSweatshop) без запиту (T1027) | MEDIUM | — |
 | `DS_PDF_LAUNCH` | `/Launch` | HIGH | `quarantine` |
 | `DS_PDF_JS_AUTO` / `DS_PDF_JS` | `/JavaScript`/`/JS` з небезпечним API / без | HIGH (`quarantine`) / MEDIUM | |
 | `DS_PDF_OPENACTION` | `/OpenAction`/`/AA` без JS (звичайно — стартова сторінка/масштаб) | INFO | — |
@@ -1197,7 +1200,7 @@ watcher → C:\ProgramData\DocScan\results\docscan-results.json (JSON Lines)
    | 101302 | 12 | `ACTIVEX_BROWSER` | ActiveX-браузер (T1203) |
    | 101303 | 12 | `category = general` | шкідливий exe/dll/скрипт/архів (вендорні YARA) |
    | 101310 | **12** | `EXTERNAL_OLE`, `EXTERNAL_FRAME` | зовнішній вміст (T1221) |
-   | 101311 | 7 | `MACRO_NETWORK`, `MACRO_STOMPED`, `MACRO_UNREADABLE`, `MACRO_COM`, `MACRO_API`, `MACRO_FILES`, `MACRO_REGISTRY`, `MACRO_SYSTEM`, `MACRO_SELFCODE`, `MACRO_OBFUSCATED` | макроси з небезпечними можливостями; `MACRO_PRESENT` і `MACRO_AUTOEXEC` — INFO, без алерту (T1059.005) |
+   | 101311 | 7 | `MACRO_NETWORK`, `MACRO_STOMPED`, `MACRO_UNREADABLE`, `MACRO_COM`, `MACRO_API`, `MACRO_FILES`, `MACRO_REGISTRY`, `MACRO_SYSTEM`, `MACRO_SELFCODE`, `MACRO_OBFUSCATED`, `ENCRYPTED_MACRO` | макроси з небезпечними можливостями; `MACRO_PRESENT` і `MACRO_AUTOEXEC` — INFO, без алерту (T1059.005) |
    | 101312 | 7 | `PDF_JS`, `PDF_EMBEDDED` | PDF з JS / вкладенням |
    | 101313 | 7 | `LNK_REMOTE_TARGET`, `LNK_LOLBIN` | ярлик (T1204.001) |
    | 101314 | **12** | `ACTIVEX` | ActiveX-елемент |

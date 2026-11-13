@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"docscan/cirun/assets"
 	"docscan/cirun/config"
 	"docscan/cirun/forgejo"
 	"docscan/cirun/gitops"
@@ -48,6 +49,7 @@ type Orchestrator struct {
 	Opt     Options
 	RunDir  string          // ci-out/<прогін>
 	Forgejo *forgejo.Client // nil — Forgejo не налаштований
+	Assets  *assets.Assets  // тестові файли поза git (nil — тести на корпусах вимкнені)
 	Results map[string]*Outcome
 	// Factory, якщо задано, створює платформи замість справжніх (для тестів оркестратора).
 	Factory func(name string, rep platform.Reporter) platform.Platform
@@ -72,11 +74,11 @@ func (o *Orchestrator) newPlatform(name string, rep platform.Reporter) platform.
 	p := o.Cfg.Platforms[name]
 	switch name {
 	case "macos":
-		return platform.NewMacOS(p, o.Sec, o.Opt.Fuzz, o.RunDir, rep)
+		return platform.NewMacOS(p, o.Sec, o.Opt.Fuzz, o.RunDir, o.Assets, rep)
 	case "linux":
-		return platform.NewLinux(p, o.Sec, o.Opt.Fuzz, o.RunDir, rep)
+		return platform.NewLinux(p, o.Sec, o.Opt.Fuzz, o.RunDir, o.Assets, rep)
 	case "windows":
-		return platform.NewWindows(p, o.Sec, rep)
+		return platform.NewWindows(p, o.Sec, o.Opt.Fuzz, o.Assets, rep)
 	}
 	return nil
 }
@@ -241,6 +243,73 @@ func (o *Orchestrator) onEvent(out *Outcome, ev platform.Event) {
 	}
 }
 
+// Consistency звіряє вердикти корпусу між платформами (corpus-verdicts.tsv у артефактах кожної).
+// Рішення DocScan — вердикт і знахідки — мають збігатися точно: розбіжність означає, що та сама версія
+// по-різному розбирає той самий файл на різних ОС (провал). Різниця лише у вендорних збігах —
+// попередження: частина вендорних правил дивиться на шлях / ім'я файлу, а вони на різних ОС різні.
+// Повертає true, якщо розбіжностей у рішеннях немає (або порівнювати нічого — менше двох платформ).
+func (o *Orchestrator) Consistency() bool {
+	type row struct{ decision, vendor string }
+	tables := map[string]map[string]row{}
+	var names []string
+	for _, n := range config.PlatformOrder {
+		b, err := os.ReadFile(filepath.Join(o.RunDir, n, "corpus-verdicts.tsv"))
+		if err != nil {
+			continue
+		}
+		t := map[string]row{}
+		for _, l := range strings.Split(strings.TrimSpace(string(b)), "\n") {
+			f := strings.Split(l, "\t")
+			if len(f) >= 4 {
+				t[f[0]] = row{f[1] + " " + f[2], f[3]}
+			}
+		}
+		tables[n] = t
+		names = append(names, n)
+	}
+	if len(names) < 2 {
+		return true
+	}
+	ref := names[0]
+	bad, warn := 0, 0
+	var lines []string
+	for _, n := range names[1:] {
+		for path, r := range tables[ref] {
+			other, ok := tables[n][path]
+			switch {
+			case !ok:
+				bad++
+				lines = append(lines, fmt.Sprintf("  %s: missing on %s", path, n))
+			case other.decision != r.decision:
+				bad++
+				lines = append(lines, fmt.Sprintf("  %s: %s=%q %s=%q", path, ref, r.decision, n, other.decision))
+			case other.vendor != r.vendor:
+				warn++
+			}
+		}
+		for path := range tables[n] {
+			if _, ok := tables[ref][path]; !ok {
+				bad++
+				lines = append(lines, fmt.Sprintf("  %s: only on %s", path, n))
+			}
+		}
+	}
+	o.Say("\n----- corpus: %s (%d files)", strings.Join(names, " = "), len(tables[ref]))
+	if bad == 0 {
+		o.Say("    same decisions on every platform (vendor-match differences: %d)", warn)
+		return true
+	}
+	o.Say("    %d DIFFERENT decision(s) between platforms (vendor-match differences: %d):", bad, warn)
+	for i, l := range lines {
+		if i == 15 {
+			o.Say("  ...")
+			break
+		}
+		o.Say("%s", l)
+	}
+	return false
+}
+
 // Summary друкує підсумок по платформах і пише його в <RunDir>/summary.txt.
 func (o *Orchestrator) Summary() {
 	var b strings.Builder
@@ -328,11 +397,12 @@ func weights(name string, fuzz int) map[string]float64 {
 	}
 	switch name {
 	case "windows":
-		return map[string]float64{"checkout": 15, "build": 70, "documents": 90, "critical": 10, "package": 40}
+		return map[string]float64{"checkout": 15, "build": 70, "documents": 90, "critical": 30, "assets": 60,
+			"hostile": 60, "corpus": 300, "malware": 30, "fuzz": float64(fuzz) + 60, "package": 40}
 	case "linux":
-		return map[string]float64{"build": 180, "documents": 20, "critical": 5, "hostile": 20, "fuzz": fz}
+		return map[string]float64{"build": 180, "documents": 20, "critical": 5, "hostile": 20, "corpus": 120, "malware": 15, "fuzz": fz}
 	}
-	return map[string]float64{"build": 90, "documents": 20, "critical": 5, "hostile": 20, "fuzz": fz}
+	return map[string]float64{"build": 90, "documents": 20, "critical": 5, "hostile": 20, "corpus": 60, "malware": 10, "fuzz": fz}
 }
 
 type track struct {

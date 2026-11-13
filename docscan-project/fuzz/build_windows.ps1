@@ -16,7 +16,7 @@ New-Item -ItemType Directory -Force $Out | Out-Null
 $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -products * -latest -property installationPath
 $vcvars = Join-Path $vs "VC\Auxiliary\Build\vcvars64.bat"
 $m = "$Repo\libyara\modules\docscan"
-$src = "inspect_ooxml inspect_ole inspect_rtf inspect_pdf lnk rels zip miniz cfb oleobj msovba vba search magic disarm" -split " " |
+$src = "inspect_ooxml inspect_ole inspect_rtf inspect_pdf lnk rels zip miniz cfb oleobj msovba vba search magic disarm text critical" -split " " |
        % { "`"$m\$_.c`"" }
 # /MT: libFuzzer for Windows links the static CRT; /MD objects would not resolve.
 $cmd = "`"$Llvm\bin\clang-cl.exe`" /nologo /O1 /Zi /MT -fsanitize=address,fuzzer " +

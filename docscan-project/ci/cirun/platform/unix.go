@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 
+	"docscan/cirun/assets"
 	"docscan/cirun/config"
 	"docscan/cirun/transport"
 )
@@ -25,7 +26,10 @@ type Unix struct {
 	fuzz   int              // секунди фазингу
 	runDir string           // локальна тека прогону (абсолютна): тут робоча тека для local
 	report Reporter
-	checks []string // команди перевірки інструментів (усі мають завершитися з 0)
+	checks []string          // команди перевірки інструментів (усі мають завершитися з 0)
+	assets *assets.Assets    // тестові файли поза git (nil — тестів на корпусах немає)
+	full   bool              // вибрана машина проганяє всі тести (Candidate.full_tests)
+	env    map[string]string // CI_CORPUS / CI_SEEDS / CI_MALWARE для кроку test
 
 	t       transport.Transport
 	local   bool   // машина — цей комп'ютер
@@ -34,15 +38,15 @@ type Unix struct {
 }
 
 // NewMacOS — macOS: локально (цей Мак) або через SSH.
-func NewMacOS(cfg *config.Platform, sec *config.Resolver, fuzz int, runDir string, report Reporter) *Unix {
-	return &Unix{name: "macos", cfg: cfg, sec: sec, fuzz: fuzz, runDir: runDir, report: report,
+func NewMacOS(cfg *config.Platform, sec *config.Resolver, fuzz int, runDir string, as *assets.Assets, report Reporter) *Unix {
+	return &Unix{name: "macos", cfg: cfg, sec: sec, fuzz: fuzz, runDir: runDir, assets: as, report: report,
 		checks: []string{"xcode-select -p", "command -v make", "command -v python3",
 			"PATH=/opt/homebrew/bin:$PATH command -v autoreconf"}}
 }
 
 // NewLinux — Linux через SSH (або локально, якщо cirun запущено на Linux).
-func NewLinux(cfg *config.Platform, sec *config.Resolver, fuzz int, runDir string, report Reporter) *Unix {
-	return &Unix{name: "linux", cfg: cfg, sec: sec, fuzz: fuzz, runDir: runDir, report: report,
+func NewLinux(cfg *config.Platform, sec *config.Resolver, fuzz int, runDir string, as *assets.Assets, report Reporter) *Unix {
+	return &Unix{name: "linux", cfg: cfg, sec: sec, fuzz: fuzz, runDir: runDir, assets: as, report: report,
 		checks: []string{"command -v gcc", "command -v make", "command -v autoreconf", "command -v python3",
 			"command -v tar", "pkg-config --exists libcrypto jansson libmagic"}}
 }
@@ -63,6 +67,7 @@ func (u *Unix) Prepare(ctx context.Context) error {
 		}
 		u.t = t
 		u.local = m.Connection.Type == "local"
+		u.full = m.Full()
 		where := t.Where()
 		if u.local {
 			where = "this computer"
@@ -117,7 +122,14 @@ func (u *Unix) SyncSource(ctx context.Context, src Source) error {
 // script — команда запуску build-test-unix.sh з кроком stage і змінними середовища.
 func (u *Unix) script(stage string) string {
 	env := map[string]string{"CI_OUT": u.outDir, "FUZZ_SECONDS": fmt.Sprint(u.fuzz), "CI_SEEDS": config.ExpandHome(u.cfg.Seeds)}
+	if !u.full {
+		env["FUZZ_SECONDS"] = "0" // машина лише для збірки і 35 зразків
+		env["CI_SEEDS"] = ""
+	}
 	for k, v := range u.cfg.Env {
+		env[k] = v
+	}
+	for k, v := range u.env {
 		env[k] = v
 	}
 	keys := make([]string, 0, len(env))
@@ -153,9 +165,15 @@ func (u *Unix) Build(ctx context.Context) (StepResult, error) {
 	return res, nil
 }
 
-// Test — крок test скрипта: documents, critical, hostile, fuzz.
+// Test — крок test скрипта: documents, critical, hostile, corpus, malware, fuzz. Тестові файли поза git:
+// Мак бере розпаковану копію, віддалена машина завантажує архіви зі сховку і ВИДАЛЯЄ їх після тестів.
 func (u *Unix) Test(ctx context.Context) ([]StepResult, error) {
-	tr := newTracker(u.name, u.report, "documents", "critical", "hostile", "fuzz")
+	cleanup, err := u.fetchAssets(ctx)
+	defer cleanup()
+	if err != nil {
+		return nil, fmt.Errorf("test assets: %w", err)
+	}
+	tr := newTracker(u.name, u.report, "documents", "critical", "hostile", "corpus", "malware", "fuzz")
 	r, err := u.t.Run(ctx, u.script("test"), tr.line)
 	if err != nil {
 		return tr.steps, err
@@ -164,6 +182,49 @@ func (u *Unix) Test(ctx context.Context) ([]StepResult, error) {
 		tr.steps = append(tr.steps, StepResult{Name: "test", Status: "FAIL", Log: r.Output})
 	}
 	return tr.steps, nil
+}
+
+// fetchAssets готує тестові файли для кроку test і повертає функцію прибирання (викликати завжди).
+func (u *Unix) fetchAssets(ctx context.Context) (func(), error) {
+	none := func() {}
+	if u.assets == nil || !u.full {
+		return none, nil
+	}
+	if u.local { // Мак: розпакована копія того самого архіву, що отримують віддалені машини
+		u.env = map[string]string{"CI_CORPUS": u.assets.LocalCorpus, "CI_SEEDS": u.assets.LocalSeeds, "CI_MALWARE": u.assets.LocalMalware}
+		return none, nil
+	}
+	if u.assets.CorpusURL == "" {
+		return none, nil
+	}
+	dir := strings.TrimRight(u.cfg.Workdir, "/") + "/tests"
+	cleanup := func() { // шкідливе ПЗ і корпуси на машині не лишаються
+		u.t.Run(context.Background(), "rm -rf "+shq(dir), nil)
+	}
+	// токен — у файлі заголовка (не в командному рядку curl, тобто не в списку процесів)
+	if err := u.t.Upload(ctx, []byte("Authorization: token "+u.assets.Token+"\n"), dir+"/.hdr"); err != nil {
+		return cleanup, err
+	}
+	script := fmt.Sprintf("set -e\ncd %s && chmod 600 .hdr\ncurl -fsS -H @.hdr -o corpus.tar.gz %s && tar xzf corpus.tar.gz && rm -f corpus.tar.gz",
+		shq(dir), shq(u.assets.CorpusURL))
+	if u.assets.MalwareURL != "" {
+		script += fmt.Sprintf("\ncurl -fsS -H @.hdr -o malware.zip %s\n"+
+			"python3 -c \"import zipfile; zipfile.ZipFile('malware.zip').extractall('malware', pwd=b'%s')\" && rm -f malware.zip",
+			shq(u.assets.MalwareURL), assets.MalwareZipKey)
+	}
+	script += "\nrm -f .hdr"
+	r, err := u.t.Run(ctx, script, nil)
+	if err == nil && r.ExitCode != 0 {
+		err = fmt.Errorf("download: %s", strings.TrimSpace(r.Output))
+	}
+	if err != nil {
+		return cleanup, err
+	}
+	u.env = map[string]string{"CI_CORPUS": dir + "/corpus", "CI_SEEDS": dir + "/seeds"}
+	if u.assets.MalwareURL != "" {
+		u.env["CI_MALWARE"] = dir + "/malware"
+	}
+	return cleanup, nil
 }
 
 // FetchArtifacts забирає <outDir>/artifacts (yara-<os>-<arch>.tar.gz, логи, summary.txt) у dst.

@@ -114,6 +114,7 @@ begin_declarations
   declare_string_array("altchunks");    // altChunk (aFChunk) relationship targets
   declare_integer("number_of_altchunks");
   declare_integer("xlm_macrosheets");   // Excel 4.0 (XLM) macro sheets
+  declare_integer("encrypted");         // password-encrypted Office document (content not inspectable)
 
   // --- parts for the second scan (the CLI rescans them with the vendor rules) ---
   begin_struct_array("parts");          // decompressed XML / embeddings / payloads
@@ -351,6 +352,7 @@ int module_load(
     yr_set_string(r->altchunks[i], module_object, "altchunks[%i]", i);
   yr_set_integer(r->n_altchunks, module_object, "number_of_altchunks");
   yr_set_integer(r->xlm_macrosheets, module_object, "xlm_macrosheets");
+  yr_set_integer(r->encrypted, module_object, "encrypted");
 
   for (int i = 0; i < r->n_parts; i++)
   {

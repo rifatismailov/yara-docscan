@@ -28,6 +28,7 @@ import (
 	"strings"
 	"time"
 
+	"docscan/cirun/assets"
 	"docscan/cirun/config"
 	"docscan/cirun/deploy"
 	"docscan/cirun/forgejo"
@@ -138,9 +139,23 @@ func main() {
 		src.GitURL = strings.TrimRight(cfg.Forgejo.URL, "/") + "/" + cfg.Forgejo.Repo + ".git"
 		src.GitToken, _ = sec.Get(cfg.Forgejo.CheckoutTokenRef)
 	}
+	// тестові файли поза git (корпуси, шкідливе ПЗ): Мак — локальна копія, віддалені машини — зі сховку
+	if cfg.Tests.Enabled {
+		as, err := assets.Prepare(cfg.Tests, sec, say)
+		if err != nil {
+			say("! test assets: %v - remote machines skip the corpus / malware steps", err)
+		}
+		o.Assets = as
+		if as != nil {
+			say("test assets %s: corpus %s", as.Version, map[bool]string{true: "local + store", false: "local only"}[as.CorpusURL != ""])
+		}
+	}
 	say("build %s (%s) on: %s   fuzzing %ds", sha[:8], branch, strings.Join(o.Plan(), ", "), *fuzz)
 	green := o.Build(ctx, src)
 	o.Summary()
+	if !o.Consistency() { // однакові файли мають дати однакові рішення на всіх ОС
+		green = false
+	}
 
 	tail := []string{}
 	// ---- push коміту на GitHub (лише зелений прогін; від Forgejo не залежить)
@@ -228,6 +243,24 @@ func showPlan(ctx context.Context, cfg *config.Config, sec *config.Resolver, onl
 			check("password", m.Connection.PasswordRef)
 		}
 	}
+	if cfg.Tests.Enabled {
+		t := cfg.Tests
+		for _, d := range append(append([]string{}, t.CorpusDirs...), t.Seeds, t.Malware) {
+			if d == "" {
+				continue
+			}
+			state := "ok"
+			if _, err := os.Stat(config.ExpandHome(d)); err != nil {
+				state = "MISSING"
+				bad++
+			}
+			say("  tests    %-40s %s", d, state)
+		}
+		if t.Store.URL != "" {
+			say("  store    %s/%s (generic package %s)", t.Store.URL, t.Store.Owner, t.Store.Package)
+			check("token", t.Store.TokenRef)
+		}
+	}
 	if cfg.Push.Enabled {
 		url, _ := gitops.Git("remote", "get-url", cfg.Push.Remote)
 		state := "reachable"
@@ -301,7 +334,7 @@ func legacyWindows() int {
 			summary = append(summary, line)
 		}
 	}
-	w := platform.NewWindows(p, sec, rep)
+	w := platform.NewWindows(p, sec, 0, nil, rep)
 	defer w.Close()
 	ctx := context.Background()
 	src := platform.Source{SHA: sha, GitURL: os.Getenv("GIT_URL"), GitToken: os.Getenv("GIT_TOKEN"),

@@ -107,8 +107,9 @@ static void scan_objdata(const uint8_t* d, size_t n, docscan_result_t* r)
 void docscan_inspect_rtf(const uint8_t* data, size_t size, docscan_result_t* r)
 {
   // \objupdate — forces the embedded OLE object to update (fetch/run) on open.
-  // Classic RTF weaponisation (T1203). HIGH.
-  if (docscan_contains_ci(data, size, "\\objupdate"))
+  // Classic RTF weaponisation (T1203). HIGH. Only the real control word counts: "\\objupdate" is
+  // escaped text (e.g. the RTF specification itself describing \objupdate).
+  if (docscan_rtf_has_control_word(data, size, "objupdate"))
     r->rtf_objupdate = 1;
 
   // Presence of an embedded object — context only (common & often benign).

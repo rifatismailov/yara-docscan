@@ -25,7 +25,6 @@ platforms:
     connection:
       type: local         # or: type: ssh, host, port, user/user_ref, key_file/password_ref, known_hosts
     workdir: .            # local: the repository itself; remote: a folder on that machine
-    seeds: ""             # corpus folder for the hostile-files test; empty - the step is skipped
 
   windows:
     enabled: true
@@ -38,6 +37,7 @@ platforms:
           user_ref: "keepassxc:CI/Windows/vm-win11#UserName"
           password_ref: "keepassxc:CI/Windows/vm-win11"
       - name: pc-fallback
+        full_tests: false      # a workstation: only the build and the 35 samples (no corpora, no malware)
         connection:
           type: winrm
           host: <pc-ip>
@@ -58,6 +58,19 @@ platforms:
       key_file: ~/.ssh/docscan_ci        # or password_ref
       known_hosts: ~/.ssh/known_hosts    # the host key is always checked: connect once by hand first
     workdir: /home/ci/docscan
+
+tests:                    # test files outside git, on every platform with full_tests (not on 216)
+  enabled: true
+  corpus_dirs:            # only the document files are taken (doc/xls/ppt/rtf/pdf/lnk/one/...)
+    - docscan-project/fuzz/external   # fuzz/fetch_corpus.sh: POI, pdf.js, plaso, LibreOffice, LNK, Tika, oletools
+  seeds: ~/docscan-ci/seeds           # corpus for the hostile-files test
+  malware: ~/docscan-ci/malware       # REAL malware + expected.txt: only scanned, never run; deleted after the test
+  local_dir: ~/docscan-ci/assets      # the Mac: archives and the unpacked copy
+  store:                  # private generic package in Forgejo: remote machines download from here
+    url: http://<forgejo-ip>:3000
+    owner: rifat
+    package: docscan-tests
+    token_ref: "keepassxc:CI/Forgejo/package-token"
 
 push:                     # the main publication: git push of the tested commit to GitHub
   enabled: true           # always after a green run - does NOT depend on Forgejo; the listener on the

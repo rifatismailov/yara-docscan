@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"docscan/cirun/assets"
 	"docscan/cirun/config"
 	"docscan/cirun/transport"
 )
@@ -19,6 +20,10 @@ type Windows struct {
 	cfg    *config.Platform
 	sec    *config.Resolver
 	report Reporter
+	fuzz   int               // секунди фазингу
+	assets *assets.Assets    // тестові файли поза git (nil — немає)
+	full   bool              // вибрана машина проганяє всі тести (Candidate.full_tests)
+	extra  map[string][]byte // corpus-verdicts.tsv, malware-verdicts.tsv — у артефакти
 
 	t    transport.Transport
 	wdir string // робоча тека на Windows (C:\ci)
@@ -29,12 +34,13 @@ type Windows struct {
 }
 
 // NewWindows створює платформу Windows за розділом конфігу.
-func NewWindows(cfg *config.Platform, sec *config.Resolver, report Reporter) *Windows {
+func NewWindows(cfg *config.Platform, sec *config.Resolver, fuzz int, as *assets.Assets, report Reporter) *Windows {
 	w := cfg.Workdir
 	if w == "" {
 		w = `C:\ci`
 	}
-	return &Windows{cfg: cfg, sec: sec, report: report, wdir: w, repo: w + `\yara`, logs: map[string]string{}}
+	return &Windows{cfg: cfg, sec: sec, report: report, fuzz: fuzz, assets: as, wdir: w, repo: w + `\yara`,
+		logs: map[string]string{}, extra: map[string][]byte{}}
 }
 
 func (w *Windows) Name() string { return "windows" }
@@ -58,6 +64,7 @@ func (w *Windows) Prepare(ctx context.Context) error {
 			wr.SetWorkdir(w.wdir)
 		}
 		w.t = t
+		w.full = m.Full()
 		// цей рядок читає й старий розбір логів; формат лишається тим самим
 		w.report(Event{Platform: "windows", Kind: "machine", Where: t.Where() + " (" + m.Name + ")"})
 		return nil
@@ -101,7 +108,7 @@ func (w *Windows) SyncSource(ctx context.Context, src Source) error {
 	w.sha = src.SHA
 	version := time.Now().Format("20060102") + "-" + src.SHA[:8]
 	w.fill = strings.NewReplacer("{{W}}", w.wdir, "{{REPO}}", w.repo, "{{URL}}", src.GitURL, "{{SHA}}", src.SHA,
-		"{{Y}}", w.repo+`\windows\vs2019\Release\yara64.exe`, "{{V}}", version,
+		"{{Y}}", w.repo+`\windows\vs2019\Release\yara64.exe`, "{{YC}}", w.repo+`\windows\vs2019\Release\yarac64.exe`, "{{V}}", version,
 		"{{HDR}}", "Authorization: token "+src.GitToken).Replace
 
 	useGit := false
@@ -176,22 +183,99 @@ exit $rc
 `, -1), nil
 }
 
-// Test: перевірка документів (check_verdicts.ps1, Python не потрібен) і тести третього проходу
-// (лише якщо є справжній Python; немає — код 3 = SKIP, вони однаково йдуть на macOS/Linux).
+// Test: перевірка документів (check_verdicts.ps1, Python не потрібен) — на будь-якій машині. На машині з
+// full_tests: третій прохід, тестові файли поза git (завантажити зі сховку в C:\ci\tests — виняток
+// Defender), ворожі файли, корпус, шкідливе ПЗ (лише сканування), фазинг (якщо є clang-cl). Після тестів
+// C:\ci\tests видаляється ЗАВЖДИ — корпуси і шкідливе ПЗ на машині не лишаються.
 func (w *Windows) Test(ctx context.Context) ([]StepResult, error) {
-	docs := w.step(ctx, "documents", `
+	steps := []StepResult{w.step(ctx, "documents", `
 Set-Location $repo
 powershell -NoProfile -ExecutionPolicy Bypass -File docscan-project\ci\check_verdicts.ps1 -Yara '{{Y}}' -Rules docscan-project\rules\docscan-index.yar -Samples docscan-project\test-samples\generated -Expected docscan-project\ci\expected-verdicts.tsv -WorkDir "$w\tmp"
 exit $LASTEXITCODE
-`, -1)
-	crit := w.step(ctx, "critical", `
-Set-Location $repo; $env:PYTHONIOENCODING = 'utf-8'
+`, -1)}
+	if !w.full {
+		return steps, nil // машина лише для збірки і 35 зразків (напр. робоча станція)
+	}
+	// $py — справжній Python (не заглушка з WindowsApps); немає — код 3 = SKIP
+	const py = `
 $py = @("python", "python3", "py") | ForEach-Object { Get-Command $_ -EA 0 } | Where-Object { $_.Source -notlike "*WindowsApps*" } | Select-Object -First 1
-if (-not $py) { "no Python on this machine - the third-pass tests run on macOS / Linux"; exit 3 }
-& $py.Source docscan-project\test-critical\run_tests.py --yara '{{Y}}'
+if (-not $py) { "no Python on this machine"; exit 3 }
+$py = $py.Source; $env:PYTHONIOENCODING = 'utf-8'
+`
+	steps = append(steps, w.step(ctx, "critical", py+`
+Set-Location $repo
+& $py docscan-project\test-critical\run_tests.py --yara '{{Y}}'
 exit $LASTEXITCODE
+`, 3))
+
+	if w.assets != nil && w.assets.CorpusURL != "" {
+		defer w.t.Run(context.Background(), w.fill(`Remove-Item "{{W}}\tests" -Recurse -Force -EA 0`), nil)
+		get := w.step(ctx, "assets", py+`
+$t = "$w\tests"; Remove-Item $t -Recurse -Force -EA 0; New-Item -ItemType Directory -Force $t | Out-Null
+$h = @{ Authorization = 'token `+w.assets.Token+`' }
+Invoke-WebRequest -UseBasicParsing -Uri '`+w.assets.CorpusURL+`' -Headers $h -OutFile "$t\corpus.tar.gz"
+tar.exe -xzf "$t\corpus.tar.gz" -C $t; if ($LASTEXITCODE) { "tar failed"; exit 1 }
+Remove-Item "$t\corpus.tar.gz"
+$mal = '`+w.assets.MalwareURL+`'
+if ($mal) {
+  Invoke-WebRequest -UseBasicParsing -Uri $mal -Headers $h -OutFile "$t\malware.zip"
+  & $py -c "import zipfile,sys; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2], pwd=b'`+assets.MalwareZipKey+`')" "$t\malware.zip" "$t\malware"
+  if ($LASTEXITCODE) { "unzip failed"; exit 1 }
+  Remove-Item "$t\malware.zip"
+}
+"corpus: " + (Get-ChildItem "$t\corpus" -Recurse -File).Count + " files, seeds: " + (Get-ChildItem "$t\seeds" -File -EA 0).Count + ", malware: " + (Get-ChildItem "$t\malware" -Recurse -File -EA 0).Count
 `, 3)
-	return []StepResult{docs, crit}, nil
+		steps = append(steps, get)
+		if get.Status == "PASS" {
+			steps = append(steps, w.step(ctx, "hostile", py+`
+Set-Location $repo; $t = "$w\tests"
+& $py docscan-project\test-critical\hostile.py "$t\seeds" "$t\hostile"
+if ($LASTEXITCODE) { exit 1 }
+& $py docscan-project\test-critical\hostile_run.py '{{Y}}' docscan-project\rules\docscan-index.yar docscan-project\test-critical\crit-test.yar "$t\hostile" 120
+exit $LASTEXITCODE
+`, 3))
+			steps = append(steps, w.step(ctx, "corpus", py+`
+Set-Location $repo
+& $py docscan-project\ci\check_corpus.py --yara '{{Y}}' --yarac '{{YC}}' --rules docscan-project\rules\docscan-index.yar --dir "$w\tests\corpus" --out "$w\corpus-verdicts.tsv"
+exit $LASTEXITCODE
+`, 3))
+			w.keep(ctx, "corpus-verdicts.tsv")
+			if w.assets.MalwareURL != "" {
+				steps = append(steps, w.step(ctx, "malware", py+`
+Set-Location $repo
+& $py docscan-project\ci\check_corpus.py --yara '{{Y}}' --yarac '{{YC}}' --rules docscan-project\rules\docscan-index.yar --dir "$w\tests\malware" --out "$w\malware-verdicts.tsv" --expect "$w\tests\malware\expected.txt"
+exit $LASTEXITCODE
+`, 3))
+				w.keep(ctx, "malware-verdicts.tsv")
+			}
+		}
+	}
+
+	if w.fuzz > 0 {
+		// фазер розбору (clang-cl + libFuzzer + ASan); немає LLVM — SKIP (на ВМ: choco install llvm)
+		steps = append(steps, w.step(ctx, "fuzz", `
+Set-Location $repo
+if (-not (Test-Path "C:\Program Files\LLVM\bin\clang-cl.exe")) { "no LLVM (clang-cl) on this machine: choco install llvm"; exit 3 }
+$f = "$w\fuzz"; Remove-Item $f -Recurse -Force -EA 0
+powershell -NoProfile -ExecutionPolicy Bypass -File docscan-project\fuzz\build_windows.ps1 -Repo $repo -Out $f
+if (-not (Test-Path "$f\docscan_parsers_fuzzer.exe")) { exit 1 }
+New-Item -ItemType Directory -Force "$f\corpus", "$f\crashes" | Out-Null
+$seeds = @("$w\tests\corpus\oletools", "$w\tests\corpus\tika") | Where-Object { Test-Path $_ }
+& "$f\docscan_parsers_fuzzer.exe" "-dict=$repo\docscan-project\fuzz\docscan.dict" -max_len=262144 -max_total_time=`+fmt.Sprint(w.fuzz)+` -timeout=20 -rss_limit_mb=2048 "-artifact_prefix=$f\crashes\" "$f\corpus" @seeds 2>&1 | Select-String -Pattern "^#|Done|ERROR|crash" | Select-Object -Last 15 | % { $_.Line }
+$rc = $LASTEXITCODE
+$n = (Get-ChildItem "$f\crashes" -File).Count
+"crash/timeout inputs: $n"
+if ($rc -ne 0 -or $n -gt 0) { exit 1 }
+`, 3))
+	}
+	return steps, nil
+}
+
+// keep забирає файл результату з робочої теки машини (для артефактів і звірки між платформами).
+func (w *Windows) keep(ctx context.Context, name string) {
+	if b, err := w.t.Download(ctx, w.wdir+`\`+name); err == nil {
+		w.extra[name] = b
+	}
 }
 
 // FetchArtifacts: build_package.ps1 -> C:\ci\dist\DocScan-<версія>.zip -> сюди (+ .sha256), логи кроків, summary.txt.
@@ -234,6 +318,9 @@ func (w *Windows) CollectLogs(ctx context.Context, dst string) { w.SaveLogs(dst)
 // SaveLogs пише вивід кожного виконаного кроку у <dst>/windows-<крок>.log.
 func (w *Windows) SaveLogs(dst string) {
 	os.MkdirAll(dst, 0o755)
+	for n, b := range w.extra {
+		os.WriteFile(filepath.Join(dst, n), b, 0o644)
+	}
 	for n, l := range w.logs {
 		os.WriteFile(filepath.Join(dst, "windows-"+n+".log"), []byte(l), 0o644)
 	}

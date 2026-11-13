@@ -9,7 +9,8 @@
 #include <string.h>
 
 #include "miniz.h"
-#include "zip.h"  // DOCSCAN_ZIP_MAX_ENTRY
+#include "search.h"  // docscan_rtf_control_word_at
+#include "zip.h"     // DOCSCAN_ZIP_MAX_ENTRY
 
 // ---- small helpers ----
 // All paths are UTF-8. On Windows they go through the wide-char CRT so names
@@ -155,7 +156,9 @@ static int cure_rtf(const char* path, char* action, size_t asz)
   int changed = 0;
   for (size_t i = 0; i + 10 <= n; i++)
   {
-    if (memcmp(b + i, "\\objupdate", 10) == 0)
+    // only the real control word (the same test as detection): escaped text "\\objupdate" in a
+    // document is left untouched
+    if (b[i] == '\\' && docscan_rtf_control_word_at(b, n, i, "objupdate"))
     {
       b[i + 9] = 'X';  // \objupdate -> \objupdatX (control word broken)
       changed = 1;

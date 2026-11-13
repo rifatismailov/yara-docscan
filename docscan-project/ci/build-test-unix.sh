@@ -73,6 +73,32 @@ else
   echo "hostile        SKIP  (no CI_SEEDS)" | tee -a "$SUMMARY"
 fi
 
+# corpus: documents from public test corpora (cirun test assets); verdicts -> corpus-verdicts.tsv, which
+# cirun compares between the platforms
+if [ -n "${CI_CORPUS:-}" ] && [ -d "${CI_CORPUS:-}" ]; then
+  corpus() {
+    python3 docscan-project/ci/check_corpus.py --yara ./yara --yarac ./yarac \
+      --rules docscan-project/rules/docscan-index.yar --dir "$CI_CORPUS" --out "$OUT/corpus-verdicts.tsv" &&
+    cp "$OUT/corpus-verdicts.tsv" "$OUT/artifacts/"
+  }
+  step corpus corpus
+else
+  echo "corpus         SKIP  (no CI_CORPUS)" | tee -a "$SUMMARY"
+fi
+
+# malware: real samples, ONLY scanned (never executed); files in expected.txt must get a vendor match
+if [ -n "${CI_MALWARE:-}" ] && [ -d "${CI_MALWARE:-}" ]; then
+  malware() {
+    python3 docscan-project/ci/check_corpus.py --yara ./yara --yarac ./yarac \
+      --rules docscan-project/rules/docscan-index.yar --dir "$CI_MALWARE" --out "$OUT/malware-verdicts.tsv" \
+      --expect "$CI_MALWARE/expected.txt" &&
+    cp "$OUT/malware-verdicts.tsv" "$OUT/artifacts/"
+  }
+  step malware malware
+else
+  echo "malware        SKIP  (no CI_MALWARE)" | tee -a "$SUMMARY"
+fi
+
 if [ "$FUZZ_SECONDS" -gt 0 ]; then
   fuzz() {
     B="$OUT/fuzz"

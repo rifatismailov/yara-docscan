@@ -235,7 +235,7 @@ for compatibility and convenience; the policy mostly works with the facts below.
 | Group | Field | Level | Meaning |
 |---|---|---|---|
 | type | `is_ooxml` `is_ole` `is_rtf` `is_pdf` `is_lnk` | — | file type by magic |
-| RTF | `rtf_objupdate` | HIGH | `\objupdate` — the OLE object updates (is fetched) on open (T1203) |
+| RTF | `rtf_objupdate` | HIGH | the `\objupdate` control word — the OLE object updates (is fetched) on open (T1203). Only a real one: an even number of `\` before it (the text `\\objupdate`, e.g. in the RTF specification, is not a command; disarm leaves it alone too) |
 | | `rtf_embedded_object` | context | `\objdata` / `\objlink` / `\objhtml` (often legitimate; not counted in the verdict) |
 | PDF | `pdf_launch` | HIGH | `/Launch` — runs an external program |
 | | `pdf_js_auto` | HIGH | JS present plus a dangerous API (see 4.7) |
@@ -281,6 +281,7 @@ document with junk must not silently hide the interesting part):
 | `activex[]` / `number_of_activex` | string array / integer | ActiveX: CLSID from `activeX*.xml` or `ocx` (stream `\x03OCXNAME`) |
 | `altchunks[]` / `number_of_altchunks` | string array / integer | altChunk (`aFChunk`) relationship targets |
 | `xlm_macrosheets` | integer | Excel 4.0 macro sheets |
+| `encrypted` | integer | password-encrypted document: OOXML `EncryptedPackage`, `.doc` `fEncrypted`, `.xls` `FILEPASS`, `.ppt` `EncryptedSummary` |
 | `vba_code`, `lnk_target`, `lnk_args` | string | macro source; LNK target and arguments |
 
 Example in a rule: `for any rel in docscan.external_rels : (rel.target matches /^https?:/i)`.
@@ -569,7 +570,7 @@ A policy rule must not be `private` (YARA never reports private rules).
 | `DS_DDE_AUTO` | a `dde[]` entry starts with `DDEAUTO` | HIGH | `dde` |
 | `DS_DDE_LINK` | `DDE ` (not AUTO): Word field, Excel formula `cmd\|'…'!A0`, Excel `ddeLink` — containing cmd/powershell/mshta/rundll32/regsvr32/msiexec/certutil/bitsadmin/wscript/cscript | HIGH | `dde` |
 | `DS_EMBEDDED_PE` / `DS_EMBEDDED_LNK` | `embedded[].is_pe` / `.is_lnk` | HIGH | `embedded` |
-| `DS_EXTERNAL_OLE` / `DS_EXTERNAL_FRAME` | external `oleObject` (not Follina) / `frame` | MEDIUM | — |
+| `DS_EXTERNAL_OLE` / `DS_EXTERNAL_FRAME` | external `oleObject` to a **remote** target (http/ftp/webdav, `\\server`, `file://server`; not a local file, e.g. chart data) (not Follina) / `frame` | MEDIUM | — |
 | `DS_MACRO_PRESENT` | VBA with code (`vba_procedures > 0`); a project with only empty sheet modules is not a finding | **INFO** | — |
 | `DS_MACRO_UNREADABLE` | a VBA project whose source could not be read at all (`vba_code` empty) | MEDIUM | — |
 | `DS_MACRO_STOMPED` | VBA stomping: no procedures in the source, but an auto-run name and a module without source holding p-code ≥ 2 KB (T1564.007) | MEDIUM | — |
@@ -583,7 +584,9 @@ A policy rule must not be `private` (YARA never reports private rules).
 | `DS_MACRO_SELFCODE` | VBProject, VBComponents, CodeModule | MEDIUM | — |
 | `DS_MACRO_OBFUSCATED` | `Chr(n)&Chr(n)&Chr(n)…` chains, hex strings ≥ 64 chars (T1027); a single `Chr(65 + m)` is not a chain | MEDIUM | — |
 | `DS_MACRO_NETWORK` | XMLHTTP, WinHttp, InternetOpen, Net.WebClient | MEDIUM | — |
-| `DS_RTF_OBJUPDATE` | RTF and `\objupdate` | HIGH | `rtf_objupdate` |
+| `DS_RTF_OBJUPDATE` | RTF and a real `\objupdate` control word (`rtf_objupdate`) | HIGH | `rtf_objupdate` |
+| `DS_ENCRYPTED` | password-encrypted document | INFO | — |
+| `DS_ENCRYPTED_MACRO` | encrypted **and** a macro-enabled name (docm/xlsm/xlsb/pptm/xlam…) or a visible VBA project: the macro is not checked, Excel opens its default password (VelvetSweatshop) without asking (T1027) | MEDIUM | — |
 | `DS_PDF_LAUNCH` | `/Launch` | HIGH | `quarantine` |
 | `DS_PDF_JS_AUTO` / `DS_PDF_JS` | `/JavaScript`/`/JS` with / without a dangerous API | HIGH (`quarantine`) / MEDIUM | |
 | `DS_PDF_OPENACTION` | `/OpenAction`/`/AA` without JS (usually start page/zoom) | INFO | — |
@@ -1195,7 +1198,7 @@ With centrally managed agents (`agent.conf` in a manager group) the same `<local
    | 101302 | 12 | `ACTIVEX_BROWSER` | ActiveX browser (T1203) |
    | 101303 | 12 | `category = general` | malicious exe/dll/script/archive (vendor YARA) |
    | 101310 | **12** | `EXTERNAL_OLE`, `EXTERNAL_FRAME` | external content (T1221) |
-   | 101311 | 7 | `MACRO_NETWORK`, `MACRO_STOMPED`, `MACRO_UNREADABLE`, `MACRO_COM`, `MACRO_API`, `MACRO_FILES`, `MACRO_REGISTRY`, `MACRO_SYSTEM`, `MACRO_SELFCODE`, `MACRO_OBFUSCATED` | macros with dangerous capabilities; `MACRO_PRESENT` and `MACRO_AUTOEXEC` are INFO, no alert (T1059.005) |
+   | 101311 | 7 | `MACRO_NETWORK`, `MACRO_STOMPED`, `MACRO_UNREADABLE`, `MACRO_COM`, `MACRO_API`, `MACRO_FILES`, `MACRO_REGISTRY`, `MACRO_SYSTEM`, `MACRO_SELFCODE`, `MACRO_OBFUSCATED`, `ENCRYPTED_MACRO` | macros with dangerous capabilities; `MACRO_PRESENT` and `MACRO_AUTOEXEC` are INFO, no alert (T1059.005) |
    | 101312 | 7 | `PDF_JS`, `PDF_EMBEDDED` | PDF with JS / attachment |
    | 101313 | 7 | `LNK_REMOTE_TARGET`, `LNK_LOLBIN` | shortcut (T1204.001) |
    | 101314 | **12** | `ACTIVEX` | ActiveX control |

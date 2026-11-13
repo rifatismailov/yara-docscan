@@ -6,11 +6,14 @@ dde_link.docx	HIGH	stripped	INFO
 dde_split.docx	HIGH	stripped	INFO
 embedded_lnk.docx	HIGH	removed	INFO
 embedded_pe.docx	HIGH	removed	INFO
+encrypted.docx	INFO	-	INFO
+encrypted_macro.xlsm	MEDIUM	-	MEDIUM
 equation.rtf	HIGH	quarantined	DELETED
 equation_ole.docx	HIGH	removed	INFO
 excel_dde_formula.xlsx	HIGH	stripped	INFO
 excel_ddelink.xlsx	HIGH	stripped	INFO
 external_ole.docx	MEDIUM	-	MEDIUM
+external_ole_local.docx	INFO	-	INFO
 lnk_lolbin.lnk	HIGH	deleted	DELETED
 macro_deep_shell.docm	HIGH	removed	INFO
 macro_deleted.xls	INFO	-	INFO
@@ -27,6 +30,7 @@ pdf_launch.pdf	HIGH	quarantined	DELETED
 protocol_handler.docx	HIGH	removed	INFO
 remote_template.docx	HIGH	removed	INFO
 rtf_objupdate.rtf	HIGH	stripped	INFO
+rtf_text_objupdate.rtf	INFO	-	INFO
 vendor_shellexec.docm	HIGH	removed	INFO
 xlm_macrosheet.xls	MEDIUM	-	MEDIUM
 xlm_macrosheet.xlsm	MEDIUM	-	MEDIUM

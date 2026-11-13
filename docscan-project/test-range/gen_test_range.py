@@ -270,6 +270,7 @@ def gen():
 
     created += gen_objects()
     created += gen_vba_projects()
+    created += gen_fp_regressions()
 
     return created
 
@@ -565,6 +566,30 @@ def gen_vba_projects():
         [("Module1", b"\xAA" * 900 + ovba_multi(src)),
          ("_VBA_PROJECT", vba_identifiers(["Module1", "Workbook_Open", "Fill000"]))])})
     out.append("macro_deep_shell.docm")
+    return out
+
+# ---------- false-positive regressions and encrypted documents ----------
+def gen_fp_regressions():
+    out = []
+    # 28. An RTF document ABOUT RTF: its text mentions \objupdate, written as escaped text "\\objupdate"
+    #     (like the RTF specification). Not a control word -> INFO, and disarm must not touch it.
+    open(os.path.join(OUT, "rtf_text_objupdate.rtf"), "w").write(
+        "{\\rtf1\\ansi {\\b Control words}\\par The control word \\\\objupdate forces an update of an object."
+        "\\par {\\\\objupdate } is described in section 12.\\par}")
+    out.append("rtf_text_objupdate.rtf")
+    # 29. A chart linked to a LOCAL workbook (external oleObject, file:///C:\...) - ordinary linked
+    #     data, not a remote object -> INFO
+    write_docx("external_ole_local.docx", {"word/_rels/document.xml.rels": rels([
+        ("oleObject", "file:///C:\\Users\\user\\Documents\\chart-data.xlsx", "External")])})
+    out.append("external_ole_local.docx")
+    # 30. Password-encrypted OOXML: a CFB with EncryptionInfo + EncryptedPackage (dummy content - the
+    #     encrypted bytes cannot be inspected anyway). .docx -> INFO (ENCRYPTED);
+    #     .xlsm -> MEDIUM (ENCRYPTED_MACRO: a macro-enabled name, the macro cannot be checked)
+    enc = build_cfb_multi([("EncryptionInfo", b"\x04\x00\x04\x00\x40\x00\x00\x00" + bytes(200)),
+                           ("EncryptedPackage", struct.pack("<Q", 4096) + bytes(4096))])
+    for name in ("encrypted.docx", "encrypted_macro.xlsm"):
+        open(os.path.join(OUT, name), "wb").write(enc)
+        out.append(name)
     return out
 
 # ---------- minimal LNK ----------

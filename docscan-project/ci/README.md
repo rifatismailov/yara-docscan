@@ -37,10 +37,10 @@ git push на GitHub (push.remote) — ЗАВЖДИ, від Forgejo не зал�
 | `cirun/gitops/`, `cirun/deploy/` | коміт з перевіркою безпеки, `git archive`; набір для розгортання і публікація на сервер |
 | `docscan-project/ci/build-test-unix.sh [all\|build\|test]` | збірка і тести на macOS / Linux (cirun кличе `build`, потім `test`) |
 | `docscan-project/ci/check_verdicts.ps1` / `.py` | перевірка документів (Windows без Python / інші ОС) |
-| `docscan-project/ci/expected-verdicts.tsv` | еталон для 31 зразка `test-samples/generated` (оновлювати свідомо: `check_verdicts.py --write`) |
+| `docscan-project/ci/expected-verdicts.tsv` | еталон для 35 зразків `test-samples/generated` (оновлювати свідомо: `check_verdicts.py --write`) |
 | `.forgejo/workflows/ci.yml` | Дія у Forgejo (нічний прогін); її завдання windows кличе `cirun windows` (змінні середовища) |
 
-Тести в кожному прогоні: **документи** (31 зразок, серед них 7 макросів VBA проти хибних тривог: вердикт, лікування,
+Тести в кожному прогоні: **документи** (35 зразків, серед них 7 макросів VBA і 4 регресії хибних тривог / шифрування: вердикт, лікування,
 повторний скан, оригінали не змінені), **3-й прохід** (`test-critical/run_tests.py`, 299 перевірок), **ворожі файли**
 (35, якщо на машині є корпус `seeds`), **фазинг** (обидва фазери, ASan + UBSan; на Windows не запускається).
 
@@ -109,6 +109,58 @@ token_ref:    "keepassxc:CI/Forgejo/api-token"
 - `forgejo:` — **необов'язково** (`enabled: false`). Якщо увімкнути: після push на GitHub, коли Forgejo доступний,
   `mode: mirror` викликає mirror-sync (дзеркало оновиться одразу, а не за розкладом), `mode: push` ще й пушить у
   Forgejo; `report.commit_status` — статуси `cirun/<ОС>`. Недоступний Forgejo — лише повідомлення в терміналі.
+
+## Тести на кожній платформі
+
+Кожен ▷ проганяє на кожній машині з `full_tests: true` (Мак, ВМ Windows, ВМ Linux) однаковий набір:
+
+| Крок | Що | Звідки файли |
+|---|---|---|
+| documents | 35 неактивних зразків: вердикт, лікування, повторний скан | git (`test-samples/generated`) |
+| critical | третій прохід, 299 перевірок | створює сам |
+| hostile | 35 ворожих файлів (зламані, гігантські, глибока вкладеність) | з корпусу seeds |
+| corpus | ~4 000 документів з публічних тестових корпусів | POI, pdf.js, plaso, LibreOffice RTF, LNK, Apache Tika, oletools |
+| malware | **справжнє** шкідливе ПЗ (майнер XMRig) і EICAR: лише сканування, ніколи не запускається | `~/docscan-ci/malware` |
+| fuzz | фазинг (на Windows — фазер розбору, clang-cl + ASan) | — |
+
+ПК 216 — робоча станція: `full_tests: false`, лише збірка і documents (без корпусів і шкідливого ПЗ).
+
+**Звірка між платформами.** Вердикти корпусу (`corpus-verdicts.tsv`) кожної платформи порівнюються: рішення
+DocScan (вердикт і знахідки) на тих самих файлах мають збігатися точно — інакше прогін не зелений.
+Різниця лише у вендорних збігах — попередження (частина вендорних правил дивиться на шлях до файлу).
+
+**Майнер:** файли з `expected.txt` мають отримати збіг вендорного правила (XMRig, драйвер WinRing0,
+`taskhost.exe`, EICAR).
+
+### Звідки беруться тестові файли поза git
+
+```
+Мак: fuzz/external (лише документи) + ~/docscan-ci/seeds ─► corpus.tar.gz ─┐
+     ~/docscan-ci/malware (+ expected.txt) ─► malware.zip (пароль infected) ─┤
+                                                                             ▼
+          приватний сховок пакетів Forgejo (generic package docscan-tests, версія = хеш вмісту)
+                                                                             │
+          ВМ Windows: C:\ci\tests (виняток Defender)  ◄─────────────────────┤   завантажити → тести →
+          ВМ Linux:   <workdir>/tests                 ◄─────────────────────┘   ВИДАЛИТИ (завжди)
+```
+
+- Архіви перезбираються лише коли файли змінилися; у сховок викладаються лише нові версії.
+- Мак тестує розпаковану копію того самого архіву (`~/docscan-ci/assets/<версія>/unpacked`) — набір файлів
+  на всіх платформах однаковий.
+- Токен лише на пакети: `keepassxc:CI/Forgejo/package-token`. Сховок недоступний — Мак тестує локально,
+  віддалені машини пропускають corpus / malware (попередження в терміналі).
+- Корпуси: `docscan-project/fuzz/fetch_corpus.sh` (у git їх немає).
+
+### Шкідливе ПЗ — правила
+
+- **Ніколи не запускати.** Лише сканування yara.
+- Лише Мак і тестові ВМ; **ніколи на 216** і **ніколи в git**; на ВМ видаляється після кожного тесту.
+- Вихідна копія — `~/docscan-ci/malware/` (лише на читання), список обов'язкових збігів — `expected.txt` там же.
+
+### Що потрібно на ВМ Windows
+
+Windows 10/11, WinRM (5985), VS Build Tools 2022 (C++), Git, Python 3 (справжній, не з Microsoft Store),
+виняток Defender для `C:\ci`; для фазингу — LLVM (`choco install llvm`). Без LLVM крок fuzz — SKIP.
 
 ## Набір для розгортання і публікація
 

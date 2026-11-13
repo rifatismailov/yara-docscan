@@ -90,6 +90,9 @@ typedef struct
   char altchunks[DOCSCAN_MAX_ALTCHUNK][256];  // altChunk (aFChunk) relationship targets
   int n_altchunks;
   int xlm_macrosheets;      // Excel 4.0 (XLM) macro sheets
+  int encrypted;            // password-encrypted Office document: the content (macros, links,
+                            // objects) cannot be inspected (OOXML EncryptedPackage, .doc fEncrypted,
+                            // .xls FILEPASS, .ppt EncryptedSummary)                   (fact)
 
   // --- parts for the second scan (see docscan_part_t) ---
   docscan_part_t parts[DOCSCAN_MAX_PARTS];

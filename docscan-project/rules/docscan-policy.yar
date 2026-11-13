@@ -117,7 +117,11 @@ rule DS_EXTERNAL_OLE
     for any rel in docscan.external_rels : (
       rel.type iendswith "/oleObject" and
       // Follina uses an external oleObject too — that is DS_PROTOCOL_HANDLER
-      not rel.target matches /^(ms-msdt|search-ms|search|ms-officecmd|mhtml|ms-word|ms-excel|ms-powerpoint|!x-usc):/i
+      not rel.target matches /^(ms-msdt|search-ms|search|ms-officecmd|mhtml|ms-word|ms-excel|ms-powerpoint|!x-usc):/i and
+      // only a REMOTE target: http(s)/ftp/webdav, a UNC path \\server\share, file://server/share.
+      // A local file (file:///C:\..., C:\...) is ordinary linked data, e.g. a chart whose data
+      // lives in a workbook next to it.
+      rel.target matches /^((https?|ftp|webdav|davs?):|\\\\|\/\/|file:\/\/[^\/]|file:\/\/\/(\/|\\\\))/i
     )
 }
 
@@ -320,6 +324,39 @@ rule DS_MACRO_NETWORK
     for any l in docscan.vba_lines : (l matches /\b(XMLHTTP|ServerXMLHTTP|WinHttp|InternetOpen|Net\.WebClient)\b/i)
 }
 
+// ============================== encryption =================================
+// docscan.encrypted = a password-encrypted Office document: macros, links and objects inside
+// cannot be inspected. Excel opens a file encrypted with its default password ("VelvetSweatshop")
+// WITHOUT asking, so encryption is also a way to hide a macro from scanners.
+
+// Any encrypted document: a fact (lawyers / accounting / HR protect documents legitimately).
+rule DS_ENCRYPTED
+{
+  meta:
+    severity = "INFO"
+    text     = "Документ зашифровано паролем: вміст (макроси, посилання, об'єкти) не перевірено"
+    finding  = "ENCRYPTED"
+  condition:
+    docscan.encrypted == 1
+}
+
+// Encrypted AND (named as a macro-enabled file OR a VBA project is visible: an encrypted .xls keeps
+// its macros outside the encrypted workbook stream): the content cannot be checked, but it may run
+// code on open.
+rule DS_ENCRYPTED_MACRO
+{
+  meta:
+    severity = "MEDIUM"
+    text     = "Зашифрований документ з макросами (docm/xlsm/xlsb/pptm…): макрос не перевірено, Excel відкриває стандартний пароль без запиту"
+    finding  = "ENCRYPTED_MACRO"
+    mitre    = "T1027"
+  condition:
+    docscan.encrypted == 1 and (
+      extension matches /^\.(docm|dotm|xlsm|xltm|xlsb|xla|xlam|pptm|potm|ppsm|ppam)$/ or
+      docscan.macro_present == 1
+    )
+}
+
 // ================================= RTF =====================================
 
 rule DS_RTF_OBJUPDATE
@@ -330,10 +367,10 @@ rule DS_RTF_OBJUPDATE
     finding  = "RTF_OBJUPDATE"
     disarm   = "rtf_objupdate"
     mitre    = "T1203"
-  strings:
-    $objupdate = "\\objupdate" nocase
   condition:
-    docscan.is_rtf == 1 and $objupdate
+    // the module counts only the real control word: "\\objupdate" is escaped text (a document
+    // about RTF, e.g. the RTF specification), not a command
+    docscan.is_rtf == 1 and docscan.rtf_objupdate == 1
 }
 
 // ================================= PDF =====================================
