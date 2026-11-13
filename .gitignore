@@ -120,3 +120,6 @@ __pycache__/
 !/.vscode/tasks.json
 # CI output
 /ci-out/
+
+# cirun: real settings with internal addresses (passwords are only references) - never in git
+/docscan-project/ci/config.yaml

@@ -1,0 +1,247 @@
+package platform
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"docscan/cirun/config"
+	"docscan/cirun/transport"
+)
+
+// Windows — збірка MSBuild-ом на Windows-машині (зараз через WinRM; кандидати — ВМ, потім запасний ПК).
+type Windows struct {
+	cfg    *config.Platform
+	sec    *config.Resolver
+	report Reporter
+
+	t    transport.Transport
+	wdir string // робоча тека на Windows (C:\ci)
+	repo string // код: <wdir>\yara
+	sha  string // коміт, що збирається (для версії пакета)
+	logs map[string]string
+	fill func(string) string // підставляє {{W}}, {{REPO}}, {{Y}}, {{V}}, … у скрипти
+}
+
+// NewWindows створює платформу Windows за розділом конфігу.
+func NewWindows(cfg *config.Platform, sec *config.Resolver, report Reporter) *Windows {
+	w := cfg.Workdir
+	if w == "" {
+		w = `C:\ci`
+	}
+	return &Windows{cfg: cfg, sec: sec, report: report, wdir: w, repo: w + `\yara`, logs: map[string]string{}}
+}
+
+func (w *Windows) Name() string { return "windows" }
+
+// Prepare: перший кандидат з відкритим портом; WinRM-транспорт з робочою текою w.wdir.
+func (w *Windows) Prepare(ctx context.Context) error {
+	var tried []string
+	for _, m := range w.cfg.Machines() {
+		if m.Connection.Type != "winrm" {
+			return fmt.Errorf("%s: Windows over %q is not supported yet (winrm only)", m.Name, m.Connection.Type)
+		}
+		if !transport.Reachable(m.Connection) {
+			tried = append(tried, m.Name+" ("+m.Connection.Host+")")
+			continue
+		}
+		t, err := transport.New(ctx, m.Connection, w.sec)
+		if err != nil {
+			return fmt.Errorf("%s: %w", m.Name, err)
+		}
+		if wr, ok := t.(*transport.WinRM); ok {
+			wr.SetWorkdir(w.wdir)
+		}
+		w.t = t
+		// цей рядок читає й старий розбір логів; формат лишається тим самим
+		w.report(Event{Platform: "windows", Kind: "machine", Where: t.Where() + " (" + m.Name + ")"})
+		return nil
+	}
+	return fmt.Errorf("no Windows build machine is reachable: %s", strings.Join(tried, ", "))
+}
+
+// common — початок кожного скрипта: $w, $repo, робоча тека і виняток Defender для неї (тестові зразки
+// навмисно схожі на шкідливі, Defender не повинен їх забирати).
+const winCommon = `
+$w = '{{W}}'; $repo = '{{REPO}}'
+New-Item -ItemType Directory -Force $w | Out-Null
+if (Get-Command Add-MpPreference -EA 0) {
+  try { if (@((Get-MpPreference).ExclusionPath) -notcontains $w) { Add-MpPreference -ExclusionPath $w -EA Stop } } catch { }
+}
+`
+
+// step виконує один PowerShell-крок: подія start, вивід у logs, подія done з PASS / FAIL / SKIP.
+// skipRC — код виходу, що означає «пропущено» (-1 — такого немає).
+func (w *Windows) step(ctx context.Context, name, script string, skipRC int) StepResult {
+	w.report(Event{Platform: "windows", Kind: "start", Step: name})
+	t := time.Now()
+	r, err := w.t.Run(ctx, w.fill(winCommon+script), nil)
+	res := StepResult{Name: name, Status: "FAIL", Duration: time.Since(t), Log: r.Output}
+	switch {
+	case err != nil:
+		res.Log += "\nWinRM: " + err.Error()
+	case skipRC >= 0 && r.ExitCode == skipRC:
+		res.Status = "SKIP"
+	case r.ExitCode == 0:
+		res.Status = "PASS"
+	}
+	w.logs[name] = res.Log
+	w.report(Event{Platform: "windows", Kind: "done", Step: name, Result: &res})
+	return res
+}
+
+// SyncSource: git з Forgejo, якщо машина його бачить і має git (source: auto | git), інакше zip
+// точного коміту, переданий транспортом (source: auto | zip). Кеш пакетів NuGet зберігається.
+func (w *Windows) SyncSource(ctx context.Context, src Source) error {
+	w.sha = src.SHA
+	version := time.Now().Format("20060102") + "-" + src.SHA[:8]
+	w.fill = strings.NewReplacer("{{W}}", w.wdir, "{{REPO}}", w.repo, "{{URL}}", src.GitURL, "{{SHA}}", src.SHA,
+		"{{Y}}", w.repo+`\windows\vs2019\Release\yara64.exe`, "{{V}}", version,
+		"{{HDR}}", "Authorization: token "+src.GitToken).Replace
+
+	useGit := false
+	if w.cfg.Source != "zip" && src.GitURL != "" {
+		r, _ := w.t.Run(ctx, w.fill(`
+try { $r = Invoke-WebRequest -UseBasicParsing '{{URL}}' -Method Head -TimeoutSec 6; 'forgejo: yes' } catch { 'forgejo: no' }
+if (Get-Command git -EA 0) { 'git: yes' } else { 'git: no' }
+`), nil)
+		useGit = strings.Contains(r.Output, "forgejo: yes") && strings.Contains(r.Output, "git: yes")
+	}
+	if w.cfg.Source == "git" && !useGit {
+		return fmt.Errorf("source: git, but the machine does not see Forgejo or has no git")
+	}
+	var res StepResult
+	if useGit {
+		res = w.step(ctx, "checkout", `
+if (Test-Path "$repo" -PathType Container) { if (-not (Test-Path "$repo\.git")) { Remove-Item $repo -Recurse -Force } }
+if (-not (Test-Path "$repo\.git")) { git -c "http.extraHeader={{HDR}}" clone --no-checkout '{{URL}}' $repo 2>&1 | % { "$_" } }
+Set-Location $repo
+git -c "http.extraHeader={{HDR}}" fetch --force origin {{SHA}} 2>&1 | % { "$_" }
+git checkout --force {{SHA}} 2>&1 | % { "$_" }
+git clean -xfdq -e windows/vs2019/packages 2>&1 | % { "$_" }
+"commit: " + (git rev-parse HEAD) + " (git)"
+if ((git rev-parse HEAD) -ne '{{SHA}}') { exit 1 }
+`, -1)
+	} else {
+		data, err := src.Archive("zip")
+		if err != nil {
+			return err
+		}
+		if err := w.t.Upload(ctx, data, w.wdir+`\src.zip`); err != nil {
+			return fmt.Errorf("source upload: %w", err)
+		}
+		res = w.step(ctx, "checkout", `
+$keep = "$w\packages-cache"
+if (Test-Path "$repo\windows\vs2019\packages") { Remove-Item $keep -Recurse -Force -EA 0; Move-Item "$repo\windows\vs2019\packages" $keep }
+Remove-Item $repo -Recurse -Force -EA 0
+Expand-Archive "$w\src.zip" $repo -Force
+Remove-Item "$w\src.zip"
+if (Test-Path $keep) { Move-Item $keep "$repo\windows\vs2019\packages" }
+"commit: {{SHA}} (zip, `+fmt.Sprint(len(data))+` bytes)"
+`, -1)
+	}
+	if res.Status != "PASS" {
+		return fmt.Errorf("checkout failed")
+	}
+	return nil
+}
+
+// Build: пакети NuGet (nuget, кеш з попередньої збірки або завантажений nuget.exe), потім MSBuild
+// Release x64 (v143) проєктів yara і yarac; у лог — помилки, попередження компілятора і «->».
+func (w *Windows) Build(ctx context.Context) (StepResult, error) {
+	return w.step(ctx, "build", `
+Set-Location $repo
+$pk = "windows\vs2019\packages"
+if (Get-Command nuget -EA 0) { nuget restore windows\vs2019\yara.sln 2>&1 | Select-Object -Last 2 }
+elseif (-not (Test-Path $pk)) {
+  $cache = @("C:\docscan-build\yara\windows\vs2019\packages") | Where-Object { Test-Path $_ } | Select-Object -First 1
+  if ($cache) { Copy-Item $cache $pk -Recurse; "packages: copied from $cache" }
+  else {
+    New-Item -ItemType Directory -Force "$w\tools" | Out-Null
+    if (-not (Test-Path "$w\tools\nuget.exe")) { Invoke-WebRequest -UseBasicParsing https://dist.nuget.org/win-x86-commandline/latest/nuget.exe -OutFile "$w\tools\nuget.exe" }
+    & "$w\tools\nuget.exe" restore windows\vs2019\yara.sln 2>&1 | Select-Object -Last 2
+  }
+}
+$mb = Get-ChildItem "C:\Program Files*\Microsoft Visual Studio\*\*\MSBuild\Current\Bin\MSBuild.exe" -EA 0 | Select -First 1 -Expand FullName
+& $mb windows\vs2019\yara.sln "/t:yara;yarac" /p:Configuration=Release /p:Platform=x64 /p:PlatformToolset=v143 /m /v:m /nologo 2>&1 |
+  ForEach-Object { "$_" } | Where-Object { $_ -match "error|warning C|->" }
+$rc = $LASTEXITCODE
+& .\windows\vs2019\Release\yara64.exe --version
+exit $rc
+`, -1), nil
+}
+
+// Test: перевірка документів (check_verdicts.ps1, Python не потрібен) і тести третього проходу
+// (лише якщо є справжній Python; немає — код 3 = SKIP, вони однаково йдуть на macOS/Linux).
+func (w *Windows) Test(ctx context.Context) ([]StepResult, error) {
+	docs := w.step(ctx, "documents", `
+Set-Location $repo
+powershell -NoProfile -ExecutionPolicy Bypass -File docscan-project\ci\check_verdicts.ps1 -Yara '{{Y}}' -Rules docscan-project\rules\docscan-index.yar -Samples docscan-project\test-samples\generated -Expected docscan-project\ci\expected-verdicts.tsv -WorkDir "$w\tmp"
+exit $LASTEXITCODE
+`, -1)
+	crit := w.step(ctx, "critical", `
+Set-Location $repo; $env:PYTHONIOENCODING = 'utf-8'
+$py = @("python", "python3", "py") | ForEach-Object { Get-Command $_ -EA 0 } | Where-Object { $_.Source -notlike "*WindowsApps*" } | Select-Object -First 1
+if (-not $py) { "no Python on this machine - the third-pass tests run on macOS / Linux"; exit 3 }
+& $py.Source docscan-project\test-critical\run_tests.py --yara '{{Y}}'
+exit $LASTEXITCODE
+`, 3)
+	return []StepResult{docs, crit}, nil
+}
+
+// FetchArtifacts: build_package.ps1 -> C:\ci\dist\DocScan-<версія>.zip -> сюди (+ .sha256), логи кроків, summary.txt.
+func (w *Windows) FetchArtifacts(ctx context.Context, dst string) ([]string, error) {
+	if err := os.MkdirAll(dst, 0o755); err != nil {
+		return nil, err
+	}
+	var files []string
+	defer w.SaveLogs(dst) // логи кроків — навіть якщо пакет не вийшов
+	pkg := w.step(ctx, "package", `
+Set-Location $repo
+Remove-Item "$w\dist" -Recurse -Force -EA 0
+powershell -ExecutionPolicy Bypass -File docscan-project\deploy\build_package.ps1 -Repo $repo -Out "$w\dist" -Version {{V}} 2>&1 | % { "$_" }
+if (-not (Test-Path "$w\dist\DocScan-{{V}}.zip")) { exit 1 }
+(Get-FileHash "$w\dist\DocScan-{{V}}.zip").Hash.ToLower() + "  DocScan-{{V}}.zip"
+`, -1)
+	if pkg.Status != "PASS" {
+		return files, fmt.Errorf("package step failed")
+	}
+	version := w.fill("{{V}}")
+	name := "DocScan-" + version + ".zip"
+	data, err := w.t.Download(ctx, w.wdir+`\dist\`+name)
+	if err != nil {
+		return files, fmt.Errorf("package download: %w", err)
+	}
+	p := filepath.Join(dst, name)
+	if err := os.WriteFile(p, data, 0o644); err != nil {
+		return files, err
+	}
+	sum := sha256.Sum256(data)
+	if err := os.WriteFile(p+".sha256", []byte(hex.EncodeToString(sum[:])+"  "+name+"\n"), 0o644); err != nil {
+		return files, err
+	}
+	return append(files, p, p+".sha256"), nil
+}
+
+// CollectLogs — після провалу: логи виконаних кроків у dst.
+func (w *Windows) CollectLogs(ctx context.Context, dst string) { w.SaveLogs(dst) }
+
+// SaveLogs пише вивід кожного виконаного кроку у <dst>/windows-<крок>.log.
+func (w *Windows) SaveLogs(dst string) {
+	os.MkdirAll(dst, 0o755)
+	for n, l := range w.logs {
+		os.WriteFile(filepath.Join(dst, "windows-"+n+".log"), []byte(l), 0o644)
+	}
+}
+
+func (w *Windows) Close() error {
+	if w.t != nil {
+		return w.t.Close()
+	}
+	return nil
+}

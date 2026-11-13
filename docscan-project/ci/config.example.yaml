@@ -1,0 +1,88 @@
+# cirun - template. Copy to config.yaml (git-ignored) and fill in your addresses.
+# No passwords in this file: every *_ref is a reference that cirun resolves at run time:
+#   keepassxc:<group/entry>[#attribute]   KeePassXC database (attributes: Password (default), UserName, URL, Notes)
+#   hosts:<profile>[.<field>]             old ~/.docscan/hosts.json (field defaults to password)
+#   env:<NAME>                            environment variable
+version: 1
+out_dir: ci-out
+fuzz_seconds: 300
+
+repo:
+  commit: auto            # auto - commit local changes (safety check for the public repo), off - build HEAD
+  message: ""             # empty - "ci: <files>"
+
+secrets:
+  keepassxc:
+    database: ~/.docscan/docscan-ci.kdbx
+    unlock: keychain      # keychain (macOS Keychain item) | prompt (ask once per run) | key_file
+    keychain_item: docscan-kdbx
+    # key_file: ~/.docscan/docscan-ci.keyx
+  hosts_file: ~/.docscan/hosts.json
+
+platforms:
+  macos:
+    enabled: true
+    connection:
+      type: local         # or: type: ssh, host, port, user/user_ref, key_file/password_ref, known_hosts
+    workdir: .            # local: the repository itself; remote: a folder on that machine
+    seeds: ""             # corpus folder for the hostile-files test; empty - the step is skipped
+
+  windows:
+    enabled: true
+    candidates:           # the first reachable one is used
+      - name: vm-win11
+        connection:
+          type: winrm
+          host: <vm-ip>
+          port: 5985
+          user_ref: "keepassxc:CI/Windows/vm-win11#UserName"
+          password_ref: "keepassxc:CI/Windows/vm-win11"
+      - name: pc-fallback
+        connection:
+          type: winrm
+          host: <pc-ip>
+          port: 5985
+          user_ref: "keepassxc:CI/Windows/pc-fallback#UserName"
+          password_ref: "keepassxc:CI/Windows/pc-fallback"
+    workdir: 'C:\ci'
+    source: auto          # auto | git | zip
+
+  linux:
+    enabled: false
+    requires: [windows, macos]   # runs only after green Windows AND macOS
+    connection:
+      type: ssh
+      host: <ubuntu-ip>
+      port: 22
+      user: ci
+      key_file: ~/.ssh/docscan_ci        # or password_ref
+      known_hosts: ~/.ssh/known_hosts    # the host key is always checked: connect once by hand first
+    workdir: /home/ci/docscan
+
+push:                     # the main publication: git push of the tested commit to GitHub
+  enabled: true           # always after a green run - does NOT depend on Forgejo; the listener on the
+  remote: docscan         # other server watches GitHub and starts its own tests
+  tag: ""                 # e.g. "ci/passed/{short}" - a tag on the tested commit; empty - no tag
+
+forgejo:                  # OPTIONAL extra after the push: mirror sync and commit statuses
+  enabled: false          # not needed: cirun builds itself, Windows gets a zip of the exact commit
+  url: http://<forgejo-ip>:3000
+  repo: <owner>/<repo>
+  token_ref: "keepassxc:CI/Forgejo/api-token"
+  checkout_token_ref: "keepassxc:CI/Forgejo/checkout-token"   # read-only: Windows may fetch the code with it
+  mode: mirror            # mirror - mirror-sync after the GitHub push; push - also git push to <remote>
+  remote: forgejo
+  check:
+    method: api           # api | ls-remote; an unreachable Forgejo only prints a note
+    timeout: 5s
+  report:
+    commit_status: true   # commit statuses cirun/<platform> in Forgejo
+
+deploy:
+  publish: true
+  host: <server-ip>
+  user_ref: "keepassxc:CI/Deploy/fs#UserName"
+  password_ref: "keepassxc:CI/Deploy/fs"
+  dir: scripts/docscan
+  url: http://<server-ip>:8080/docscan
+  critical_rules: ""      # local E5Search rules file to include; empty - none

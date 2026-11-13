@@ -1,74 +1,114 @@
-# CI для DocScan: одна кнопка → збірка і всі тести на macOS, Windows 11 і Linux
+# CI для DocScan: одна кнопка → збірка і всі тести на macOS, Windows і Linux
 
-Натискаєте **Cmd+Shift+B** у VS Code (або «Запустити робочий процес» у Forgejo) — і:
+Натискаєте **▷** або **Cmd+Shift+B** у VS Code — і `cirun` (Go, `docscan-project/ci/cirun/`):
 
 ```
-VS Code ─► ci-run (Go): git push на GitHub → Forgejo оновлює дзеркало → запускає Дію "build-test"
-                                                        │
-          ┌─────────────────────────────────────────────┼──────────────────────────────────┐
-          ▼                                             ▼                                  ▼
-  runner на Маку (мітка macos)          runner з міткою winrm (Мак, згодом Ubuntu)   runner на Ubuntu (мітка linux)
-  build-test-unix.sh:                   ci-run windows → WinRM → Windows 11:          build-test-unix.sh:
-   збірка, документи, 3-й прохід,        git fetch коміту, MSBuild, документи,         те саме, що на Маку
-   ворожі файли, фазинг                  3-й прохід, пакет DocScan-<версія>.zip
-          └─────────────────────────────────────────────┼──────────────────────────────────┘
-                                                        ▼
-            Forgejo → Дії → прогін: ✅/❌ по кожній системі + артефакти (macos / windows11 / linux)
-            ci-run показує хід у терміналі VS Code і забирає артефакти в ci-out/run-<N>/
+коміт локальних змін (перевірка безпеки, БЕЗ push)
+        │
+        ▼
+хвиля 1 (паралельно):  macOS — цей Мак (local)          Windows — ВМ, інакше ПК 216 (WinRM)
+                       build → documents → critical →    checkout (git або zip) → build (MSBuild) →
+                       hostile → fuzz → yara-*.tar.gz     documents → critical → DocScan-<версія>.zip
+        │  обидві зелені?
+        ▼
+хвиля 2:               Linux — Ubuntu (SSH): те саме, що на macOS        (requires: [windows, macos])
+        │  усе зелене?
+        ▼
+git push на GitHub (push.remote) — ЗАВЖДИ, від Forgejo не залежить
+        │                (Forgejo, якщо увімкнено й доступний: mirror-sync і статуси cirun/<ОС>)
+        ▼
+набір для розгортання → сервер (scp, sha256, DocScan-latest.txt) → RESULT
 ```
+
+Отже, на GitHub потрапляє **лише протестований** коміт, а слухач на іншому сервері сам бачить його там і
+запускає свої тести. Forgejo для цього не потрібен.
 
 ## Що де лежить
 
-| Файл | Де працює | Що робить |
-|---|---|---|
-| `.forgejo/workflows/ci.yml` | Forgejo | Опис конвеєра: три завдання (`macos`, `windows11`, `linux`), які runner-и їх беруть, секрети, артефакти, нічний прогін (фазинг 1 год) |
-| `docscan-project/ci/build-test-unix.sh` | Мак, Ubuntu | Збірка → документи → 3-й прохід → ворожі файли (якщо задано `CI_SEEDS`) → фазинг (`FUZZ_SECONDS`) → `ci-out/artifacts` |
-| `docscan-project/ci/cirun/windows.go` (`ci-run windows`) | runner з міткою `winrm` або Мак (локальний режим) | Вибирає Windows-машину (ВМ, інакше 216), точний коміт (git або zip), MSBuild, тести, `build_package.ps1`, забирає zip |
-| `docscan-project/ci/check_verdicts.ps1` | Windows | Перевірка документів без Python (те саме, що `check_verdicts.py`) |
-| `docscan-project/ci/check_verdicts.py` | усі ОС | Документи: копія → детект + лікування → повторний скан, порівняння з `expected-verdicts.tsv` |
-| `docscan-project/ci/expected-verdicts.tsv` | — | Еталон для 31 зразка `test-samples/generated` (оновлювати свідомо: `check_verdicts.py --write`) |
-| `docscan-project/ci/cirun/` (Go: `main.go`, `forgejo.go`) | ваш Мак | «Кнопка»: коміт змін (з перевіркою) → push → синхронізація дзеркала → запуск Дії → стеження → артефакти → набір для розгортання → публікація |
-| `.vscode/tasks.json` | VS Code | Завдання «DocScan CI» (Cmd+Shift+B), «без фазингу», «локально на Маку без push» |
+| Файл | Що робить |
+|---|---|
+| `docscan-project/ci/config.yaml` | **налаштування** (не в git: внутрішні адреси); зразок — `config.example.yaml` |
+| `docscan-project/ci/cirun/main.go` | прапорці, порядок: коміт → збірка → Forgejo → розгортання |
+| `cirun/config/` | розбір YAML (`config.go`), посилання на секрети `keepassxc:` / `hosts:` / `env:` (`secrets.go`) |
+| `cirun/transport/` | інтерфейс `Transport` і підключення: `local.go`, `ssh.go` (known_hosts перевіряється), `winrm.go` |
+| `cirun/platform/` | інтерфейс `Platform` (Prepare → SyncSource → Build → Test → FetchArtifacts); `unix.go` — macOS і Linux, `windows.go` |
+| `cirun/orchestrator/` | хвилі з `requires`, хід і відсоток у терміналі, підсумок, push коміту на GitHub |
+| `cirun/forgejo/` | необов'язково: доступність, mirror-sync / push у Forgejo, статуси коміту |
+| `cirun/gitops/`, `cirun/deploy/` | коміт з перевіркою безпеки, `git archive`; набір для розгортання і публікація на сервер |
+| `docscan-project/ci/build-test-unix.sh [all\|build\|test]` | збірка і тести на macOS / Linux (cirun кличе `build`, потім `test`) |
+| `docscan-project/ci/check_verdicts.ps1` / `.py` | перевірка документів (Windows без Python / інші ОС) |
+| `docscan-project/ci/expected-verdicts.tsv` | еталон для 31 зразка `test-samples/generated` (оновлювати свідомо: `check_verdicts.py --write`) |
+| `.forgejo/workflows/ci.yml` | Дія у Forgejo (нічний прогін); її завдання windows кличе `cirun windows` (змінні середовища) |
 
-Тести в кожному прогоні: **документи** (31 зразок, серед них 7 макросів VBA для перевірки хибних тривог: вердикт, лікування, повторний скан, оригінали не змінені),
-**3-й прохід** (`test-critical/run_tests.py`, 299 перевірок), **ворожі файли** (35, якщо на runner-і є корпус),
-**фазинг** (обидва фазери, ASan + UBSan; на Windows не запускається — libFuzzer там лише через clang-cl).
+Тести в кожному прогоні: **документи** (31 зразок, серед них 7 макросів VBA проти хибних тривог: вердикт, лікування,
+повторний скан, оригінали не змінені), **3-й прохід** (`test-critical/run_tests.py`, 299 перевірок), **ворожі файли**
+(35, якщо на машині є корпус `seeds`), **фазинг** (обидва фазери, ASan + UBSan; на Windows не запускається).
 
-## ci-run (Go)
+## Запуск
 
-Головний інструмент — програма на Go в `docscan-project/ci/cirun/` (Go ≥ 1.24, `brew install go`). Запуск з кореня
-репозиторію (так роблять ▷, Cmd+Shift+B і задачі VS Code):
+Go ≥ 1.26 (`brew install go`). З кореня репозиторію (так роблять ▷, Cmd+Shift+B і задачі VS Code):
 
 ```sh
-go run -C docscan-project/ci/cirun .                 # коміт, push, збірка + тести, публікація
-go run -C docscan-project/ci/cirun . --no-publish    # без публікації на сервер
-go run -C docscan-project/ci/cirun . --fuzz 0        # без фазингу
-go run -C docscan-project/ci/cirun . --local         # без Forgejo, прямо з Мака
-go run -C docscan-project/ci/cirun . -h              # усі прапорці
+go run -C docscan-project/ci/cirun .                     # повний прогін
+go run -C docscan-project/ci/cirun . --plan              # перевірити конфіг, секрети, машини, GitHub — без збірки
+go run -C docscan-project/ci/cirun . --only macos        # лише ці платформи (через кому)
+go run -C docscan-project/ci/cirun . --fuzz 0            # без фазингу
+go run -C docscan-project/ci/cirun . --no-publish        # без набору на сервер
+go run -C docscan-project/ci/cirun . --no-push           # не пушити коміт на GitHub
+go run -C docscan-project/ci/cirun . --push-only         # лише git push HEAD на GitHub (після зеленого прогону)
+go run -C docscan-project/ci/cirun . -h                  # усі прапорці
 ```
 
-У локальному режимі хід видно одразу: на якій машині й IP іде кожна задача, кожен завершений крок з
-результатом і загальним відсотком (`[windows 10.0.0.5 (fallback PC)] build PASS (57s)   74%`), а раз на 30 с —
-рядок стану (`... macos: fuzz 95s/190s | windows: documents 40s   ~63%`). Відсоток — оцінка за звичайною
-тривалістю кроків. Повні логи — `ci-out/local-<час>/macos.log` і `windows.log`.
+Хід видно одразу: машина кожної платформи, кожен крок з результатом і загальним відсотком
+(`[windows 10.0.0.5 (pc-216)] build PASS (57s)   74%`), раз на 30 с — рядок стану. Підсумок і артефакти —
+`ci-out/run-<час>/` (`macos/yara-darwin-arm64.tar.gz`, `windows/DocScan-<версія>.zip`, логи кроків, `summary.txt`).
 
-`go run` сам компілює програму (перший раз — кілька секунд, потім із кешу). Python для оркестрації більше не
-потрібен; тести (`check_verdicts.py`, `test-critical/*.py`) і далі на Python — їх запускає збірка.
+Код виходу: **0** — усе зелене, коміт на GitHub, набір викладено; **1** — провал (збірка, тести або
+публікація набору); **2** — зелене, але push на GitHub не вдався (повторити: `--push-only`).
 
-## Режими і запасна Windows-машина
+## Конфіг і паролі (KeePassXC)
 
-`ci-run` сам вибирає, як працювати:
+Паролів у `config.yaml` немає — лише посилання, які cirun розгортає під час запуску:
 
-| Що доступно | Що відбувається |
+```yaml
+password_ref: "keepassxc:CI/Windows/pc-216"            # поле Password запису
+user_ref:     "keepassxc:CI/Windows/pc-216#UserName"   # інший атрибут: UserName, URL, Notes
+token_ref:    "keepassxc:CI/Forgejo/api-token"
+# також: "hosts:<профіль>[.<поле>]" (старий ~/.docscan/hosts.json), "env:<ЗМІННА>"
+```
+
+База — `~/.docscan/docscan-ci.kdbx` (окрема, лише для CI; групи `CI/Windows`, `CI/Forgejo`, `CI/Deploy`,
+`Infra`). Відкривається **один раз за запуск** (`keepassxc-cli export` у пам'ять; майстер-пароль — через stdin, не
+аргументом). Режим `unlock`:
+
+| `unlock` | Як |
 |---|---|
-| **Forgejo** (Proxmox працює) | Дія `build-test` у Forgejo: Мак (`macos`), Windows (`windows`), Ubuntu (`linux`, коли буде) |
-| **Forgejo недоступний** (або `--local`) | **Локальний режим** — те саме прямо з Мака: `build-test-unix.sh` тут, `ci-run windows` по WinRM |
+| `keychain` (за замовчуванням) | майстер-пароль у Связці ключів macOS (`keychain_item: docscan-kdbx`); macOS один раз питає дозволу |
+| `prompt` | cirun питає майстер-пароль у терміналі один раз за запуск |
+| `key_file` | база відкривається лише файлом-ключем |
 
-Windows-машину `ci-run windows` вибирає сам: **ВМ Windows 11** (Proxmox), якщо відповідає, інакше
-**запасний ПК** (профіль `216`). Якщо машина не бачить Forgejo, код потрапляє на неї zip-архівом точного коміту
-(`git archive`, ~5 МБ) по WinRM. Перевірка документів на Windows — `check_verdicts.ps1` (Python не потрібен);
-тести третього проходу — лише там, де є справжній Python (інакше `SKIP`, вони йдуть на macOS/Linux). Немає NuGet —
-береться готовий кеш пакетів збірки (`C:\docscan-build\yara\windows\vs2019\packages`) або завантажується `nuget.exe` у `C:\ci\tools`.
+Відкрити базу в KeePassXC: майстер-пароль — у «Связці ключів» (Keychain Access) за назвою `docscan-kdbx`
+або `security find-generic-password -s docscan-kdbx -w`. Новий пароль — новий запис у базі й посилання в конфігу.
+
+## Платформи і підключення
+
+| Платформа | Підключення | Звідки код |
+|---|---|---|
+| macOS | `local` (цей Мак, `workdir: .` — сам репозиторій) або `ssh` | local — робоча тека як є; ssh — `git archive` точного коміту |
+| Windows | `winrm` (NTLM, 5985); `candidates` — перша доступна машина | zip точного коміту (git з Forgejo — лише якщо Forgejo увімкнено й машина його бачить) |
+| Linux | `ssh` (ключ або пароль; ключ хоста перевіряється за `known_hosts`) | `git archive` точного коміту → чиста тека → повна збірка |
+
+`requires: [windows, macos]` у Linux: він стартує лише тоді, коли обидві платформи **увімкнені в цьому прогоні й
+зелені**; інакше — `skipped` з причиною, і прогін не зелений. Перед першим SSH-підключенням зайдіть на машину вручну
+(`ssh user@host`), щоб її ключ потрапив у `~/.ssh/known_hosts`.
+
+## Push на GitHub і Forgejo
+
+- `push:` — головне: після зеленого прогону `git push <remote> <гілка>` на GitHub (`remote: docscan`). Від Forgejo
+  не залежить. `push.tag` (напр. `ci/passed/{short}`) — тег на протестований коміт, якщо слухачу так зручніше.
+- `forgejo:` — **необов'язково** (`enabled: false`). Якщо увімкнути: після push на GitHub, коли Forgejo доступний,
+  `mode: mirror` викликає mirror-sync (дзеркало оновиться одразу, а не за розкладом), `mode: push` ще й пушить у
+  Forgejo; `report.commit_status` — статуси `cirun/<ОС>`. Недоступний Forgejo — лише повідомлення в терміналі.
 
 ## Набір для розгортання і публікація
 
@@ -79,7 +119,7 @@ DocScan-<дата>-<коміт>.zip + .sha256     пакет
 DocScan-latest.txt                       ім'я поточного пакета
 DocScan-Install.ps1                      інсталятор з сервера
 DocScan-Setup.ps1 / -Pilot / -Critical   завантажувачі для irm | iex (адреса сервера вже підставлена)
-critical-rules.yar                       правила E5Search (якщо задано в hosts.json "fs".critical_rules)
+critical-rules.yar                       правила E5Search (якщо задано deploy.critical_rules у config.yaml)
 ```
 
 **Публікація — за замовчуванням** (▷ / Cmd+Shift+B): набір іде на
@@ -88,10 +128,9 @@ critical-rules.yar                       правила E5Search (якщо за�
 Без публікації: `--no-publish` (*Run Task → «DocScan CI without publishing»*). Викласти готовий набір без збірки:
 `go run -C docscan-project/ci/cirun . --publish-dir ci-out/<прогін>/deploy`.
 
-Налаштування в `~/.docscan/hosts.json` (не в репозиторії): `forgejo` (`url`, `token`, `ci_checkout_token`),
-`vm` і `216` (Windows-машини: `host`, `user`, `password`), `fs` (`host`, `user`, `password`, `deploy_dir`
-= `scripts/docscan`, `deploy_url` = `http://<сервер>:8080/docscan`, `critical_rules`).
-У Forgejo для запасного ПК потрібні ще секрети `WIN216_HOST`, `WIN216_USER`, `WIN216_PASS`.
+Сервер розгортання — розділ `deploy` у `config.yaml` (`host`, `user_ref`, `password_ref`, `dir`, `url`,
+`critical_rules`). Для нічної Дії у Forgejo (завдання windows → `cirun windows`) потрібні секрети Forgejo
+`WIN11_*` / `WIN216_*` (`HOST`, `USER`, `PASS`) і `CI_GIT_TOKEN`.
 
 ## Налаштування з нуля (покроково)
 
@@ -137,13 +176,13 @@ Set-ItemProperty HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System
 New-NetFirewallRule -Name WinRM-From-LAN -DisplayName "WinRM from LAN" -Protocol TCP -LocalPort 5985 -RemoteAddress <ваша мережа> -Action Allow -Profile Any
 ```
 Windows має бачити Forgejo (порт 3000). Робоча тека CI — `C:\ci` (код у `C:\ci\yara`, пакет у `C:\ci\dist`).
-`ci-run windows` сам додає виняток Microsoft Defender для `C:\ci`: тестові зразки навмисно схожі на шкідливі
+`cirun` сам додає виняток Microsoft Defender для `C:\ci`: тестові зразки навмисно схожі на шкідливі
 (без цього Defender блокує, наприклад, `lnk_lolbin.lnk` — Python бачить це як `Errno 22 Invalid argument`).
 
 ### 4. Ubuntu Server (runner `linux`, згодом і `winrm`)
 ```sh
 sudo apt install -y build-essential autoconf automake libtool pkg-config flex bison libssl-dev \
-  libjansson-dev libmagic-dev clang llvm rsync git python3 nodejs && sudo snap install go --classic   # Go ≥ 1.24
+  libjansson-dev libmagic-dev clang llvm rsync git python3 nodejs && sudo snap install go --classic   # Go ≥ 1.26
 curl -Lo forgejo-runner https://code.forgejo.org/forgejo/runner/releases/download/v<версія>/forgejo-runner-<версія>-linux-amd64
 sudo install -m 755 forgejo-runner /usr/local/bin/
 forgejo-runner generate-config > config.yaml
@@ -154,11 +193,10 @@ forgejo-runner register --no-interactive --instance http://<forgejo>:3000 --toke
 
 ### 5. VS Code
 `.vscode/tasks.json` уже в репозиторії:
-- **Cmd+Shift+B** → «DocScan CI»: push + усі системи + фазинг 300 с;
+- **Cmd+Shift+B** → «DocScan CI»: коміт → усі системи + фазинг 300 с → push і набір (якщо зелене);
 - *Terminal → Run Task…* → «DocScan CI (no fuzzing)», «DocScan local: build + tests on this Mac (no push)».
 
-`ci-run` бере адресу Forgejo і токен з `~/.docscan/hosts.json` (профіль `forgejo`: `url`, `token`) або зі
-змінних середовища `FORGEJO_URL` / `FORGEJO_TOKEN`. Кнопка в рядку стану — розширення *Task Buttons*
+Адресу Forgejo і токени `cirun` бере з `config.yaml` (розділ `forgejo`, посилання на KeePassXC). Кнопка в рядку стану — розширення *Task Buttons*
 (у `settings.json`: `"VsCodeTaskButtons.tasks": [{"label": "$(play) DocScan CI", "task": "DocScan CI"}]`).
 
 ## Як користуватися

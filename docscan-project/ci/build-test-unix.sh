@@ -2,7 +2,10 @@
 # DocScan CI for macOS and Linux: build -> document regression -> third-pass tests
 # -> hostile files (if a seed corpus is given) -> fuzzing -> artifacts.
 #
-#   sh docscan-project/ci/build-test-unix.sh
+#   sh docscan-project/ci/build-test-unix.sh [all|build|test]
+#     all   (default) build, then every test
+#     build only the build (cirun: Platform.Build)
+#     test  only the tests on an existing build (cirun: Platform.Test); appends to summary.txt
 # Environment:
 #   CI_OUT        output folder (default: <repo>/ci-out)
 #   FUZZ_SECONDS  fuzzing time in seconds, split between the two fuzzers (default 300, 0 = skip)
@@ -10,13 +13,16 @@
 #                 for hostile.py; empty = skip that step
 # Exit code != 0 if any step fails; a summary is in $CI_OUT/summary.txt.
 set -u
+STAGE=${1:-all}
+case "$STAGE" in all|build|test) ;; *) echo "usage: $0 [all|build|test]"; exit 2 ;; esac
 REPO=$(cd "$(dirname "$0")/../.." && pwd)
 OUT=${CI_OUT:-$REPO/ci-out}
 case "$OUT" in /*) ;; *) OUT="$REPO/$OUT" ;; esac
 FUZZ_SECONDS=${FUZZ_SECONDS:-300}
 OS=$(uname -s)
 mkdir -p "$OUT/artifacts"
-SUMMARY="$OUT/summary.txt"; : > "$SUMMARY"
+SUMMARY="$OUT/summary.txt"
+[ "$STAGE" = test ] || : > "$SUMMARY"
 FAILED=0
 
 step() {  # step <name> <command...>: run, log, record the result
@@ -29,7 +35,7 @@ step() {  # step <name> <command...>: run, log, record the result
   printf '%-14s %s  (%ss)\n' "$name" "$res" "$(( $(date +%s) - start ))" | tee -a "$SUMMARY"
 }
 
-cd "$REPO"
+cd "$REPO" || exit 1
 if [ "$OS" = Darwin ]; then
   export LIBTOOLIZE=glibtoolize PATH="/opt/homebrew/bin:$PATH"
   JOBS=$(sysctl -n hw.ncpu)
@@ -41,8 +47,12 @@ build() {
   [ -f Makefile ] || { ./bootstrap.sh && ./configure; } || return 1
   make -j"$JOBS" && ./yara --version
 }
-step build build
+[ "$STAGE" = test ] || step build build
 [ -x ./yara ] || { echo "no yara binary - stop"; cat "$SUMMARY"; exit 1; }
+if [ "$STAGE" = build ]; then
+  cp "$OUT"/*.log "$SUMMARY" "$OUT/artifacts/" 2>/dev/null
+  echo; echo "===== $OS build"; cat "$SUMMARY"; exit $FAILED
+fi
 
 step documents python3 docscan-project/ci/check_verdicts.py --yara ./yara \
   --rules docscan-project/rules/docscan-index.yar \
