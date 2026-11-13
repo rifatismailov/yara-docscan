@@ -187,7 +187,11 @@ func (u *Unix) Test(ctx context.Context) ([]StepResult, error) {
 // fetchAssets готує тестові файли для кроку test і повертає функцію прибирання (викликати завжди).
 func (u *Unix) fetchAssets(ctx context.Context) (func(), error) {
 	none := func() {}
-	if u.assets == nil || !u.full {
+	if !u.full {
+		u.report(Event{Platform: u.name, Kind: "note", Step: "partial: full_tests is off on this machine - no hostile, corpus, malware, fuzz"})
+		return none, nil
+	}
+	if u.assets == nil {
 		return none, nil
 	}
 	if u.local { // Мак: розпакована копія того самого архіву, що отримують віддалені машини

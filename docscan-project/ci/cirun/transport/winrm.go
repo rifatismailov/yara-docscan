@@ -36,8 +36,9 @@ func NewWinRM(c config.Connection, sec *config.Resolver) (*WinRM, error) {
 		// NTLM: вхід локальним обліковим записом Windows без домену і без HTTPS
 		params.TransportDecorator = func() winrm.Transporter { return &winrm.ClientNTLM{} }
 	}
-	// тайм-аут HTTP 2 год: збірка і тести йдуть однією командою
-	cl, err := winrm.NewClientWithParameters(winrm.NewEndpoint(c.Host, c.Port, false, false, nil, nil, nil, 2*time.Hour), user, pw, &params)
+	// тайм-аут ОДНОГО HTTP-запиту: довгі команди бібліотека опитує запитами по <= 60 с (OperationTimeout
+	// PT60S), тож 5 хв вистачає, а зниклу машину (вимкнули світло) cirun помітить за хвилини, а не за години
+	cl, err := winrm.NewClientWithParameters(winrm.NewEndpoint(c.Host, c.Port, false, false, nil, nil, nil, 5*time.Minute), user, pw, &params)
 	if err != nil {
 		return nil, err
 	}

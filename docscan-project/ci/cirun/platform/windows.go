@@ -65,6 +65,9 @@ func (w *Windows) Prepare(ctx context.Context) error {
 		}
 		w.t = t
 		w.full = m.Full()
+		// залишки обірваного прогону (напр. машину вимкнули посеред тесту): скрипти кроків (у одному з них
+		// токен до сховку), розпаковані тестові файли і шкідливе ПЗ — геть, перш ніж робити щось інше
+		t.Run(ctx, fmt.Sprintf(`Remove-Item '%[1]s\step-*.ps1','%[1]s\*.b64' -Force -EA 0; Remove-Item '%[1]s\tests' -Recurse -Force -EA 0`, w.wdir), nil)
 		// цей рядок читає й старий розбір логів; формат лишається тим самим
 		w.report(Event{Platform: "windows", Kind: "machine", Where: t.Where() + " (" + m.Name + ")"})
 		return nil
@@ -193,8 +196,16 @@ Set-Location $repo
 powershell -NoProfile -ExecutionPolicy Bypass -File docscan-project\ci\check_verdicts.ps1 -Yara '{{Y}}' -Rules docscan-project\rules\docscan-index.yar -Samples docscan-project\test-samples\generated -Expected docscan-project\ci\expected-verdicts.tsv -WorkDir "$w\tmp"
 exit $LASTEXITCODE
 `, -1)}
+	// confine: yara64 у режимі DocScan сам обмежує себе (job object: жодних дочірніх процесів; привілеї SYSTEM
+	// видалено) — перевірка, що це справді діє на цій машині
+	steps = append(steps, w.step(ctx, "confine", `
+& '{{Y}}' --docscan-confine-check x 2>&1 | % { "$_" }
+exit $LASTEXITCODE
+`, -1))
 	if !w.full {
-		return steps, nil // машина лише для збірки і 35 зразків (напр. робоча станція)
+		// машина лише для збірки і 35 зразків (напр. робоча станція): прогін на Windows НЕПОВНИЙ
+		w.report(Event{Platform: "windows", Kind: "note", Step: "partial: full_tests is off on this machine - no critical, hostile, corpus, malware, fuzz"})
+		return steps, nil
 	}
 	// $py — справжній Python (не заглушка з WindowsApps); немає — код 3 = SKIP
 	const py = `

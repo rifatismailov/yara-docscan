@@ -204,7 +204,11 @@ static bool docscan_json = false;
 // and evaluate as in THOR.
 static bool file_vars = false;
 static char* docscan_extract = NULL;
+// --docscan-extract FILE as UTF-8: on Windows taken from the wide argv (like --docscan-backup-dir),
+// so a path with non-ANSI characters (e.g. Cyrillic) is written to exactly.
+static char docscan_extract_utf8[4096];
 static bool docscan_disarm_flag = false;
+static bool docscan_confine_check = false;  // --docscan-confine-check (Windows test of docscan_confine)
 // --docscan-backup-dir. The arg parser hands string options over as ANSI on
 // Windows (lossy for Cyrillic), so there the UTF-8 value is taken from the
 // original wide argv in _tmain (docscan_backup_dir_utf8).
@@ -273,6 +277,12 @@ args_option_t options[] = {
         _T("docscan-disarm"),
         &docscan_disarm_flag,
         _T("cure (disarm) the document in place if a HIGH vector is found")),
+
+    OPT_BOOLEAN(
+        0,
+        _T("docscan-confine-check"),
+        &docscan_confine_check,
+        _T("Windows: show the self-confinement of a docscan run and try to start cmd.exe (must be blocked)")),
 
     OPT_STRING(
         0,
@@ -2283,7 +2293,11 @@ static int callback(
           SIZED_STRING* vc = yr_object_get_string(object, "vba_code");
           if (vc != NULL && vc->length > 0)
           {
-            FILE* fh = fopen(docscan_extract, "wb");
+#if defined(_WIN32)
+            FILE* fh = fopen_utf8(docscan_extract_utf8, L"wb");
+#else
+            FILE* fh = fopen(docscan_extract_utf8, "wb");
+#endif
             if (fh != NULL)
             {
               fwrite(vc->c_string, 1, (size_t) vc->length, fh);
@@ -2500,6 +2514,109 @@ static void unload_modules_data()
   modules_data_list = NULL;
 }
 
+#if defined(_WIN32)
+// ---- self-confinement of a docscan run (Windows) ----
+// The watcher runs as SYSTEM, so yara64 does too. If a crafted document ever exploited a parser bug, the
+// code would run with SYSTEM rights. Two cheap limits make that much less useful, without changing what
+// yara64 can legitimately do (read the file, disarm it, write backups / queue / macro copy — file access
+// comes from the ACLs, not from privileges):
+//   1. a job object with ActiveProcessLimit = 1 (only this process): starting cmd / powershell / any
+//      child process fails; UI limits (no clipboard, desktops, system settings, logoff);
+//   2. every privilege is REMOVED from the token (SeDebug, SeImpersonate, SeTakeOwnership, SeLoadDriver,
+//      SeBackup/SeRestore, SeTcb ...) except SeChangeNotify (path traversal).
+// Best effort: a failure is reported by --docscan-confine-check and never stops the scan.
+static int docscan_confined_job = 0;    // 1 — the job object is applied
+static int docscan_privs_removed = -1;  // number of privileges removed (-1 — not done)
+
+static void docscan_confine(void)
+{
+  HANDLE job = CreateJobObjectW(NULL, NULL);
+  if (job != NULL)
+  {
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION li;
+    memset(&li, 0, sizeof(li));
+    li.BasicLimitInformation.LimitFlags =
+        JOB_OBJECT_LIMIT_ACTIVE_PROCESS | JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION |
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    li.BasicLimitInformation.ActiveProcessLimit = 1;
+    JOBOBJECT_BASIC_UI_RESTRICTIONS ui;
+    ui.UIRestrictionsClass = JOB_OBJECT_UILIMIT_DESKTOP | JOB_OBJECT_UILIMIT_DISPLAYSETTINGS |
+                             JOB_OBJECT_UILIMIT_EXITWINDOWS | JOB_OBJECT_UILIMIT_GLOBALATOMS |
+                             JOB_OBJECT_UILIMIT_READCLIPBOARD | JOB_OBJECT_UILIMIT_WRITECLIPBOARD |
+                             JOB_OBJECT_UILIMIT_SYSTEMPARAMETERS | JOB_OBJECT_UILIMIT_HANDLES;
+    if (SetInformationJobObject(job, JobObjectExtendedLimitInformation, &li, sizeof(li)) &&
+        SetInformationJobObject(job, JobObjectBasicUIRestrictions, &ui, sizeof(ui)) &&
+        AssignProcessToJobObject(job, GetCurrentProcess()))
+      docscan_confined_job = 1;  // the handle stays open for the life of the process
+    else
+      CloseHandle(job);
+  }
+
+  HANDLE tok;
+  if (OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &tok))
+  {
+    DWORD len = 0;
+    GetTokenInformation(tok, TokenPrivileges, NULL, 0, &len);
+    TOKEN_PRIVILEGES* tp = len ? (TOKEN_PRIVILEGES*) malloc(len) : NULL;
+    if (tp != NULL && GetTokenInformation(tok, TokenPrivileges, tp, len, &len))
+    {
+      LUID keep;
+      LookupPrivilegeValueW(NULL, L"SeChangeNotifyPrivilege", &keep);
+      DWORD n = 0;
+      for (DWORD i = 0; i < tp->PrivilegeCount; i++)
+      {
+        LUID l = tp->Privileges[i].Luid;
+        if (l.LowPart == keep.LowPart && l.HighPart == keep.HighPart)
+          continue;
+        tp->Privileges[n].Luid = l;
+        tp->Privileges[n].Attributes = SE_PRIVILEGE_REMOVED;  // gone for good, cannot be re-enabled
+        n++;
+      }
+      tp->PrivilegeCount = n;
+      if (n == 0 || (AdjustTokenPrivileges(tok, FALSE, tp, 0, NULL, NULL) && GetLastError() == ERROR_SUCCESS))
+        docscan_privs_removed = (int) n;
+    }
+    free(tp);
+    CloseHandle(tok);
+  }
+}
+
+// --docscan-confine-check: the state of the confinement and a real attempt to start cmd.exe.
+static int docscan_confine_report(void)
+{
+  int privs_left = -1;
+  HANDLE tok;
+  if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &tok))
+  {
+    DWORD len = 0;
+    GetTokenInformation(tok, TokenPrivileges, NULL, 0, &len);
+    TOKEN_PRIVILEGES* tp = len ? (TOKEN_PRIVILEGES*) malloc(len) : NULL;
+    if (tp != NULL && GetTokenInformation(tok, TokenPrivileges, tp, len, &len))
+      privs_left = (int) tp->PrivilegeCount;
+    free(tp);
+    CloseHandle(tok);
+  }
+  wchar_t cmd[] = L"cmd.exe /c exit 0";
+  STARTUPINFOW si;
+  PROCESS_INFORMATION pi;
+  memset(&si, 0, sizeof(si));
+  si.cb = sizeof(si);
+  BOOL started = CreateProcessW(NULL, cmd, NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, NULL, &si, &pi);
+  if (started)
+  {
+    WaitForSingleObject(pi.hProcess, 5000);
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+  }
+  printf("job object: %s\n", docscan_confined_job ? "applied (1 active process, UI limits)" : "NOT applied");
+  printf("privileges removed: %d, left: %d\n", docscan_privs_removed, privs_left);
+  printf("child process: %s\n", started ? "STARTED (not confined)" : "blocked");
+  int ok = docscan_confined_job && !started && privs_left >= 0 && privs_left <= 1;
+  printf("RESULT: %s\n", ok ? "CONFINED" : "NOT CONFINED");
+  return ok ? EXIT_SUCCESS : EXIT_FAILURE;
+}
+#endif
+
 int _tmain(int argc, const char_t** argv)
 {
   COMPILER_RESULTS cr;
@@ -2530,9 +2647,9 @@ int _tmain(int argc, const char_t** argv)
   }
   // the same for the --critical-* paths
   {
-    const wchar_t* copts[2] = {L"--critical-rules", L"--critical-out"};
-    char* cdst[2] = {critical_rules_utf8, critical_out_utf8};
-    for (int k = 0; k < 2; k++)
+    const wchar_t* copts[3] = {L"--critical-rules", L"--critical-out", L"--docscan-extract"};
+    char* cdst[3] = {critical_rules_utf8, critical_out_utf8, docscan_extract_utf8};
+    for (int k = 0; k < 3; k++)
       for (int i = 1; i < argc; i++)
       {
         size_t ol = wcslen(copts[k]);
@@ -2552,6 +2669,21 @@ int _tmain(int argc, const char_t** argv)
   if (docscan_json)
     file_vars = true;
 
+#if defined(_WIN32)
+  // a docscan run (the watcher's) confines itself before reading any file
+  if (docscan_json || docscan_disarm_flag || docscan_extract != NULL || critical_rules_arg != NULL ||
+      docscan_confine_check)
+    docscan_confine();
+  if (docscan_confine_check)
+    return docscan_confine_report();
+#else
+  if (docscan_confine_check)
+  {
+    printf("RESULT: SKIP (self-confinement is implemented for Windows)\n");
+    return EXIT_SUCCESS;
+  }
+#endif
+
 #if !(defined(_WIN32) && defined(_UNICODE))
   if (docscan_backup_dir != NULL)
     snprintf(docscan_backup_dir_utf8, sizeof(docscan_backup_dir_utf8), "%s",
@@ -2560,6 +2692,8 @@ int _tmain(int argc, const char_t** argv)
     snprintf(critical_rules_utf8, sizeof(critical_rules_utf8), "%s", critical_rules_arg);
   if (critical_out_arg != NULL)
     snprintf(critical_out_utf8, sizeof(critical_out_utf8), "%s", critical_out_arg);
+  if (docscan_extract != NULL)
+    snprintf(docscan_extract_utf8, sizeof(docscan_extract_utf8), "%s", docscan_extract);
 #endif
 
   scan_opts.follow_symlinks = follow_symlinks;

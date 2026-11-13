@@ -38,10 +38,11 @@ func Failed(steps []StepResult) bool {
 // Event — що платформа повідомляє під час роботи (для ходу в терміналі).
 type Event struct {
 	Platform string
-	Kind     string      // machine — вибрано машину; start — почався крок; done — крок завершено
-	Where    string      // "10.0.0.5 (pc-216)" — для machine
-	Step     string      // ім'я кроку — для start/done
-	Result   *StepResult // для done
+	Kind     string // machine — вибрано машину; start — почався крок; done — крок завершено;
+	// note — зауваження до прогону в Step (напр. «partial»: машина без full_tests)
+	Where  string      // "10.0.0.5 (pc-216)" — для machine
+	Step   string      // ім'я кроку — для start/done
+	Result *StepResult // для done
 }
 
 // Reporter отримує події; викликається з горутини платформи (має бути потокобезпечним).

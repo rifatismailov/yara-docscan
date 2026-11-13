@@ -436,9 +436,10 @@ memory (`mz_zip_writer_init_heap`) and written by our `write_file` — miniz's f
 | Flag | Variable | Action |
 |---|---|---|
 | `--docscan-json` | `docscan_json` | one JSON line per file: findings and verdict **from the policy rules**, vendor matches on the file and on the VBA; **suppresses the normal match output** |
-| `--docscan-extract=FILE` | `docscan_extract` | writes the decompressed `vba_code` to FILE (before disarm); the watcher keeps the macro code this way (`macros\`) |
+| `--docscan-extract=FILE` | `docscan_extract_utf8` | writes the decompressed `vba_code` to FILE (before disarm); the watcher keeps the macro code this way (`macros\`) (UTF-8 path; on Windows taken from the original Unicode arguments, like `--docscan-backup-dir`) |
 | `--docscan-disarm` | `docscan_disarm_flag` | after the scan, disarms the file according to `meta.disarm` of the matching rules; HIGH without actions → `detect-only` |
 | `--docscan-backup-dir=DIR` | `docscan_backup_dir_utf8` | backups and quarantine go to DIR (must exist). On Windows the value is taken from the original Unicode arguments (YARA's parser hands string options over as ANSI — Cyrillic would be lost) |
+| `--docscan-confine-check` | `docscan_confine_report` | Windows: checks the self-confinement and tries to start `cmd.exe` (must be blocked); `RESULT: CONFINED`. CI step `confine` on every Windows machine. **Self-confinement** (`docscan_confine`) applies to every docscan run before any file is read: a job object with an active-process limit of 1 (no child processes — even an exploited parser cannot start cmd/powershell) and UI limits; **every privilege** of the SYSTEM token is removed except `SeChangeNotify`. File access (read, disarm, backups, queue) comes from the ACLs, so DocScan works as before |
 | `--critical-rules=FILE` | `critical_rules` | third pass: the E5Search rules (a separate set, compiled at start), matched against the document **text** (§15) |
 | `--critical-out=FILE` | `critical_out_utf8` | the queue: a match → one JSON line (schema 2.0) appended to FILE; `--critical-rules` without it is an error |
 | `--critical-chunk=SIZE,OVERLAP` | `critical_chunk_size/overlap` | fragment size (default 700,120; limits 200..1500 and 0..size/2); rule `meta` takes priority |
@@ -1290,7 +1291,6 @@ agent's `ossec.log` (`localfile` not picked up).
 - LNK: ANSI strings (old shortcuts) — the code page is unknown, bytes ≥ 0x80 are shown as U+0080…U+00FF
   (CP1251 Cyrillic in such shortcuts looks like Latin-1; modern shortcuts are UTF-16 and fine). Shortcuts
   to special folders/applets (IDList without file items) have no `lnk_target`.
-- `--docscan-extract=FILE` on Windows gets its path through YARA's ANSI parser (no Cyrillic in that path).
 - The module analyses only the first memory block (for files that is the whole file; not meant for process scans).
 - `vba_code` ≤ 2 MB, `yara_matches` ≤ 4 KB, evidence ≤ 511 chars; OOXML parts > 64 MB are not analysed.
 - If a scan fails (timeout), there is no JSON line for that file (it is printed at `SCAN_FINISHED`).

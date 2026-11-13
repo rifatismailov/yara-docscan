@@ -189,6 +189,9 @@ func main() {
 		}
 	}
 
+	if part := o.Partial(); len(part) > 0 {
+		tail = append(tail, "PARTIAL ("+strings.Join(part, "; ")+": build and 35 samples only)")
+	}
 	abs, _ := filepath.Abs(o.RunDir)
 	say("\nRESULT: %s   (%d min)   artifacts: %s   %s%s", map[bool]string{true: "SUCCESS", false: "FAILURE"}[green],
 		int(time.Since(started).Minutes()), abs, strings.Join(tail, "  "), pushNote)

@@ -32,6 +32,7 @@ type Outcome struct {
 	Steps     []platform.StepResult
 	Artifacts []string
 	Took      time.Duration
+	Notes     []string // зауваження платформи (напр. «partial: …» — тести не повні)
 }
 
 // Options — що робити в цьому прогоні.
@@ -234,6 +235,9 @@ func (o *Orchestrator) onEvent(out *Outcome, ev platform.Event) {
 	case "machine":
 		out.Where = ev.Where
 		o.Say("    [%s] machine: %s", ev.Platform, ev.Where)
+	case "note":
+		out.Notes = append(out.Notes, ev.Step)
+		o.Say("    [%s] ! %s", ev.Platform, ev.Step)
 	case "start":
 		o.prog.stepStart(ev.Platform, ev.Step)
 	case "done":
@@ -310,6 +314,22 @@ func (o *Orchestrator) Consistency() bool {
 	return false
 }
 
+// Partial — платформи, на яких прогін був неповним (машина без full_tests), з їх машиною.
+func (o *Orchestrator) Partial() []string {
+	var out []string
+	for _, n := range config.PlatformOrder {
+		if r := o.Results[n]; r != nil {
+			for _, note := range r.Notes {
+				if strings.HasPrefix(note, "partial") {
+					out = append(out, n+" on "+r.Where)
+					break
+				}
+			}
+		}
+	}
+	return out
+}
+
 // Summary друкує підсумок по платформах і пише його в <RunDir>/summary.txt.
 func (o *Orchestrator) Summary() {
 	var b strings.Builder
@@ -319,6 +339,9 @@ func (o *Orchestrator) Summary() {
 			continue
 		}
 		fmt.Fprintf(&b, "%-8s %-8s %s %s\n", n, r.Status, r.Where, r.Reason)
+		for _, note := range r.Notes {
+			fmt.Fprintf(&b, "    ! %s\n", note)
+		}
 		for _, s := range r.Steps {
 			fmt.Fprintf(&b, "    %-12s %s  (%ds)\n", s.Name, s.Status, int(s.Duration.Seconds()))
 		}
@@ -397,7 +420,7 @@ func weights(name string, fuzz int) map[string]float64 {
 	}
 	switch name {
 	case "windows":
-		return map[string]float64{"checkout": 15, "build": 70, "documents": 90, "critical": 30, "assets": 60,
+		return map[string]float64{"checkout": 15, "build": 70, "documents": 90, "confine": 5, "critical": 30, "assets": 60,
 			"hostile": 60, "corpus": 300, "malware": 30, "fuzz": float64(fuzz) + 60, "package": 40}
 	case "linux":
 		return map[string]float64{"build": 180, "documents": 20, "critical": 5, "hostile": 20, "corpus": 120, "malware": 15, "fuzz": fz}
