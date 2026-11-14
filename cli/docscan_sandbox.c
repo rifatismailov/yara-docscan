@@ -54,6 +54,40 @@ static int count_privileges(HANDLE tok)
   return n;
 }
 
+// REMOVE every privilege of this process's primary token except SeChangeNotify (gone for good, cannot be
+// re-enabled) -> number removed, -1 on failure
+static int drop_privileges(void)
+{
+  int removed = -1;
+  HANDLE tok;
+  if (!OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &tok))
+    return -1;
+  DWORD len = 0;
+  GetTokenInformation(tok, TokenPrivileges, NULL, 0, &len);
+  TOKEN_PRIVILEGES* tp = len ? (TOKEN_PRIVILEGES*) malloc(len) : NULL;
+  if (tp != NULL && GetTokenInformation(tok, TokenPrivileges, tp, len, &len))
+  {
+    LUID keep;
+    LookupPrivilegeValueW(NULL, L"SeChangeNotifyPrivilege", &keep);
+    DWORD n = 0;
+    for (DWORD i = 0; i < tp->PrivilegeCount; i++)
+    {
+      LUID l = tp->Privileges[i].Luid;
+      if (l.LowPart == keep.LowPart && l.HighPart == keep.HighPart)
+        continue;
+      tp->Privileges[n].Luid = l;
+      tp->Privileges[n].Attributes = SE_PRIVILEGE_REMOVED;
+      n++;
+    }
+    tp->PrivilegeCount = n;
+    if (n == 0 || (AdjustTokenPrivileges(tok, FALSE, tp, 0, NULL, NULL) && GetLastError() == ERROR_SUCCESS))
+      removed = (int) n;
+  }
+  free(tp);
+  CloseHandle(tok);
+  return removed;
+}
+
 void docscan_confine(void)
 {
   HANDLE job = limited_job();
@@ -65,33 +99,7 @@ void docscan_confine(void)
       CloseHandle(job);
   }
 
-  HANDLE tok;
-  if (OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &tok))
-  {
-    DWORD len = 0;
-    GetTokenInformation(tok, TokenPrivileges, NULL, 0, &len);
-    TOKEN_PRIVILEGES* tp = len ? (TOKEN_PRIVILEGES*) malloc(len) : NULL;
-    if (tp != NULL && GetTokenInformation(tok, TokenPrivileges, tp, len, &len))
-    {
-      LUID keep;
-      LookupPrivilegeValueW(NULL, L"SeChangeNotifyPrivilege", &keep);
-      DWORD n = 0;
-      for (DWORD i = 0; i < tp->PrivilegeCount; i++)
-      {
-        LUID l = tp->Privileges[i].Luid;
-        if (l.LowPart == keep.LowPart && l.HighPart == keep.HighPart)
-          continue;
-        tp->Privileges[n].Luid = l;
-        tp->Privileges[n].Attributes = SE_PRIVILEGE_REMOVED;  // gone for good, cannot be re-enabled
-        n++;
-      }
-      tp->PrivilegeCount = n;
-      if (n == 0 || (AdjustTokenPrivileges(tok, FALSE, tp, 0, NULL, NULL) && GetLastError() == ERROR_SUCCESS))
-        privs_removed = (int) n;
-    }
-    free(tp);
-    CloseHandle(tok);
-  }
+  privs_removed = drop_privileges();
 }
 
 // 1 if cmd.exe could be started (it must not)
@@ -258,7 +266,15 @@ int docscan_worker_lockdown(const wchar_t* target)
     }
   }
 
-  // 2. untrusted integrity, 3. drop the impersonation -> only the lockdown token is left
+  // 2. no privileges: the lockdown token was created with SeImpersonate (so Windows lets this thread
+  //    impersonate the initial token at start - the check is done when the broker sets it); it is removed
+  //    now, before any document byte is touched, together with everything else but SeChangeNotify
+  if (drop_privileges() < 0)
+  {
+    fprintf(stderr, "error: docscan worker: cannot remove the privileges (%lu)\n", GetLastError());
+    return 0;
+  }
+  // 3. untrusted integrity, 4. drop the impersonation -> only the lockdown token is left
   if (!lower_integrity())
   {
     fprintf(stderr, "error: docscan worker: cannot lower the integrity level (%lu)\n", GetLastError());
@@ -424,8 +440,8 @@ static void* token_info(HANDLE tok, TOKEN_INFORMATION_CLASS cls)
 // (csrss port, \KnownDlls, BaseNamedObjects) grant restricted tokens access only through that SID.
 // For the diagnostic matrix: lockdown_deny_only = 1 makes every group deny-only (the first design),
 // restricted_sid = 0 leaves S-1-5-12 out; initial_primary = the initial token as a primary token.
-static int make_tokens_ex(int lockdown_deny_only, int restricted_sid, HANDLE* lockdown, HANDLE* initial,
-                          HANDLE* initial_primary)
+static int make_tokens_ex(int lockdown_deny_only, int restricted_sid, int keep_impersonate, HANDLE* lockdown,
+                          HANDLE* initial, HANDLE* initial_primary)
 {
   *lockdown = *initial = NULL;
   if (initial_primary != NULL)
@@ -436,6 +452,9 @@ static int make_tokens_ex(int lockdown_deny_only, int restricted_sid, HANDLE* lo
     return 0;
   TOKEN_USER* user = (TOKEN_USER*) token_info(self, TokenUser);
   TOKEN_GROUPS* groups = (TOKEN_GROUPS*) token_info(self, TokenGroups);
+  TOKEN_PRIVILEGES* privs = (TOKEN_PRIVILEGES*) token_info(self, TokenPrivileges);
+  LUID_AND_ATTRIBUTES* pdel = NULL;
+  DWORD npdel = 0;
   int ok = 0;
   SID_AND_ATTRIBUTES* deny = NULL;
   SID_AND_ATTRIBUTES* same = NULL;
@@ -444,7 +463,7 @@ static int make_tokens_ex(int lockdown_deny_only, int restricted_sid, HANDLE* lo
   DWORD rlen = sizeof(restricted);
   HANDLE init_primary = NULL;
   SID_IDENTIFIER_AUTHORITY null_auth = SECURITY_NULL_SID_AUTHORITY;
-  if (user == NULL || groups == NULL ||
+  if (user == NULL || groups == NULL || privs == NULL ||
       !AllocateAndInitializeSid(&null_auth, 1, SECURITY_NULL_RID, 0, 0, 0, 0, 0, 0, 0, &null_sid) ||
       !CreateWellKnownSid(WinRestrictedCodeSid, NULL, restricted, &rlen))
     goto done;
@@ -469,8 +488,27 @@ static int make_tokens_ex(int lockdown_deny_only, int restricted_sid, HANDLE* lo
   SID_AND_ATTRIBUTES restrict_null;
   restrict_null.Sid = null_sid;
   restrict_null.Attributes = 0;
-  if (!CreateRestrictedToken(self, DISABLE_MAX_PRIVILEGE, lockdown_deny_only ? nd : 0,
-                             lockdown_deny_only ? deny : NULL, 0, NULL, 1, &restrict_null, lockdown))
+  // keep_impersonate: every privilege deleted except SeImpersonate and SeChangeNotify (the worker removes
+  // SeImpersonate itself before the lockdown); otherwise DISABLE_MAX_PRIVILEGE
+  pdel = (LUID_AND_ATTRIBUTES*) calloc(privs->PrivilegeCount + 1, sizeof(LUID_AND_ATTRIBUTES));
+  if (pdel == NULL)
+    goto done;
+  LUID limp, lcn;
+  LookupPrivilegeValueW(NULL, L"SeImpersonatePrivilege", &limp);
+  LookupPrivilegeValueW(NULL, L"SeChangeNotifyPrivilege", &lcn);
+  for (DWORD i = 0; i < privs->PrivilegeCount; i++)
+  {
+    LUID l = privs->Privileges[i].Luid;
+    if ((l.LowPart == limp.LowPart && l.HighPart == limp.HighPart) ||
+        (l.LowPart == lcn.LowPart && l.HighPart == lcn.HighPart))
+      continue;
+    pdel[npdel].Luid = l;
+    pdel[npdel].Attributes = 0;
+    npdel++;
+  }
+  if (!CreateRestrictedToken(self, keep_impersonate ? 0 : DISABLE_MAX_PRIVILEGE, lockdown_deny_only ? nd : 0,
+                             lockdown_deny_only ? deny : NULL, keep_impersonate ? npdel : 0,
+                             keep_impersonate ? pdel : NULL, 1, &restrict_null, lockdown))
     goto done;
   if (!CreateRestrictedToken(self, DISABLE_MAX_PRIVILEGE, 0, NULL, 0, NULL, ns, same, &init_primary) ||
       !DuplicateTokenEx(init_primary, TOKEN_IMPERSONATE | TOKEN_QUERY, NULL, SecurityImpersonation,
@@ -497,6 +535,8 @@ done:
     FreeSid(null_sid);
   free(deny);
   free(same);
+  free(pdel);
+  free(privs);
   free(user);
   free(groups);
   CloseHandle(self);
@@ -505,7 +545,7 @@ done:
 
 static int make_tokens(HANDLE* lockdown, HANDLE* initial)
 {
-  return make_tokens_ex(0, 1, lockdown, initial, NULL);
+  return make_tokens_ex(0, 1, 1, lockdown, initial, NULL);
 }
 
 static int token_elevated(HANDLE tok)
@@ -517,8 +557,9 @@ static int token_elevated(HANDLE tok)
 
 // one diagnostic start: "<this exe> --version" with this primary token and (optionally) this impersonation
 // token on the main thread -> its exit code (0 = it started and ran); 0xFFFFFFFF = could not create it
-static DWORD probe_start(HANDLE primary, HANDLE imp)
+static DWORD probe_start(HANDLE primary, HANDLE imp, int* level)
 {
+  *level = -1;
   wchar_t exe[MAX_PATH], cmd[MAX_PATH + 32];
   if (GetModuleFileNameW(NULL, exe, MAX_PATH) == 0)
     return 0xFFFFFFFF;
@@ -538,8 +579,19 @@ static DWORD probe_start(HANDLE primary, HANDLE imp)
   }
   if (job != NULL)
     AssignProcessToJobObject(job, pi.hProcess);
-  if (imp != NULL)
-    SetThreadToken(&pi.hThread, imp);
+  if (imp != NULL && SetThreadToken(&pi.hThread, imp))
+  {
+    // what Windows really gave the thread: 1 = identification (downgraded, useless), 2 = impersonation
+    HANDLE t = NULL;
+    SECURITY_IMPERSONATION_LEVEL lv;
+    DWORD len = 0;
+    if (OpenThreadToken(pi.hThread, TOKEN_QUERY, TRUE, &t))
+    {
+      if (GetTokenInformation(t, TokenImpersonationLevel, &lv, sizeof(lv), &len))
+        *level = (int) lv;
+      CloseHandle(t);
+    }
+  }
   ResumeThread(pi.hThread);
   DWORD code = 0xFFFFFFFE;
   if (WaitForSingleObject(pi.hProcess, 15000) == WAIT_TIMEOUT)
@@ -552,26 +604,31 @@ static DWORD probe_start(HANDLE primary, HANDLE imp)
   return code;
 }
 
-// --docscan-confine-check: which token combinations can start a process at all
+// --docscan-confine-check: which token combinations can start a process at all. "level" = the impersonation
+// level the main thread really got (1 identification = downgraded by Windows, 2 impersonation = works)
+static void probe_one(const char* what, HANDLE primary, HANDLE imp)
+{
+  int level = -1;
+  DWORD code = primary ? probe_start(primary, imp, &level) : 0xFFFFFFFFUL;
+  printf("probe: %-44s exit 0x%08lx, level %d\n", what, code, level);
+}
+
 static void probe_matrix(void)
 {
-  HANDLE L = NULL, I = NULL, IP = NULL;      // production: lockdown (groups kept) + initial with RESTRICTED
-  HANDLE Ld = NULL, Id = NULL;               // lockdown with every group deny-only (first design)
-  HANDLE L0 = NULL, I0 = NULL, IP0 = NULL;   // initial without RESTRICTED
+  HANDLE L = NULL, I = NULL, IP = NULL;   // used by the sandbox: lockdown with SeImpersonate + initial
+  HANDLE Ln = NULL, In = NULL;            // lockdown with no privileges at all (the earlier design)
   HANDLE self = NULL;
-  make_tokens_ex(0, 1, &L, &I, &IP);
-  make_tokens_ex(1, 1, &Ld, &Id, NULL);
-  make_tokens_ex(0, 0, &L0, &I0, &IP0);
+  make_tokens_ex(0, 1, 1, &L, &I, &IP);
+  make_tokens_ex(0, 1, 0, &Ln, &In, NULL);
   OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &self);
-  printf("probe: elevated: broker=%d lockdown=%d lockdown(deny-only)=%d initial=%d\n", self ? token_elevated(self) : -1,
-         L ? token_elevated(L) : -1, Ld ? token_elevated(Ld) : -1, I ? token_elevated(I) : -1);
-  printf("probe: initial (+RESTRICTED) as primary:          0x%08lx\n", IP ? probe_start(IP, NULL) : 0xFFFFFFFFUL);
-  printf("probe: initial (no RESTRICTED) as primary:        0x%08lx\n", IP0 ? probe_start(IP0, NULL) : 0xFFFFFFFFUL);
-  printf("probe: lockdown + initial  (used by the sandbox): 0x%08lx\n", L && I ? probe_start(L, I) : 0xFFFFFFFFUL);
-  printf("probe: lockdown(deny-only) + initial:             0x%08lx\n", Ld && I ? probe_start(Ld, I) : 0xFFFFFFFFUL);
-  printf("probe: lockdown, no impersonation:                0x%08lx\n", L ? probe_start(L, NULL) : 0xFFFFFFFFUL);
+  printf("probe: elevated: broker=%d lockdown=%d initial=%d\n", self ? token_elevated(self) : -1,
+         L ? token_elevated(L) : -1, I ? token_elevated(I) : -1);
+  probe_one("initial as primary (control)", IP, NULL);
+  probe_one("lockdown(+SeImpersonate) + initial [sandbox]", L, I);
+  probe_one("lockdown(no privileges) + initial", Ln, I);
+  probe_one("lockdown, no impersonation", L, NULL);
   fflush(stdout);
-  HANDLE hs[] = {L, I, IP, Ld, Id, L0, I0, IP0, self};
+  HANDLE hs[] = {L, I, IP, Ln, In, self};
   for (size_t i = 0; i < sizeof(hs) / sizeof(hs[0]); i++)
     if (hs[i] != NULL)
       CloseHandle(hs[i]);
@@ -686,6 +743,7 @@ int docscan_broker_run(const docscan_broker_cfg* cfg, int* exit_code)
 
   enable_privilege(L"SeIncreaseQuotaPrivilege");
   enable_privilege(L"SeAssignPrimaryTokenPrivilege");
+  enable_privilege(L"SeImpersonatePrivilege");
   if (cfg->confine_check)
     probe_matrix();  // which token combinations can start a process (diagnostics in the CI log)
   if (!make_tokens(&lockdown, &initial) || (job = limited_job()) == NULL)
