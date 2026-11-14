@@ -570,7 +570,7 @@ static int make_pipe(HANDLE* r, HANDLE* w)
   return 1;
 }
 
-int docscan_broker_run(const docscan_broker_cfg* cfg)
+int docscan_broker_run(const docscan_broker_cfg* cfg, int* exit_code)
 {
   HANDLE lockdown = NULL, initial = NULL, job = NULL;
   HANDLE out_r = NULL, out_w = NULL, err_r = NULL, err_w = NULL, res_r = NULL, res_w = NULL, nul = NULL;
@@ -578,7 +578,7 @@ int docscan_broker_run(const docscan_broker_cfg* cfg)
   memset(&pi, 0, sizeof(pi));
   LPPROC_THREAD_ATTRIBUTE_LIST attrs = NULL;
   wchar_t* cmd = NULL;
-  int rc = -1;
+  int rc = EXIT_FAILURE, started = 0;
   WIN32_FILE_ATTRIBUTE_DATA before;
   memset(&before, 0, sizeof(before));
   if (cfg->target != NULL)
@@ -646,6 +646,7 @@ int docscan_broker_run(const docscan_broker_cfg* cfg)
     TerminateProcess(pi.hProcess, 1);
     goto fail;
   }
+  started = 1;  // from here on the file is never scanned again in-process
   CloseHandle(out_w); out_w = NULL;
   CloseHandle(err_w); err_w = NULL;
   CloseHandle(res_w); res_w = NULL;
@@ -702,7 +703,6 @@ int docscan_broker_run(const docscan_broker_cfg* cfg)
   goto done;
 
 fail:
-  rc = -1;
 done:
   if (attrs != NULL)
   {
@@ -714,7 +714,8 @@ done:
   for (size_t i = 0; i < sizeof(hs) / sizeof(hs[0]); i++)
     if (hs[i] != NULL)
       CloseHandle(hs[i]);
-  return rc;
+  *exit_code = rc;
+  return started;
 }
 
 #endif  // _WIN32

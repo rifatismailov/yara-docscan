@@ -2772,9 +2772,9 @@ int _tmain(int argc, const char_t** argv)
       cfg.backup_utf8 = docscan_backup_dir_utf8;
       cfg.timeout = timeout;
       cfg.confine_check = docscan_confine_check;
-      int brc = docscan_broker_run(&cfg);
-      if (brc >= 0)
-        return brc;
+      int brc = EXIT_FAILURE;
+      if (docscan_broker_run(&cfg, &brc))
+        return brc;  // the worker ran (or crashed): never scan the file again here
       DWORD err = GetLastError();
       if (docscan_confine_check)
       {

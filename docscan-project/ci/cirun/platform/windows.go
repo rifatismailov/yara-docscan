@@ -199,9 +199,33 @@ exit $LASTEXITCODE
 	// confine: пісочниця DocScan (cli/docscan_sandbox.c) — yara64 розбирає файл у процесі-воркері з
 	// lockdown-токеном; воркер пробує читати/писати файли, реєстр, запустити cmd.exe — усе має бути
 	// заблоковано; брокер — job object і без привілеїв. RESULT: CONFINED → код 0
+	// Не CONFINED → діагностика: які DLL вантажаться на старті (а які — відкладено) і хто з них тягне
+	// user32/gdi32 (lockdown-процес без доступу до window station падає з 0xC0000142).
 	steps = append(steps, w.step(ctx, "confine", `
 & '{{Y}}' --docscan-confine-check x 2>&1 | % { "$_" }
-exit $LASTEXITCODE
+$rc = $LASTEXITCODE
+if ($rc -ne 0) {
+  $db = Get-ChildItem "C:\Program Files*\Microsoft Visual Studio\*\*\VC\Tools\MSVC\*\bin\Hostx64\x64\dumpbin.exe" -EA 0 | Select-Object -First 1 -ExpandProperty FullName
+  function deps($file) {
+    $r = @{ start = @(); delay = @() }; $sec = ''
+    foreach ($l in (& $db /nologo /dependents $file)) {
+      if ($l -match 'delay load dependencies') { $sec = 'delay' } elseif ($l -match 'following dependencies') { $sec = 'start' }
+      elseif ($sec -and $l -match '^\s+(\S+\.dll)\s*$') { $r[$sec] += $Matches[1] }
+    }
+    $r
+  }
+  if ($db) {
+    "--- diagnostics (dumpbin)"
+    $y = deps '{{Y}}'
+    "yara64.exe loads at start: " + ($y.start -join ', ')
+    "yara64.exe delay-loads:    " + ($y.delay -join ', ')
+    foreach ($d in $y.start) {
+      $p = Join-Path $env:WINDIR "System32\$d"
+      if (Test-Path $p) { $s = (deps $p).start | Where-Object { $_ -match '(?i)^(user32|gdi32|win32u)\.dll$' }; if ($s) { "  $d loads at start: " + ($s -join ', ') } }
+    }
+  } else { "--- diagnostics: dumpbin not found" }
+}
+exit $rc
 `, -1))
 	if !w.full {
 		// машина лише для збірки і 35 зразків (напр. робоча станція): прогін на Windows НЕПОВНИЙ

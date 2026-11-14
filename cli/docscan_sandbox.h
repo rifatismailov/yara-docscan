@@ -38,9 +38,11 @@ typedef struct
   int confine_check;           // --docscan-confine-check: test the sandbox instead of scanning
 } docscan_broker_cfg;
 
-// Broker: run the docscan scan of one file in a worker. Returns the exit code, or -1 if the worker could
-// not be started (nothing was done; the caller may scan in-process).
-int docscan_broker_run(const docscan_broker_cfg* cfg);
+// Broker: run the docscan scan of one file in a worker. Returns 1 if the worker was started (*exit_code =
+// the exit code to return: the worker's own, its crash code, or 1 on a timeout) - then the file must NOT be
+// scanned again, whatever happened (a file that kills the worker must never be parsed with full rights);
+// 0 if the worker could not be started (nothing was done; the caller may scan in-process).
+int docscan_broker_run(const docscan_broker_cfg* cfg, int* exit_code);
 
 // In-process confinement (job object with 1 process + privileges removed) - the broker applies it to
 // itself after starting the worker; also used with --docscan-no-sandbox.

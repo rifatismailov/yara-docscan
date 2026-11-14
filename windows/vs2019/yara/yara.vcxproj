@@ -102,8 +102,8 @@
     <Link>
       <SubSystem>Console</SubSystem>
       <AdditionalDependencies>ws2_32.lib;crypt32.lib;delayimp.lib;libyara$(PlatformArchitecture).lib;%(AdditionalDependencies)</AdditionalDependencies>
-      <!-- user32 only for OpenSSL's fatal-error helpers; loaded on first use, not at start: the sandboxed docscan worker (cli/docscan_sandbox.c) has no access to the window station -->
-      <DelayLoadDLLs>user32.dll;%(DelayLoadDLLs)</DelayLoadDLLs>
+      <!-- user32 / crypt32 / ws2_32 are needed only by OpenSSL features a scan never uses (fatal-error dialog, Windows certificate store, sockets): loaded on first use, not at start. The sandboxed docscan worker (cli/docscan_sandbox.c) runs with a lockdown token that has no access to the window station - user32 at start fails it with 0xC0000142 -->
+      <DelayLoadDLLs>user32.dll;crypt32.dll;ws2_32.dll;%(DelayLoadDLLs)</DelayLoadDLLs>
       <AdditionalLibraryDirectories>..\libyara\$(Configuration);%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
       <IgnoreAllDefaultLibraries>false</IgnoreAllDefaultLibraries>
     </Link>
@@ -123,8 +123,8 @@
     <Link>
       <SubSystem>Console</SubSystem>
       <AdditionalDependencies>ws2_32.lib;crypt32.lib;delayimp.lib;libyara$(PlatformArchitecture).lib;%(AdditionalDependencies)</AdditionalDependencies>
-      <!-- user32 only for OpenSSL's fatal-error helpers; loaded on first use, not at start: the sandboxed docscan worker (cli/docscan_sandbox.c) has no access to the window station -->
-      <DelayLoadDLLs>user32.dll;%(DelayLoadDLLs)</DelayLoadDLLs>
+      <!-- user32 / crypt32 / ws2_32 are needed only by OpenSSL features a scan never uses (fatal-error dialog, Windows certificate store, sockets): loaded on first use, not at start. The sandboxed docscan worker (cli/docscan_sandbox.c) runs with a lockdown token that has no access to the window station - user32 at start fails it with 0xC0000142 -->
+      <DelayLoadDLLs>user32.dll;crypt32.dll;ws2_32.dll;%(DelayLoadDLLs)</DelayLoadDLLs>
       <AdditionalLibraryDirectories>..\libyara\$(Configuration);%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
       <IgnoreAllDefaultLibraries>false</IgnoreAllDefaultLibraries>
       <LinkTimeCodeGeneration>Default</LinkTimeCodeGeneration>
@@ -147,8 +147,8 @@
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
       <AdditionalDependencies>ws2_32.lib;crypt32.lib;delayimp.lib;libyara$(PlatformArchitecture).lib;%(AdditionalDependencies)</AdditionalDependencies>
-      <!-- user32 only for OpenSSL's fatal-error helpers; loaded on first use, not at start: the sandboxed docscan worker (cli/docscan_sandbox.c) has no access to the window station -->
-      <DelayLoadDLLs>user32.dll;%(DelayLoadDLLs)</DelayLoadDLLs>
+      <!-- user32 / crypt32 / ws2_32 are needed only by OpenSSL features a scan never uses (fatal-error dialog, Windows certificate store, sockets): loaded on first use, not at start. The sandboxed docscan worker (cli/docscan_sandbox.c) runs with a lockdown token that has no access to the window station - user32 at start fails it with 0xC0000142 -->
+      <DelayLoadDLLs>user32.dll;crypt32.dll;ws2_32.dll;%(DelayLoadDLLs)</DelayLoadDLLs>
       <AdditionalLibraryDirectories>..\libyara\$(Configuration);%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
       <IgnoreAllDefaultLibraries>false</IgnoreAllDefaultLibraries>
       <GenerateDebugInformation>No</GenerateDebugInformation>
@@ -174,8 +174,8 @@
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
       <AdditionalDependencies>ws2_32.lib;crypt32.lib;delayimp.lib;libyara$(PlatformArchitecture).lib;%(AdditionalDependencies)</AdditionalDependencies>
-      <!-- user32 only for OpenSSL's fatal-error helpers; loaded on first use, not at start: the sandboxed docscan worker (cli/docscan_sandbox.c) has no access to the window station -->
-      <DelayLoadDLLs>user32.dll;%(DelayLoadDLLs)</DelayLoadDLLs>
+      <!-- user32 / crypt32 / ws2_32 are needed only by OpenSSL features a scan never uses (fatal-error dialog, Windows certificate store, sockets): loaded on first use, not at start. The sandboxed docscan worker (cli/docscan_sandbox.c) runs with a lockdown token that has no access to the window station - user32 at start fails it with 0xC0000142 -->
+      <DelayLoadDLLs>user32.dll;crypt32.dll;ws2_32.dll;%(DelayLoadDLLs)</DelayLoadDLLs>
       <AdditionalLibraryDirectories>..\libyara\$(Configuration);%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
       <IgnoreAllDefaultLibraries>false</IgnoreAllDefaultLibraries>
       <GenerateDebugInformation>No</GenerateDebugInformation>

@@ -537,10 +537,10 @@ watcher ── yara64 --docscan-json [--docscan-disarm ...] файл         ←
 | **Що воркер успадковує** | рівно 4 дескриптори (`PROC_THREAD_ATTRIBUTE_HANDLE_LIST`): `NUL` як stdin, канали stdout / stderr / результатів |
 | **Файл** | відображається в пам'ять до lockdown (`CreateFileMapping`); скан — `yr_scanner_scan_mem`, змінні THOR (`filetype`) — з перших байтів, дати файлу для третього проходу — з дескриптора |
 | **Розігрів** | до lockdown воркер один раз проганяє правило з `hash.md5/sha1/sha256/crc32`: OpenSSL ініціалізується ліниво (провайдери, конфігурація) — після lockdown це могло б тихо не вдатися |
-| **`user32.dll`** | `yara64.exe` імпортує його лише через OpenSSL (`MessageBoxW`, `GetProcessWindowStation` — фатальні помилки); у `yara.vcxproj` — `/DELAYLOAD:user32.dll`, щоб він не вантажився на старті: lockdown-процес не має доступу до window station |
+| **`user32` / `crypt32` / `ws2_32`** | потрібні лише функціям OpenSSL, яких скан не торкається (вікно фатальної помилки, сховище сертифікатів Windows, сокети); у `yara.vcxproj` — `/DELAYLOAD`, щоб вони не вантажились на старті: `user32` на старті вимагає доступу до window station, і lockdown-процес падає з `0xC0000142`. Крок CI `confine` у разі збою показує (dumpbin), які DLL вантажаться на старті і хто тягне `user32`/`gdi32` |
 | **Брокер** | після старту воркера сам застосовує `docscan_confine()` (job object з 1 процесом, привілеї видалено); чекає воркер (тайм-аут `--timeout` + 30 с, не більше 630 с — потім `TerminateJobObject`) |
 | **Захист від підміни файлу** | брокер запам'ятовує розмір і час зміни файлу до старту воркера; якщо до лікування файл змінився — нічого не чіпає, дія `failed:changed` (watcher повторить) |
-| **Збій воркера** | код NTSTATUS передається як є (`error: docscan worker crashed (0x…)`), JSON немає → watcher пише `ERROR`, як і раніше при падінні |
+| **Збій воркера** | код NTSTATUS передається як є (`error: docscan worker crashed (0x…)`), JSON немає → watcher пише `ERROR`, як і раніше при падінні. Файл, який «вбив» воркер, **ніколи не сканується повторно в процесі брокера** (лише якщо воркер узагалі не стартував) |
 | **Коли пісочниці немає** | тека чи список файлів, `--docscan-no-sandbox`, воркер не стартував (`docscan-sandbox: the worker could not be started … - scanning in-process` у stderr) → розбір у цьому ж процесі з `docscan_confine()`. `--docscan-confine-check` у цьому разі — `NOT CONFINED` (CI червоний) |
 
 Інтерфейс для watcher не змінився: той самий командний рядок, ті самі рядки (`{json}`, `docscan-disarm: … -> …`,
