@@ -330,7 +330,7 @@ int docscan_worker_confine_check(void)
     RegCloseKey(key);
   int child = try_child_process();
 
-  printf("worker: token: lockdown (restricting SID NULL, all groups deny-only), integrity RID %d%s, privileges %d\n",
+  printf("worker: token: lockdown (restricting SID NULL, no privileges), integrity RID %d%s, privileges %d\n",
          wk_integrity, wk_integrity == SECURITY_MANDATORY_UNTRUSTED_RID ? " (untrusted)" : "", wk_privs);
   printf("worker: read own exe: %s\n", r_self ? "ALLOWED" : "blocked");
   printf("worker: read %%WINDIR%%\\win.ini: %s\n", r_ini ? "ALLOWED" : "blocked");
@@ -412,17 +412,20 @@ static void* token_info(HANDLE tok, TOKEN_INFORMATION_CLASS cls)
   return p;
 }
 
-// lockdown: primary token of the worker. initial: impersonation token of its main thread until it is ready -
-// the broker's access, but
-//   - restricted (restricting SIDs = the user + every enabled group: "same access"): Windows lets a
-//     restricted process impersonate only a restricted token;
-//   - NOT elevated: BUILTIN\Administrators deny-only, no privileges. Windows does not let a non-elevated
-//     process (the lockdown token is not) impersonate an elevated token of the same user - it silently
-//     downgrades it to "identification", the process cannot open anything and dies with 0xC0000142.
-//     File access stays: it comes from the user SID (SYSTEM) and the other groups.
-// elevated_initial = 1 keeps Administrators (only for the diagnostic matrix of --docscan-confine-check).
-// initial_primary (optional): the same initial token as a primary token (diagnostics).
-static int make_tokens_ex(int elevated_initial, HANDLE* lockdown, HANDLE* initial, HANDLE* initial_primary)
+// lockdown: primary token of the worker - DISABLE_MAX_PRIVILEGE (only SeChangeNotify left) and the NULL SID
+// as the only restricting SID: every access check is done twice, the second time with the restricting SIDs
+// only, and no object grants anything to the NULL SID - so nothing can be opened. (The worker also lowers
+// itself to untrusted integrity.) The groups are left as they are: with the NULL SID restricting they give
+// no access, and the token keeps the same groups - and so the same "elevation" - as the initial token:
+// Windows does not let a non-elevated process impersonate an elevated token of the same user.
+// initial: impersonation token of the worker's main thread until it is ready - the broker's access, but
+// restricted (Windows lets a restricted process impersonate only a restricted token): restricting SIDs =
+// the user + every enabled group + RESTRICTED (S-1-5-12) - many system objects a starting process needs
+// (csrss port, \KnownDlls, BaseNamedObjects) grant restricted tokens access only through that SID.
+// For the diagnostic matrix: lockdown_deny_only = 1 makes every group deny-only (the first design),
+// restricted_sid = 0 leaves S-1-5-12 out; initial_primary = the initial token as a primary token.
+static int make_tokens_ex(int lockdown_deny_only, int restricted_sid, HANDLE* lockdown, HANDLE* initial,
+                          HANDLE* initial_primary)
 {
   *lockdown = *initial = NULL;
   if (initial_primary != NULL)
@@ -436,21 +439,20 @@ static int make_tokens_ex(int elevated_initial, HANDLE* lockdown, HANDLE* initia
   int ok = 0;
   SID_AND_ATTRIBUTES* deny = NULL;
   SID_AND_ATTRIBUTES* same = NULL;
-  SID_AND_ATTRIBUTES admin_deny;
   PSID null_sid = NULL;
-  BYTE admin_sid[SECURITY_MAX_SID_SIZE];
-  DWORD admin_len = sizeof(admin_sid);
+  BYTE restricted[SECURITY_MAX_SID_SIZE];
+  DWORD rlen = sizeof(restricted);
   HANDLE init_primary = NULL;
   SID_IDENTIFIER_AUTHORITY null_auth = SECURITY_NULL_SID_AUTHORITY;
   if (user == NULL || groups == NULL ||
       !AllocateAndInitializeSid(&null_auth, 1, SECURITY_NULL_RID, 0, 0, 0, 0, 0, 0, 0, &null_sid) ||
-      !CreateWellKnownSid(WinBuiltinAdministratorsSid, NULL, admin_sid, &admin_len))
+      !CreateWellKnownSid(WinRestrictedCodeSid, NULL, restricted, &rlen))
     goto done;
   deny = (SID_AND_ATTRIBUTES*) calloc(groups->GroupCount + 1, sizeof(SID_AND_ATTRIBUTES));
-  same = (SID_AND_ATTRIBUTES*) calloc(groups->GroupCount + 1, sizeof(SID_AND_ATTRIBUTES));
+  same = (SID_AND_ATTRIBUTES*) calloc(groups->GroupCount + 2, sizeof(SID_AND_ATTRIBUTES));
   if (deny == NULL || same == NULL)
     goto done;
-  DWORD nd = 0, ns = 0, na = 0;
+  DWORD nd = 0, ns = 0;
   deny[nd++].Sid = user->User.Sid;
   same[ns++].Sid = user->User.Sid;
   for (DWORD i = 0; i < groups->GroupCount; i++)
@@ -459,24 +461,18 @@ static int make_tokens_ex(int elevated_initial, HANDLE* lockdown, HANDLE* initia
     if (a & SE_GROUP_INTEGRITY)
       continue;  // the integrity label is not a group
     deny[nd++].Sid = groups->Groups[i].Sid;
-    int is_admin = EqualSid(groups->Groups[i].Sid, (PSID) admin_sid);
-    if (is_admin && !elevated_initial)
-    {
-      admin_deny.Sid = groups->Groups[i].Sid;
-      admin_deny.Attributes = 0;
-      na = 1;
-      continue;
-    }
     if ((a & SE_GROUP_ENABLED) && !(a & SE_GROUP_USE_FOR_DENY_ONLY))
       same[ns++].Sid = groups->Groups[i].Sid;
   }
+  if (restricted_sid)
+    same[ns++].Sid = (PSID) restricted;
   SID_AND_ATTRIBUTES restrict_null;
   restrict_null.Sid = null_sid;
   restrict_null.Attributes = 0;
-  if (!CreateRestrictedToken(self, DISABLE_MAX_PRIVILEGE, nd, deny, 0, NULL, 1, &restrict_null, lockdown))
+  if (!CreateRestrictedToken(self, DISABLE_MAX_PRIVILEGE, lockdown_deny_only ? nd : 0,
+                             lockdown_deny_only ? deny : NULL, 0, NULL, 1, &restrict_null, lockdown))
     goto done;
-  if (!CreateRestrictedToken(self, DISABLE_MAX_PRIVILEGE, na, na ? &admin_deny : NULL, 0, NULL, ns, same,
-                             &init_primary) ||
+  if (!CreateRestrictedToken(self, DISABLE_MAX_PRIVILEGE, 0, NULL, 0, NULL, ns, same, &init_primary) ||
       !DuplicateTokenEx(init_primary, TOKEN_IMPERSONATE | TOKEN_QUERY, NULL, SecurityImpersonation,
                         TokenImpersonation, initial))
     goto done;
@@ -509,7 +505,7 @@ done:
 
 static int make_tokens(HANDLE* lockdown, HANDLE* initial)
 {
-  return make_tokens_ex(0, lockdown, initial, NULL);
+  return make_tokens_ex(0, 1, lockdown, initial, NULL);
 }
 
 static int token_elevated(HANDLE tok)
@@ -559,19 +555,23 @@ static DWORD probe_start(HANDLE primary, HANDLE imp)
 // --docscan-confine-check: which token combinations can start a process at all
 static void probe_matrix(void)
 {
-  HANDLE L = NULL, In = NULL, InP = NULL, Le = NULL, Ie = NULL, IeP = NULL, self = NULL;
-  make_tokens_ex(0, &L, &In, &InP);
-  make_tokens_ex(1, &Le, &Ie, &IeP);
+  HANDLE L = NULL, I = NULL, IP = NULL;      // production: lockdown (groups kept) + initial with RESTRICTED
+  HANDLE Ld = NULL, Id = NULL;               // lockdown with every group deny-only (first design)
+  HANDLE L0 = NULL, I0 = NULL, IP0 = NULL;   // initial without RESTRICTED
+  HANDLE self = NULL;
+  make_tokens_ex(0, 1, &L, &I, &IP);
+  make_tokens_ex(1, 1, &Ld, &Id, NULL);
+  make_tokens_ex(0, 0, &L0, &I0, &IP0);
   OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &self);
-  printf("probe: broker elevated=%d, lockdown elevated=%d, initial elevated=%d, initial(admin kept) elevated=%d\n",
-         self ? token_elevated(self) : -1, L ? token_elevated(L) : -1, In ? token_elevated(In) : -1,
-         Ie ? token_elevated(Ie) : -1);
-  printf("probe: start lockdown + initial (non-elevated): 0x%08lx\n", L && In ? probe_start(L, In) : 0xFFFFFFFFUL);
-  printf("probe: start lockdown + initial (admin kept):   0x%08lx\n", L && Ie ? probe_start(L, Ie) : 0xFFFFFFFFUL);
-  printf("probe: start lockdown, no impersonation:        0x%08lx\n", L ? probe_start(L, NULL) : 0xFFFFFFFFUL);
-  printf("probe: start initial (non-elevated) as primary: 0x%08lx\n", InP ? probe_start(InP, NULL) : 0xFFFFFFFFUL);
+  printf("probe: elevated: broker=%d lockdown=%d lockdown(deny-only)=%d initial=%d\n", self ? token_elevated(self) : -1,
+         L ? token_elevated(L) : -1, Ld ? token_elevated(Ld) : -1, I ? token_elevated(I) : -1);
+  printf("probe: initial (+RESTRICTED) as primary:          0x%08lx\n", IP ? probe_start(IP, NULL) : 0xFFFFFFFFUL);
+  printf("probe: initial (no RESTRICTED) as primary:        0x%08lx\n", IP0 ? probe_start(IP0, NULL) : 0xFFFFFFFFUL);
+  printf("probe: lockdown + initial  (used by the sandbox): 0x%08lx\n", L && I ? probe_start(L, I) : 0xFFFFFFFFUL);
+  printf("probe: lockdown(deny-only) + initial:             0x%08lx\n", Ld && I ? probe_start(Ld, I) : 0xFFFFFFFFUL);
+  printf("probe: lockdown, no impersonation:                0x%08lx\n", L ? probe_start(L, NULL) : 0xFFFFFFFFUL);
   fflush(stdout);
-  HANDLE hs[] = {L, In, InP, Le, Ie, IeP, self};
+  HANDLE hs[] = {L, I, IP, Ld, Id, L0, I0, IP0, self};
   for (size_t i = 0; i < sizeof(hs) / sizeof(hs[0]); i++)
     if (hs[i] != NULL)
       CloseHandle(hs[i]);
