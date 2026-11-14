@@ -4,6 +4,7 @@
 
 #if defined(_WIN32)
 
+#include <sddl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -312,13 +313,16 @@ int docscan_worker_times(FILETIME* created, FILETIME* modified)
   return 1;
 }
 
-// --docscan-confine-check in the worker: what a hijacked parser could still do. Every probe must fail.
+// --docscan-confine-check in the worker: what a hijacked parser could still do.
+// Must be blocked: a private file (DOCSCAN_PROBE_SECRET - created by the broker, readable only by SYSTEM and
+// Administrators, like a document in a user profile), writing to %TEMP% / C:\ProgramData, writing to
+// HKLM, reading HKLM\SAM, starting cmd.exe. Reading the own exe is only reported (world-readable files are
+// readable by design: the worker token keeps the access of an ordinary user, see make_tokens_ex).
 int docscan_worker_confine_check(void)
 {
-  wchar_t self[MAX_PATH] = L"", winini[MAX_PATH] = L"", tmp[MAX_PATH] = L"", pd[MAX_PATH] = L"";
+  wchar_t self[MAX_PATH] = L"", secret[MAX_PATH] = L"", tmp[MAX_PATH] = L"", pd[MAX_PATH] = L"";
   GetModuleFileNameW(NULL, self, MAX_PATH);
-  GetWindowsDirectoryW(winini, MAX_PATH);
-  wcsncat(winini, L"\\win.ini", MAX_PATH - wcslen(winini) - 1);
+  DWORD sl = GetEnvironmentVariableW(L"DOCSCAN_PROBE_SECRET", secret, MAX_PATH);
   DWORD tl = GetTempPathW(MAX_PATH, tmp);
   _snwprintf(tmp + tl, MAX_PATH - tl - 1, L"docscan-probe-%lu.tmp", GetCurrentProcessId());
   _snwprintf(pd, MAX_PATH - 1, L"C:\\ProgramData\\docscan-probe-%lu.tmp", GetCurrentProcessId());
@@ -328,7 +332,8 @@ int docscan_worker_confine_check(void)
     printf("worker: lockdown FAILED\n");
     return EXIT_FAILURE;
   }
-  int r_self = can_read(self), r_ini = can_read(winini);
+  int r_self = can_read(self);
+  int r_secret = sl > 0 && sl < MAX_PATH ? can_read(secret) : -1;
   int w_tmp = 0, w_pd = 0;
   const wchar_t* wp[2] = {tmp, pd};
   for (int k = 0; k < 2; k++)
@@ -341,21 +346,31 @@ int docscan_worker_confine_check(void)
     }
   }
   HKEY key;
-  int reg = RegOpenKeyExW(HKEY_LOCAL_MACHINE, L"SOFTWARE", 0, KEY_READ, &key) == ERROR_SUCCESS;
-  if (reg)
+  DWORD disp = 0;
+  int reg_w = RegCreateKeyExW(HKEY_LOCAL_MACHINE, L"SOFTWARE\\docscan-probe", 0, NULL, REG_OPTION_VOLATILE,
+                              KEY_WRITE, NULL, &key, &disp) == ERROR_SUCCESS;
+  if (reg_w)
+  {
+    RegCloseKey(key);
+    RegDeleteKeyW(HKEY_LOCAL_MACHINE, L"SOFTWARE\\docscan-probe");
+  }
+  int reg_sam = RegOpenKeyExW(HKEY_LOCAL_MACHINE, L"SAM\\SAM", 0, KEY_READ, &key) == ERROR_SUCCESS;
+  if (reg_sam)
     RegCloseKey(key);
   int child = try_child_process();
 
-  printf("worker: token: lockdown (restricting SID NULL, no privileges), integrity RID %d%s, privileges %d\n",
+  printf("worker: token: restricted to Users/Everyone/Authenticated Users/RESTRICTED, integrity RID %d%s, privileges %d\n",
          wk_integrity, wk_integrity == SECURITY_MANDATORY_UNTRUSTED_RID ? " (untrusted)" : "", wk_privs);
-  printf("worker: read own exe: %s\n", r_self ? "ALLOWED" : "blocked");
-  printf("worker: read %%WINDIR%%\\win.ini: %s\n", r_ini ? "ALLOWED" : "blocked");
+  printf("worker: read own exe (world-readable, info): %s\n", r_self ? "allowed" : "blocked");
+  printf("worker: read a private file (SYSTEM/Administrators only): %s\n",
+         r_secret < 0 ? "NOT TESTED" : r_secret ? "ALLOWED" : "blocked");
   printf("worker: write %%TEMP%%: %s\n", w_tmp ? "ALLOWED" : "blocked");
   printf("worker: write C:\\ProgramData: %s\n", w_pd ? "ALLOWED" : "blocked");
-  printf("worker: registry HKLM\\SOFTWARE: %s\n", reg ? "ALLOWED" : "blocked");
+  printf("worker: registry write HKLM\\SOFTWARE: %s\n", reg_w ? "ALLOWED" : "blocked");
+  printf("worker: registry read HKLM\\SAM: %s\n", reg_sam ? "ALLOWED" : "blocked");
   printf("worker: child process: %s\n", child ? "STARTED" : "blocked");
   fflush(stdout);
-  int ok = !r_self && !r_ini && !w_tmp && !w_pd && !reg && !child &&
+  int ok = r_secret == 0 && !w_tmp && !w_pd && !reg_w && !reg_sam && !child &&
            wk_integrity == SECURITY_MANDATORY_UNTRUSTED_RID && wk_privs >= 0 && wk_privs <= 1;
   return ok ? EXIT_SUCCESS : EXIT_FAILURE;
 }
@@ -440,8 +455,10 @@ static void* token_info(HANDLE tok, TOKEN_INFORMATION_CLASS cls)
 // (csrss port, \KnownDlls, BaseNamedObjects) grant restricted tokens access only through that SID.
 // For the diagnostic matrix: lockdown_deny_only = 1 makes every group deny-only (the first design),
 // restricted_sid = 0 leaves S-1-5-12 out; initial_primary = the initial token as a primary token.
-static int make_tokens_ex(int lockdown_deny_only, int restricted_sid, int keep_impersonate, HANDLE* lockdown,
-                          HANDLE* initial, HANDLE* initial_primary)
+#define DS_TOKEN_NULL  0  // restricting SID: NULL SID - nothing at all can be opened (does not start yet)
+#define DS_TOKEN_USERS 1  // restricting SIDs: Users, Everyone, Authenticated Users, RESTRICTED
+static int make_tokens_ex(int lockdown_deny_only, int restricted_sid, int keep_impersonate, int kind,
+                          HANDLE* lockdown, HANDLE* initial, HANDLE* initial_primary)
 {
   *lockdown = *initial = NULL;
   if (initial_primary != NULL)
@@ -488,6 +505,21 @@ static int make_tokens_ex(int lockdown_deny_only, int restricted_sid, int keep_i
   SID_AND_ATTRIBUTES restrict_null;
   restrict_null.Sid = null_sid;
   restrict_null.Attributes = 0;
+  // DS_TOKEN_USERS: the second access check passes only where an ordinary user would pass - system DLLs and
+  // Program Files yes; profiles of the users, the DocScan folders, SAM no
+  BYTE s_users[SECURITY_MAX_SID_SIZE], s_world[SECURITY_MAX_SID_SIZE], s_auth[SECURITY_MAX_SID_SIZE];
+  DWORD l1 = sizeof(s_users), l2 = sizeof(s_world), l3 = sizeof(s_auth);
+  SID_AND_ATTRIBUTES ru[4];
+  memset(ru, 0, sizeof(ru));
+  if (!CreateWellKnownSid(WinBuiltinUsersSid, NULL, s_users, &l1) || !CreateWellKnownSid(WinWorldSid, NULL, s_world, &l2) ||
+      !CreateWellKnownSid(WinAuthenticatedUserSid, NULL, s_auth, &l3))
+    goto done;
+  ru[0].Sid = (PSID) s_users;
+  ru[1].Sid = (PSID) s_world;
+  ru[2].Sid = (PSID) s_auth;
+  ru[3].Sid = (PSID) restricted;
+  DWORD nr = kind == DS_TOKEN_USERS ? 4 : 1;
+  SID_AND_ATTRIBUTES* rs = kind == DS_TOKEN_USERS ? ru : &restrict_null;
   // keep_impersonate: every privilege deleted except SeImpersonate and SeChangeNotify (the worker removes
   // SeImpersonate itself before the lockdown); otherwise DISABLE_MAX_PRIVILEGE
   pdel = (LUID_AND_ATTRIBUTES*) calloc(privs->PrivilegeCount + 1, sizeof(LUID_AND_ATTRIBUTES));
@@ -508,7 +540,7 @@ static int make_tokens_ex(int lockdown_deny_only, int restricted_sid, int keep_i
   }
   if (!CreateRestrictedToken(self, keep_impersonate ? 0 : DISABLE_MAX_PRIVILEGE, lockdown_deny_only ? nd : 0,
                              lockdown_deny_only ? deny : NULL, keep_impersonate ? npdel : 0,
-                             keep_impersonate ? pdel : NULL, 1, &restrict_null, lockdown))
+                             keep_impersonate ? pdel : NULL, nr, rs, lockdown))
     goto done;
   if (!CreateRestrictedToken(self, DISABLE_MAX_PRIVILEGE, 0, NULL, 0, NULL, ns, same, &init_primary) ||
       !DuplicateTokenEx(init_primary, TOKEN_IMPERSONATE | TOKEN_QUERY, NULL, SecurityImpersonation,
@@ -545,7 +577,7 @@ done:
 
 static int make_tokens(HANDLE* lockdown, HANDLE* initial)
 {
-  return make_tokens_ex(0, 1, 1, lockdown, initial, NULL);
+  return make_tokens_ex(0, 1, 1, DS_TOKEN_USERS, lockdown, initial, NULL);
 }
 
 
@@ -646,6 +678,86 @@ static DWORD probe_start(HANDLE primary, HANDLE imp, int loader1, int* level)
   return code;
 }
 
+// Diagnostics: start "<exe> --version" with this primary + impersonation token under the debugger and print
+// what happens before it dies: the DLLs it loads, exceptions, debug strings, the exit code.
+static void probe_debug(HANDLE primary, HANDLE imp)
+{
+  wchar_t exe[MAX_PATH], cmd[MAX_PATH + 32];
+  if (GetModuleFileNameW(NULL, exe, MAX_PATH) == 0)
+    return;
+  _snwprintf(cmd, MAX_PATH + 32, L"\"%s\" --version", exe);
+  cmd[MAX_PATH + 31] = L'\0';
+  STARTUPINFOW si;
+  PROCESS_INFORMATION pi;
+  memset(&si, 0, sizeof(si));
+  si.cb = sizeof(si);
+  if (!CreateProcessAsUserW(primary, exe, cmd, NULL, NULL, FALSE,
+                            CREATE_SUSPENDED | CREATE_NO_WINDOW | DEBUG_ONLY_THIS_PROCESS, NULL, NULL, &si, &pi))
+  {
+    printf("debug: could not create the process (%lu)\n", GetLastError());
+    return;
+  }
+  if (imp != NULL)
+    SetThreadToken(&pi.hThread, imp);
+  ResumeThread(pi.hThread);
+  int events = 0;
+  DEBUG_EVENT ev;
+  while (events < 400 && WaitForDebugEvent(&ev, 15000))
+  {
+    events++;
+    DWORD cont = DBG_CONTINUE;
+    wchar_t name[MAX_PATH] = L"?";
+    switch (ev.dwDebugEventCode)
+    {
+    case CREATE_PROCESS_DEBUG_EVENT:
+      if (ev.u.CreateProcessInfo.hFile)
+        CloseHandle(ev.u.CreateProcessInfo.hFile);
+      break;
+    case LOAD_DLL_DEBUG_EVENT:
+      if (ev.u.LoadDll.hFile)
+      {
+        GetFinalPathNameByHandleW(ev.u.LoadDll.hFile, name, MAX_PATH, 0);
+        CloseHandle(ev.u.LoadDll.hFile);
+      }
+      printf("debug: load %ls\n", name);
+      break;
+    case EXCEPTION_DEBUG_EVENT:
+      printf("debug: exception 0x%08lx at %p (%s)\n", ev.u.Exception.ExceptionRecord.ExceptionCode,
+             ev.u.Exception.ExceptionRecord.ExceptionAddress, ev.u.Exception.dwFirstChance ? "first" : "second");
+      if (ev.u.Exception.ExceptionRecord.ExceptionCode != EXCEPTION_BREAKPOINT)
+        cont = DBG_EXCEPTION_NOT_HANDLED;
+      break;
+    case OUTPUT_DEBUG_STRING_EVENT:
+    {
+      char buf[512] = "";
+      SIZE_T n = 0;
+      DWORD len = ev.u.DebugString.nDebugStringLength;
+      if (!ev.u.DebugString.fUnicode)
+      {
+        ReadProcessMemory(pi.hProcess, ev.u.DebugString.lpDebugStringData, buf, len < sizeof(buf) - 1 ? len : sizeof(buf) - 1, &n);
+        buf[n] = '\0';
+        printf("debug: string %s", buf);
+      }
+      break;
+    }
+    case EXIT_PROCESS_DEBUG_EVENT:
+      printf("debug: exit 0x%08lx after %d events\n", ev.u.ExitProcess.dwExitCode, events);
+      ContinueDebugEvent(ev.dwProcessId, ev.dwThreadId, DBG_CONTINUE);
+      goto out;
+    default:
+      break;
+    }
+    ContinueDebugEvent(ev.dwProcessId, ev.dwThreadId, cont);
+  }
+  printf("debug: stopped after %d events\n", events);
+  TerminateProcess(pi.hProcess, 1);
+out:
+  DebugActiveProcessStop(pi.dwProcessId);
+  CloseHandle(pi.hThread);
+  CloseHandle(pi.hProcess);
+  fflush(stdout);
+}
+
 // --docscan-confine-check: which token combinations can start a process at all. "level" = the impersonation
 // level the main thread really got (1 identification = downgraded by Windows, 2 impersonation = works)
 static void probe_one(const char* what, HANDLE primary, HANDLE imp, int loader1)
@@ -657,21 +769,25 @@ static void probe_one(const char* what, HANDLE primary, HANDLE imp, int loader1)
 
 static void probe_matrix(void)
 {
-  HANDLE L = NULL, I = NULL, IP = NULL;   // used by the sandbox: lockdown with SeImpersonate + initial
-  HANDLE Ln = NULL, In = NULL;            // lockdown with no privileges at all (the earlier design)
+  HANDLE U = NULL, I = NULL, IP = NULL;   // used by the sandbox: Users-level restricted token + initial
+  HANDLE N = NULL, In = NULL;             // NULL-SID lockdown (full lockdown, does not start yet)
   HANDLE self = NULL;
-  make_tokens_ex(0, 1, 1, &L, &I, &IP);
-  make_tokens_ex(0, 1, 0, &Ln, &In, NULL);
+  make_tokens_ex(0, 1, 1, DS_TOKEN_USERS, &U, &I, &IP);
+  make_tokens_ex(0, 1, 1, DS_TOKEN_NULL, &N, &In, NULL);
   OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &self);
-  printf("probe: elevated: broker=%d lockdown=%d initial=%d\n", self ? token_elevated(self) : -1,
-         L ? token_elevated(L) : -1, I ? token_elevated(I) : -1);
+  printf("probe: elevated: broker=%d worker=%d initial=%d\n", self ? token_elevated(self) : -1,
+         U ? token_elevated(U) : -1, I ? token_elevated(I) : -1);
   probe_one("initial as primary (control)", IP, NULL, 0);
-  probe_one("lockdown + initial, 1 loader thread [sandbox]", L, I, 1);
-  probe_one("lockdown + initial, parallel loader", L, I, 0);
-  probe_one("lockdown(no privileges) + initial, 1 loader", Ln, I, 1);
-  probe_one("lockdown, no impersonation, 1 loader", L, NULL, 1);
+  probe_one("Users-level + initial [sandbox]", U, I, 1);
+  probe_one("Users-level, no impersonation", U, NULL, 1);
+  probe_one("NULL-SID lockdown + initial", N, I, 1);
   fflush(stdout);
-  HANDLE hs[] = {L, I, IP, Ln, In, self};
+  if (N != NULL && I != NULL)
+  {
+    printf("--- NULL-SID lockdown + initial under the debugger:\n");
+    probe_debug(N, I);
+  }
+  HANDLE hs[] = {U, I, IP, N, In, self};
   for (size_t i = 0; i < sizeof(hs) / sizeof(hs[0]); i++)
     if (hs[i] != NULL)
       CloseHandle(hs[i]);
@@ -787,8 +903,28 @@ int docscan_broker_run(const docscan_broker_cfg* cfg, int* exit_code)
   enable_privilege(L"SeIncreaseQuotaPrivilege");
   enable_privilege(L"SeAssignPrimaryTokenPrivilege");
   enable_privilege(L"SeImpersonatePrivilege");
+  wchar_t secret[MAX_PATH] = L"";
   if (cfg->confine_check)
+  {
     probe_matrix();  // which token combinations can start a process (diagnostics in the CI log)
+    // a "private document": readable only by SYSTEM and Administrators (protected DACL)
+    DWORD tl = GetTempPathW(MAX_PATH, secret);
+    _snwprintf(secret + tl, MAX_PATH - tl - 1, L"docscan-probe-secret-%lu.txt", GetCurrentProcessId());
+    PSECURITY_DESCRIPTOR sd = NULL;
+    SECURITY_ATTRIBUTES ssa = {sizeof(ssa), NULL, FALSE};
+    if (ConvertStringSecurityDescriptorToSecurityDescriptorW(L"D:P(A;;FA;;;SY)(A;;FA;;;BA)", SDDL_REVISION_1, &sd, NULL))
+      ssa.lpSecurityDescriptor = sd;
+    HANDLE h = CreateFileW(secret, GENERIC_WRITE, 0, &ssa, CREATE_ALWAYS, 0, NULL);
+    if (h != INVALID_HANDLE_VALUE)
+    {
+      DWORD w;
+      WriteFile(h, "secret", 6, &w, NULL);
+      CloseHandle(h);
+      SetEnvironmentVariableW(L"DOCSCAN_PROBE_SECRET", secret);
+    }
+    if (sd != NULL)
+      LocalFree(sd);
+  }
   if (!make_tokens(&lockdown, &initial) || (job = limited_job()) == NULL)
     goto fail;
   SECURITY_ATTRIBUTES sa = {sizeof(sa), NULL, TRUE};
@@ -909,6 +1045,8 @@ int docscan_broker_run(const docscan_broker_cfg* cfg, int* exit_code)
 
 fail:
 done:
+  if (secret[0])
+    DeleteFileW(secret);
   if (attrs != NULL)
   {
     DeleteProcThreadAttributeList(attrs);

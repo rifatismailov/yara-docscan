@@ -8,8 +8,8 @@
              may do: write the macro dump (--docscan-extract), append to the critical queue (--critical-out),
              back up / replace / delete the file (--docscan-disarm).
      WORKER  (yara64 --docscan-worker=<pipe> ...)        loads the rules and opens + maps the file while its
-             main thread still impersonates a normal token, then drops to the LOCKDOWN token: the NULL SID
-             as the only restricting SID (every access check fails),
+             main thread still impersonates a normal token, then drops to the LOCKDOWN token: restricted to
+             what an ordinary user may read (Users / Everyone / Authenticated Users / RESTRICTED),
              untrusted integrity, no privileges, in a job (1 process, UI limits). Everything that touches
              document bytes - module, rules, second pass, text extraction, disarm plan - runs after that.
              Results go to the broker through the pipe as records.
