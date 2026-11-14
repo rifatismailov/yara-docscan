@@ -412,12 +412,21 @@ static void* token_info(HANDLE tok, TOKEN_INFORMATION_CLASS cls)
   return p;
 }
 
-// lockdown: primary token of the worker; initial: impersonation token of its main thread until it is
-// ready (the same access as the broker, but restricted - Windows lets a restricted process impersonate
-// only a restricted token - and without privileges)
-static int make_tokens(HANDLE* lockdown, HANDLE* initial)
+// lockdown: primary token of the worker. initial: impersonation token of its main thread until it is ready -
+// the broker's access, but
+//   - restricted (restricting SIDs = the user + every enabled group: "same access"): Windows lets a
+//     restricted process impersonate only a restricted token;
+//   - NOT elevated: BUILTIN\Administrators deny-only, no privileges. Windows does not let a non-elevated
+//     process (the lockdown token is not) impersonate an elevated token of the same user - it silently
+//     downgrades it to "identification", the process cannot open anything and dies with 0xC0000142.
+//     File access stays: it comes from the user SID (SYSTEM) and the other groups.
+// elevated_initial = 1 keeps Administrators (only for the diagnostic matrix of --docscan-confine-check).
+// initial_primary (optional): the same initial token as a primary token (diagnostics).
+static int make_tokens_ex(int elevated_initial, HANDLE* lockdown, HANDLE* initial, HANDLE* initial_primary)
 {
   *lockdown = *initial = NULL;
+  if (initial_primary != NULL)
+    *initial_primary = NULL;
   HANDLE self = NULL;
   if (!OpenProcessToken(GetCurrentProcess(),
                         TOKEN_DUPLICATE | TOKEN_QUERY | TOKEN_ASSIGN_PRIMARY | TOKEN_ADJUST_DEFAULT, &self))
@@ -427,17 +436,21 @@ static int make_tokens(HANDLE* lockdown, HANDLE* initial)
   int ok = 0;
   SID_AND_ATTRIBUTES* deny = NULL;
   SID_AND_ATTRIBUTES* same = NULL;
+  SID_AND_ATTRIBUTES admin_deny;
   PSID null_sid = NULL;
+  BYTE admin_sid[SECURITY_MAX_SID_SIZE];
+  DWORD admin_len = sizeof(admin_sid);
   HANDLE init_primary = NULL;
   SID_IDENTIFIER_AUTHORITY null_auth = SECURITY_NULL_SID_AUTHORITY;
   if (user == NULL || groups == NULL ||
-      !AllocateAndInitializeSid(&null_auth, 1, SECURITY_NULL_RID, 0, 0, 0, 0, 0, 0, 0, &null_sid))
+      !AllocateAndInitializeSid(&null_auth, 1, SECURITY_NULL_RID, 0, 0, 0, 0, 0, 0, 0, &null_sid) ||
+      !CreateWellKnownSid(WinBuiltinAdministratorsSid, NULL, admin_sid, &admin_len))
     goto done;
   deny = (SID_AND_ATTRIBUTES*) calloc(groups->GroupCount + 1, sizeof(SID_AND_ATTRIBUTES));
   same = (SID_AND_ATTRIBUTES*) calloc(groups->GroupCount + 1, sizeof(SID_AND_ATTRIBUTES));
   if (deny == NULL || same == NULL)
     goto done;
-  DWORD nd = 0, ns = 0;
+  DWORD nd = 0, ns = 0, na = 0;
   deny[nd++].Sid = user->User.Sid;
   same[ns++].Sid = user->User.Sid;
   for (DWORD i = 0; i < groups->GroupCount; i++)
@@ -446,6 +459,14 @@ static int make_tokens(HANDLE* lockdown, HANDLE* initial)
     if (a & SE_GROUP_INTEGRITY)
       continue;  // the integrity label is not a group
     deny[nd++].Sid = groups->Groups[i].Sid;
+    int is_admin = EqualSid(groups->Groups[i].Sid, (PSID) admin_sid);
+    if (is_admin && !elevated_initial)
+    {
+      admin_deny.Sid = groups->Groups[i].Sid;
+      admin_deny.Attributes = 0;
+      na = 1;
+      continue;
+    }
     if ((a & SE_GROUP_ENABLED) && !(a & SE_GROUP_USE_FOR_DENY_ONLY))
       same[ns++].Sid = groups->Groups[i].Sid;
   }
@@ -454,16 +475,25 @@ static int make_tokens(HANDLE* lockdown, HANDLE* initial)
   restrict_null.Attributes = 0;
   if (!CreateRestrictedToken(self, DISABLE_MAX_PRIVILEGE, nd, deny, 0, NULL, 1, &restrict_null, lockdown))
     goto done;
-  if (!CreateRestrictedToken(self, DISABLE_MAX_PRIVILEGE, 0, NULL, 0, NULL, ns, same, &init_primary) ||
+  if (!CreateRestrictedToken(self, DISABLE_MAX_PRIVILEGE, na, na ? &admin_deny : NULL, 0, NULL, ns, same,
+                             &init_primary) ||
       !DuplicateTokenEx(init_primary, TOKEN_IMPERSONATE | TOKEN_QUERY, NULL, SecurityImpersonation,
                         TokenImpersonation, initial))
     goto done;
+  if (initial_primary != NULL)
+  {
+    *initial_primary = init_primary;
+    init_primary = NULL;
+  }
   ok = 1;
 done:
-  if (!ok && *lockdown != NULL)
+  if (!ok)
   {
-    CloseHandle(*lockdown);
-    *lockdown = NULL;
+    if (*lockdown != NULL)
+      CloseHandle(*lockdown);
+    if (*initial != NULL)
+      CloseHandle(*initial);
+    *lockdown = *initial = NULL;
   }
   if (init_primary != NULL)
     CloseHandle(init_primary);
@@ -475,6 +505,76 @@ done:
   free(groups);
   CloseHandle(self);
   return ok;
+}
+
+static int make_tokens(HANDLE* lockdown, HANDLE* initial)
+{
+  return make_tokens_ex(0, lockdown, initial, NULL);
+}
+
+static int token_elevated(HANDLE tok)
+{
+  TOKEN_ELEVATION e;
+  DWORD len = 0;
+  return GetTokenInformation(tok, TokenElevation, &e, sizeof(e), &len) ? (int) e.TokenIsElevated : -1;
+}
+
+// one diagnostic start: "<this exe> --version" with this primary token and (optionally) this impersonation
+// token on the main thread -> its exit code (0 = it started and ran); 0xFFFFFFFF = could not create it
+static DWORD probe_start(HANDLE primary, HANDLE imp)
+{
+  wchar_t exe[MAX_PATH], cmd[MAX_PATH + 32];
+  if (GetModuleFileNameW(NULL, exe, MAX_PATH) == 0)
+    return 0xFFFFFFFF;
+  _snwprintf(cmd, MAX_PATH + 32, L"\"%s\" --version", exe);
+  cmd[MAX_PATH + 31] = L'\0';
+  STARTUPINFOW si;
+  PROCESS_INFORMATION pi;
+  memset(&si, 0, sizeof(si));
+  si.cb = sizeof(si);
+  HANDLE job = limited_job();
+  if (!CreateProcessAsUserW(primary, exe, cmd, NULL, NULL, FALSE, CREATE_SUSPENDED | CREATE_NO_WINDOW, NULL,
+                            NULL, &si, &pi))
+  {
+    if (job != NULL)
+      CloseHandle(job);
+    return 0xFFFFFFFF;
+  }
+  if (job != NULL)
+    AssignProcessToJobObject(job, pi.hProcess);
+  if (imp != NULL)
+    SetThreadToken(&pi.hThread, imp);
+  ResumeThread(pi.hThread);
+  DWORD code = 0xFFFFFFFE;
+  if (WaitForSingleObject(pi.hProcess, 15000) == WAIT_TIMEOUT)
+    TerminateProcess(pi.hProcess, 0xFFFFFFFE);
+  GetExitCodeProcess(pi.hProcess, &code);
+  CloseHandle(pi.hThread);
+  CloseHandle(pi.hProcess);
+  if (job != NULL)
+    CloseHandle(job);
+  return code;
+}
+
+// --docscan-confine-check: which token combinations can start a process at all
+static void probe_matrix(void)
+{
+  HANDLE L = NULL, In = NULL, InP = NULL, Le = NULL, Ie = NULL, IeP = NULL, self = NULL;
+  make_tokens_ex(0, &L, &In, &InP);
+  make_tokens_ex(1, &Le, &Ie, &IeP);
+  OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &self);
+  printf("probe: broker elevated=%d, lockdown elevated=%d, initial elevated=%d, initial(admin kept) elevated=%d\n",
+         self ? token_elevated(self) : -1, L ? token_elevated(L) : -1, In ? token_elevated(In) : -1,
+         Ie ? token_elevated(Ie) : -1);
+  printf("probe: start lockdown + initial (non-elevated): 0x%08lx\n", L && In ? probe_start(L, In) : 0xFFFFFFFFUL);
+  printf("probe: start lockdown + initial (admin kept):   0x%08lx\n", L && Ie ? probe_start(L, Ie) : 0xFFFFFFFFUL);
+  printf("probe: start lockdown, no impersonation:        0x%08lx\n", L ? probe_start(L, NULL) : 0xFFFFFFFFUL);
+  printf("probe: start initial (non-elevated) as primary: 0x%08lx\n", InP ? probe_start(InP, NULL) : 0xFFFFFFFFUL);
+  fflush(stdout);
+  HANDLE hs[] = {L, In, InP, Le, Ie, IeP, self};
+  for (size_t i = 0; i < sizeof(hs) / sizeof(hs[0]); i++)
+    if (hs[i] != NULL)
+      CloseHandle(hs[i]);
 }
 
 static FILE* wfopen_utf8(const char* path, const wchar_t* mode)
@@ -586,6 +686,8 @@ int docscan_broker_run(const docscan_broker_cfg* cfg, int* exit_code)
 
   enable_privilege(L"SeIncreaseQuotaPrivilege");
   enable_privilege(L"SeAssignPrimaryTokenPrivilege");
+  if (cfg->confine_check)
+    probe_matrix();  // which token combinations can start a process (diagnostics in the CI log)
   if (!make_tokens(&lockdown, &initial) || (job = limited_job()) == NULL)
     goto fail;
   SECURITY_ATTRIBUTES sa = {sizeof(sa), NULL, TRUE};
