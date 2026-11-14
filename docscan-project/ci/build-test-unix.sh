@@ -113,9 +113,11 @@ if [ "$FUZZ_SECONDS" -gt 0 ]; then
     p2=$!
     wait $p1; r1=$?; wait $p2; r2=$?
     grep -h "^Done" "$B/parsers.log" "$B/module.log"
-    n=$(ls "$B/crashes" | wc -l | tr -d ' ')
+    # failures: crash-* / timeout-* / oom-* / leak-*; slow-unit-* (one run took > 10 s) is only reported
+    n=$(ls "$B/crashes" | grep -cE '^(crash|timeout|oom|leak)-' || true)
     echo "crash/timeout inputs: $n"
-    if [ "$n" -gt 0 ]; then cp -r "$B/crashes" "$OUT/artifacts/fuzz-crashes"; fi
+    for s in "$B"/crashes/slow-unit-*; do [ -e "$s" ] && echo "slow input (not a failure): $(basename "$s")"; done
+    if [ -n "$(ls "$B/crashes")" ]; then cp -r "$B/crashes" "$OUT/artifacts/fuzz-crashes"; fi
     [ "$r1" -eq 0 ] && [ "$r2" -eq 0 ] && [ "$n" -eq 0 ]
   }
   step fuzz fuzz

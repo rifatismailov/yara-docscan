@@ -330,9 +330,14 @@ $seeds = @("$w\tests\corpus", "$w\tests\seeds", "$repo\docscan-project\test-samp
 "seed folders: " + ($seeds -join ', ')
 & $fz "-dict=$repo\docscan-project\fuzz\docscan.dict" -max_len=262144 -max_total_time=`+fmt.Sprint(w.fuzz)+` -timeout=20 -rss_limit_mb=2048 "-artifact_prefix=$f\crashes\" "$f\corpus" @seeds 2>&1 | Select-String -Pattern "^#|Done|ERROR|crash|INITED" | Select-Object -Last 15 | % { $_.Line }
 $rc = $LASTEXITCODE
-$n = (Get-ChildItem "$f\crashes" -File).Count
+# failures: crash-* / timeout-* / oom-* / leak-*; slow-unit-* (one run took > 10 s, e.g. the VM was busy) is
+# only reported and kept in the artifacts
+$all = @(Get-ChildItem "$f\crashes" -File)
+$n = @($all | Where-Object { $_.Name -match '^(crash|timeout|oom|leak)-' }).Count
+$slow = @($all | Where-Object { $_.Name -like 'slow-unit-*' })
 "crash/timeout inputs: $n"
-if ($n -gt 0) { Compress-Archive -Path "$f\crashes\*" -DestinationPath "$w\fuzz-crashes.zip" -Force }
+foreach ($s in $slow) { "slow input (not a failure): " + $s.Name + " (" + $s.Length + " bytes)" }
+if ($all.Count -gt 0) { Compress-Archive -Path "$f\crashes\*" -DestinationPath "$w\fuzz-crashes.zip" -Force }
 if ($bad -gt 0 -or $rc -ne 0 -or $n -gt 0) { exit 1 }
 `, 3))
 		w.keep(ctx, "fuzz-crashes.zip")
