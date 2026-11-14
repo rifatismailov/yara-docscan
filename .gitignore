@@ -103,6 +103,8 @@ tests/mapper
 # upstream rule "test-*[^.c]" hides these dirs; re-include, then re-exclude live samples
 !/docscan-project/test-range/
 !/docscan-project/test-samples/
+# output of gen_test_range.py: copies of test-samples/generated (only the needed ones are copied there)
+/docscan-project/test-range/range/
 /docscan-project/fuzz/external/
 /docscan-project/dist/
 

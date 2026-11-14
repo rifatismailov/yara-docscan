@@ -304,21 +304,38 @@ exit $LASTEXITCODE
 	}
 
 	if w.fuzz > 0 {
-		// фазер розбору (clang-cl + libFuzzer + ASan); немає LLVM — SKIP (на ВМ: choco install llvm)
+		// фазер розбору (clang-cl + libFuzzer + ASan): усі парсери DocScan і лікування (фазер усього модуля
+		// потребує libyara, зібраної clang, — лише на Маці/Linux). Немає LLVM — SKIP (на ВМ: choco install llvm).
+		//   1. регресії: кожен fuzz\regressions\parsers-* окремо — падіння = FAIL;
+		//   2. фазинг з базою з УСІХ тестових файлів: корпуси (POI, pdf.js, LibreOffice RTF, LNK, Tika, oletools,
+		//      plaso), 42 згенеровані зразки, документи-зразки seeds (шкідливе ПЗ — ні);
+		//   3. знайдені падіння -> fuzz-crashes.zip в артефакти прогону.
 		steps = append(steps, w.step(ctx, "fuzz", `
 Set-Location $repo
 if (-not (Test-Path "C:\Program Files\LLVM\bin\clang-cl.exe")) { "no LLVM (clang-cl) on this machine: choco install llvm"; exit 3 }
 $f = "$w\fuzz"; Remove-Item $f -Recurse -Force -EA 0
+Remove-Item "$w\fuzz-crashes.zip" -Force -EA 0
 powershell -NoProfile -ExecutionPolicy Bypass -File docscan-project\fuzz\build_windows.ps1 -Repo $repo -Out $f
 if (-not (Test-Path "$f\docscan_parsers_fuzzer.exe")) { exit 1 }
 New-Item -ItemType Directory -Force "$f\corpus", "$f\crashes" | Out-Null
-$seeds = @("$w\tests\corpus\oletools", "$w\tests\corpus\tika") | Where-Object { Test-Path $_ }
-& "$f\docscan_parsers_fuzzer.exe" "-dict=$repo\docscan-project\fuzz\docscan.dict" -max_len=262144 -max_total_time=`+fmt.Sprint(w.fuzz)+` -timeout=20 -rss_limit_mb=2048 "-artifact_prefix=$f\crashes\" "$f\corpus" @seeds 2>&1 | Select-String -Pattern "^#|Done|ERROR|crash" | Select-Object -Last 15 | % { $_.Line }
+$fz = "$f\docscan_parsers_fuzzer.exe"
+$bad = 0; $nr = 0
+foreach ($r in (Get-ChildItem "$repo\docscan-project\fuzz\regressions" -Filter "parsers-*" -File)) {
+  $nr++
+  & $fz -timeout=10 -rss_limit_mb=2048 $r.FullName *> $null
+  if ($LASTEXITCODE -ne 0) { "regression FAIL: " + $r.Name; $bad++ }
+}
+"regressions: $nr, failed: $bad"
+$seeds = @("$w\tests\corpus", "$w\tests\seeds", "$repo\docscan-project\test-samples\generated") | Where-Object { Test-Path $_ }
+"seed folders: " + ($seeds -join ', ')
+& $fz "-dict=$repo\docscan-project\fuzz\docscan.dict" -max_len=262144 -max_total_time=`+fmt.Sprint(w.fuzz)+` -timeout=20 -rss_limit_mb=2048 "-artifact_prefix=$f\crashes\" "$f\corpus" @seeds 2>&1 | Select-String -Pattern "^#|Done|ERROR|crash|INITED" | Select-Object -Last 15 | % { $_.Line }
 $rc = $LASTEXITCODE
 $n = (Get-ChildItem "$f\crashes" -File).Count
 "crash/timeout inputs: $n"
-if ($rc -ne 0 -or $n -gt 0) { exit 1 }
+if ($n -gt 0) { Compress-Archive -Path "$f\crashes\*" -DestinationPath "$w\fuzz-crashes.zip" -Force }
+if ($bad -gt 0 -or $rc -ne 0 -or $n -gt 0) { exit 1 }
 `, 3))
+		w.keep(ctx, "fuzz-crashes.zip")
 	}
 	return steps, nil
 }

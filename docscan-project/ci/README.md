@@ -121,7 +121,7 @@ token_ref:    "keepassxc:CI/Forgejo/api-token"
 | hostile | 35 ворожих файлів (зламані, гігантські, глибока вкладеність) | з корпусу seeds |
 | corpus | ~4 000 документів з публічних тестових корпусів | POI, pdf.js, plaso, LibreOffice RTF, LNK, Apache Tika, oletools |
 | malware | **справжнє** шкідливе ПЗ — 949 зразків (майнер XMRig, EICAR, theZoo, InQuest, MalwareBazaar): лише сканування, ніколи не запускається | `~/docscan-ci/malware` |
-| fuzz | фазинг (на Windows — фазер розбору, clang-cl + ASan) | — |
+| fuzz | регресійні файли знайдених падінь (`fuzz/regressions`) + фазинг `fuzz_seconds` с; база — **усі** тестові файли: корпуси, 42 згенеровані зразки, seeds (шкідливе ПЗ — ні). Мак/Linux — обидва фазери (модуль і розборщики); Windows — фазер розборщиків (усі парсери DocScan і лікування; clang-cl + libFuzzer + ASan, на ВМ потрібен LLVM: `choco install llvm`, інакше SKIP). Падіння → `fuzz-crashes` в артефактах прогону | корпуси + git |
 
 ПК 216 — робоча станція: `full_tests: false`, лише збірка і documents (без корпусів і шкідливого ПЗ).
 
