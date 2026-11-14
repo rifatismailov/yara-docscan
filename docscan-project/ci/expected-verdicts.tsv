@@ -21,6 +21,7 @@ excel_ddelink.xlsx	HIGH	stripped	INFO
 external_ole.docx	MEDIUM	-	MEDIUM
 external_ole_local.docx	INFO	-	INFO
 lnk_lolbin.lnk	HIGH	deleted	DELETED
+lnk_remote_exec.lnk	HIGH	deleted	DELETED
 macro_deep_shell.docm	HIGH	removed	INFO
 macro_deleted.xls	INFO	-	INFO
 macro_empty_modules.xls	INFO	-	INFO

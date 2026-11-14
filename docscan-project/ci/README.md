@@ -37,10 +37,10 @@ git push на GitHub (push.remote) — ЗАВЖДИ, від Forgejo не зал�
 | `cirun/gitops/`, `cirun/deploy/` | коміт з перевіркою безпеки, `git archive`; набір для розгортання і публікація на сервер |
 | `docscan-project/ci/build-test-unix.sh [all\|build\|test]` | збірка і тести на macOS / Linux (cirun кличе `build`, потім `test`) |
 | `docscan-project/ci/check_verdicts.ps1` / `.py` | перевірка документів (Windows без Python / інші ОС) |
-| `docscan-project/ci/expected-verdicts.tsv` | еталон для 41 зразка `test-samples/generated` (оновлювати свідомо: `check_verdicts.py --write`) |
+| `docscan-project/ci/expected-verdicts.tsv` | еталон для 42 зразків `test-samples/generated` (оновлювати свідомо: `check_verdicts.py --write`) |
 | `.forgejo/workflows/ci.yml` | Дія у Forgejo (нічний прогін); її завдання windows кличе `cirun windows` (змінні середовища) |
 
-Тести в кожному прогоні: **документи** (41 зразок, серед них 7 макросів VBA, 4 регресії хибних тривог / шифрування і 6 zip-архівів: вердикт, лікування,
+Тести в кожному прогоні: **документи** (42 зразки, серед них 7 макросів VBA, 4 регресії хибних тривог / шифрування і 6 zip-архівів: вердикт, лікування,
 повторний скан, оригінали не змінені), **3-й прохід** (`test-critical/run_tests.py`, 299 перевірок), **ворожі файли**
 (35, якщо на машині є корпус `seeds`), **фазинг** (обидва фазери, ASan + UBSan; на Windows не запускається).
 
@@ -116,7 +116,7 @@ token_ref:    "keepassxc:CI/Forgejo/api-token"
 
 | Крок | Що | Звідки файли |
 |---|---|---|
-| documents | 41 неактивний зразок: вердикт, лікування, повторний скан | git (`test-samples/generated`) |
+| documents | 42 неактивні зразки: вердикт, лікування, повторний скан | git (`test-samples/generated`) |
 | critical | третій прохід, 299 перевірок | створює сам |
 | hostile | 35 ворожих файлів (зламані, гігантські, глибока вкладеність) | з корпусу seeds |
 | corpus | ~4 000 документів з публічних тестових корпусів | POI, pdf.js, plaso, LibreOffice RTF, LNK, Apache Tika, oletools |
