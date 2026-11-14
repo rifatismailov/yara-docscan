@@ -548,6 +548,46 @@ static int make_tokens(HANDLE* lockdown, HANDLE* initial)
   return make_tokens_ex(0, 1, 1, lockdown, initial, NULL);
 }
 
+
+// The Windows 10+ loader maps a new process's DLLs on several worker threads ("parallel loading"). Those
+// threads do not impersonate - they run with the process token, which for the worker is the lockdown
+// token: they cannot open a single DLL and the process dies with 0xC0000142, although the main thread's
+// impersonation works. RTL_USER_PROCESS_PARAMETERS.LoaderThreads = 1 (the same as the documented
+// "MaxLoaderThreads" execution option) makes the loader work on the main thread only. Written into the
+// suspended worker before it runs. x64 offsets: PEB.ProcessParameters 0x20, LoaderThreads 0x40C
+// (present when the structure's Length > 0x40C - Windows 10 and later).
+typedef LONG(NTAPI* nt_query_process_t)(HANDLE, int, PVOID, ULONG, PULONG);
+typedef struct
+{
+  PVOID reserved1;
+  PVOID peb;
+  PVOID reserved2[2];
+  ULONG_PTR pid;
+  PVOID reserved3;
+} basic_info_t;
+
+static int single_loader_thread(HANDLE proc)
+{
+#if defined(_WIN64)
+  nt_query_process_t q =
+      (nt_query_process_t) (void*) GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtQueryInformationProcess");
+  basic_info_t bi;
+  ULONG rl = 0;
+  SIZE_T n = 0;
+  PVOID params = NULL;
+  ULONG len[2] = {0, 0};  // MaximumLength, Length
+  ULONG one = 1;
+  if (q == NULL || q(proc, 0 /* ProcessBasicInformation */, &bi, sizeof(bi), &rl) != 0 || bi.peb == NULL ||
+      !ReadProcessMemory(proc, (char*) bi.peb + 0x20, &params, sizeof(params), &n) || params == NULL ||
+      !ReadProcessMemory(proc, params, len, sizeof(len), &n) || len[1] < 0x410)
+    return 0;
+  return WriteProcessMemory(proc, (char*) params + 0x40C, &one, sizeof(one), &n) != 0;
+#else
+  (void) proc;
+  return 0;
+#endif
+}
+
 static int token_elevated(HANDLE tok)
 {
   TOKEN_ELEVATION e;
@@ -557,7 +597,7 @@ static int token_elevated(HANDLE tok)
 
 // one diagnostic start: "<this exe> --version" with this primary token and (optionally) this impersonation
 // token on the main thread -> its exit code (0 = it started and ran); 0xFFFFFFFF = could not create it
-static DWORD probe_start(HANDLE primary, HANDLE imp, int* level)
+static DWORD probe_start(HANDLE primary, HANDLE imp, int loader1, int* level)
 {
   *level = -1;
   wchar_t exe[MAX_PATH], cmd[MAX_PATH + 32];
@@ -579,6 +619,8 @@ static DWORD probe_start(HANDLE primary, HANDLE imp, int* level)
   }
   if (job != NULL)
     AssignProcessToJobObject(job, pi.hProcess);
+  if (loader1 && !single_loader_thread(pi.hProcess))
+    *level = -2;
   if (imp != NULL && SetThreadToken(&pi.hThread, imp))
   {
     // what Windows really gave the thread: 1 = identification (downgraded, useless), 2 = impersonation
@@ -606,10 +648,10 @@ static DWORD probe_start(HANDLE primary, HANDLE imp, int* level)
 
 // --docscan-confine-check: which token combinations can start a process at all. "level" = the impersonation
 // level the main thread really got (1 identification = downgraded by Windows, 2 impersonation = works)
-static void probe_one(const char* what, HANDLE primary, HANDLE imp)
+static void probe_one(const char* what, HANDLE primary, HANDLE imp, int loader1)
 {
   int level = -1;
-  DWORD code = primary ? probe_start(primary, imp, &level) : 0xFFFFFFFFUL;
+  DWORD code = primary ? probe_start(primary, imp, loader1, &level) : 0xFFFFFFFFUL;
   printf("probe: %-44s exit 0x%08lx, level %d\n", what, code, level);
 }
 
@@ -623,10 +665,11 @@ static void probe_matrix(void)
   OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &self);
   printf("probe: elevated: broker=%d lockdown=%d initial=%d\n", self ? token_elevated(self) : -1,
          L ? token_elevated(L) : -1, I ? token_elevated(I) : -1);
-  probe_one("initial as primary (control)", IP, NULL);
-  probe_one("lockdown(+SeImpersonate) + initial [sandbox]", L, I);
-  probe_one("lockdown(no privileges) + initial", Ln, I);
-  probe_one("lockdown, no impersonation", L, NULL);
+  probe_one("initial as primary (control)", IP, NULL, 0);
+  probe_one("lockdown + initial, 1 loader thread [sandbox]", L, I, 1);
+  probe_one("lockdown + initial, parallel loader", L, I, 0);
+  probe_one("lockdown(no privileges) + initial, 1 loader", Ln, I, 1);
+  probe_one("lockdown, no impersonation, 1 loader", L, NULL, 1);
   fflush(stdout);
   HANDLE hs[] = {L, I, IP, Ln, In, self};
   for (size_t i = 0; i < sizeof(hs) / sizeof(hs[0]); i++)
@@ -799,7 +842,9 @@ int docscan_broker_run(const docscan_broker_cfg* cfg, int* exit_code)
                             CREATE_SUSPENDED | CREATE_NO_WINDOW | EXTENDED_STARTUPINFO_PRESENT, NULL, NULL,
                             &si.StartupInfo, &pi))
     goto fail;
-  // still suspended: into the job, the initial token on the main thread, then run
+  // still suspended: into the job, one loader thread, the initial token on the main thread, then run
+  if (!single_loader_thread(pi.hProcess))
+    fprintf(stderr, "docscan-sandbox: could not switch the worker to one loader thread\n");
   if (!AssignProcessToJobObject(job, pi.hProcess) || !SetThreadToken(&pi.hThread, initial) ||
       ResumeThread(pi.hThread) == (DWORD) -1)
   {
