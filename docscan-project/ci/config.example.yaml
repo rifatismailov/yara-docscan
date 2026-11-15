@@ -13,7 +13,7 @@ repo:
 
 secrets:
   keepassxc:
-    database: ~/.docscan/docscan-ci.kdbx
+    database: ~/Documents/docscan-ci.kdbx
     unlock: keychain      # keychain (macOS Keychain item) | prompt (ask once per run) | key_file
     keychain_item: docscan-kdbx
     # key_file: ~/.docscan/docscan-ci.keyx
@@ -92,10 +92,17 @@ forgejo:                  # OPTIONAL extra after the push: mirror sync and commi
     commit_status: true   # commit statuses cirun/<platform> in Forgejo
 
 deploy:
-  publish: true
+  publish: false        # true - upload the deployment set to the server after a green run
   host: <server-ip>
   user_ref: "keepassxc:CI/Deploy/fs#UserName"
   password_ref: "keepassxc:CI/Deploy/fs"
   dir: scripts/docscan
   url: http://<server-ip>:8080/docscan
   critical_rules: ""      # local E5Search rules file to include; empty - none
+
+# File server of the test platform (SMB): the combat test (--combat) takes the test files, the malware and the
+# customer's samples (password-protected zips) from \\<server>\share\yara
+fileserver:
+  unc: \\<server-ip>\share
+  user_ref: "keepassxc:Infra/fileserver#UserName"
+  password_ref: "keepassxc:Infra/fileserver"

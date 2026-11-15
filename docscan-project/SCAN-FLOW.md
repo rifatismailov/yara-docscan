@@ -53,6 +53,9 @@
   (`meta.severity` / `meta.finding` / `meta.disarm`). Інженер змінює політику без перезбірки.
 - **Модуль тільки читає.** Модуль працює на read-only буфері посеред скану й нічого не пише.
   Лікування — у CLI-шарі (`cli/yara.c` → `disarm.c`) **після** скану, коли файл закрито.
+- **Ворожий документ не розбирається з правами SYSTEM.** На Windows `yara64` ділиться на брокер і воркер
+  (той самий exe): усе, що торкається байтів документа, — у воркері без прав (пісочниця, §4.11); файли
+  пише лише брокер, який нічого не розбирає.
 - **Тип — за magic-байтами**, не за розширенням (`invoice.pdf`, що насправді docx, — це OOXML).
 - **Без XML-парсера.** `.rels`/`document.xml` розбираються пошуком токенів — безпечніше для
   недовіреного вводу. Усі бінарні читання bounds-checked.
@@ -64,81 +67,100 @@
 
 ## 2. Загальна схема
 
+На Windows один і той самий `yara64.exe` працює у двох ролях (§4.11): **брокер** (процес, який запускає watcher,
+SYSTEM) нічого не розбирає, а **воркер** (той самий exe з `--docscan-worker`) розбирає документ у пісочниці й
+лише повідомляє брокеру, що записати. На macOS / Linux і для теки чи списку файлів усе йде в одному процесі —
+схема та сама, лише без брокера.
+
 ```mermaid
 flowchart TD
-    FS([Новий файл у системі]) --> W[docscan-watcher.ps1<br/>FileSystemWatcher]
+    FS([Новий файл у системі]) --> W[docscan-watcher.ps1 · SYSTEM<br/>FileSystemWatcher]
     W --> CAT{розширення}
     CAT -->|Office / RTF / PDF / LNK<br/>+ odt ods odp txt csv на ПК з 3-м проходом| DOC[document]
     CAT -->|exe dll ps1 js hta zip iso ...| GEN[general]
     CAT -->|інше| IGN([ігнор])
     DOC --> Y[yara64 -w --docscan-json --docscan-disarm<br/>--docscan-extract macros<br/>+ --critical-rules / --critical-out на ПК з 3-м проходом]
     GEN --> Y2[yara64 -w --docscan-json]
+    Y & Y2 --> B[БРОКЕР · SYSTEM<br/>нічого не розбирає<br/>запам'ятовує розмір і час файлу]
+    B -->|запускає себе воркером:<br/>ті самі аргументи + канал| WK
 
-    Y --> D[Правила: rules.yarc<br/>docscan-policy.yar + file-index.yar]
-    Y2 --> D
-    D --> E[ПРОХІД 1: скан файлу -> module_load docscan]
+    subgraph SB[ВОРКЕР · пісочниця: токен рівня Users · untrusted · без привілеїв · job object]
+        WK[yara64 --docscan-worker=канал<br/>до lockdown: правила rules.yarc<br/>docscan-policy.yar + file-index.yar<br/>+ файл відображено в пам'ять] --> LD[lockdown: RevertToSelf<br/>далі не може ні писати, ні запускати]
+        LD --> E[ПРОХІД 1: скан з пам'яті -> module_load docscan]
 
-    subgraph M[Модуль docscan · ФАКТИ]
-        E --> F{magic.c<br/>тип по байтах}
-        F -->|PK zip| G1[inspect_ooxml.c<br/>zip.c + rels.c]
-        F -->|D0CF11E0| G2[inspect_ole.c<br/>cfb.c + oleobj.c]
-        F -->|curly-rtf| G3[inspect_rtf.c]
-        F -->|%PDF| G4[inspect_pdf.c]
-        F -->|4C000000| G5[lnk.c]
-        G1 -->|vbaProject.bin| V[vba.c + msovba.c<br/>розпакування VBA]
-        G2 --> V
-        G1 & G2 & G3 & G4 & G5 & V --> R[vba_code · parts · external_rels · dde<br/>packages · activex · докази]
+        subgraph M[Модуль docscan · ФАКТИ]
+            E --> F{magic.c<br/>тип по байтах}
+            F -->|PK zip| G1[inspect_ooxml.c<br/>zip.c + rels.c]
+            F -->|D0CF11E0| G2[inspect_ole.c<br/>cfb.c + oleobj.c]
+            F -->|curly-rtf| G3[inspect_rtf.c]
+            F -->|%PDF| G4[inspect_pdf.c]
+            F -->|4C000000| G5[lnk.c]
+            G1 -->|vbaProject.bin| V[vba.c + msovba.c<br/>розпакування VBA]
+            G2 --> V
+            G1 & G2 & G3 & G4 & G5 & V --> R[vba_code · parts · external_rels · dde<br/>packages · activex · докази]
+        end
+
+        R --> CAP[MODULE_IMPORTED: копія фактів]
+        R --> P[Правила на файлі]
+        P -->|meta.severity| POL[ПОЛІТИКА<br/>findings · verdict · meta.disarm]
+        P -->|без meta.severity| VEN[vendor-правила<br/>yara_file_matches]
+        CAP --> L2[ПРОХІД 2: ті самі правила<br/>по коду VBA -> yara_matches<br/>по частинах -> yara_part_matches]
+        POL & VEN & L2 --> J[/рядок JSON/]
+        CAP --> RX[запис X: код VBA]
+
+        J --> C3{ПРОХІД 3<br/>увімкнено?}
+        C3 -->|так| T[text.c: текст + метадані<br/>копія: нижній регістр, один пробіл]
+        T --> CR{фрази правил<br/>E5Search?}
+        CR -->|так| RC[critical.c: фрагменти 700/120 + JSON<br/>запис C]
+        C3 -->|ні| H
+        CR -->|ні| H
+        RC --> H{--docscan-disarm і<br/>meta.disarm або HIGH?}
+        H -->|так| PL[disarm_plan: що робити<br/>+ вилікувані байти в пам'яті<br/>запис D]
     end
 
-    R --> CAP[MODULE_IMPORTED: копія фактів]
-    R --> P[Правила на файлі]
-    P -->|meta.severity| POL[ПОЛІТИКА<br/>findings · verdict · meta.disarm]
-    P -->|без meta.severity| VEN[vendor-правила<br/>yara_file_matches]
-    CAP --> L2[ПРОХІД 2: ті самі правила<br/>по коду VBA -> yara_matches<br/>по частинах -> yara_part_matches]
-    CAP --> MAC[код VBA -> macros/sha256.vba.txt<br/>+ копія POST на сервер]
-    POL & VEN & L2 --> J[/рядок JSON/]
-
-    J --> C3{ПРОХІД 3<br/>увімкнено?}
-    C3 -->|так| T[text.c: текст + метадані<br/>копія: нижній регістр, один пробіл]
-    T --> CR{фрази правил<br/>E5Search?}
-    CR -->|так| Q[critical.c: фрагменти 700/120 + JSON<br/>-> рядок у critical/critical.json]
+    J -->|stdout| B2[БРОКЕР застосовує записи з каналу]
+    RX & RC & PL -->|канал результатів| B2
+    B2 -->|X| MAC[файл --docscan-extract -> watcher:<br/>macros/sha256.vba.txt + копія POST на сервер]
+    B2 -->|C| Q[рядок у critical/critical.json]
     Q --> OW[інший watcher: забирає файл<br/>перейменуванням -> E5Search]
-    C3 -->|ні| H
-    CR -->|ні| H
-    Q --> H{--docscan-disarm і<br/>meta.disarm або HIGH?}
-    H -->|так| X[disarm.c: бекап -> лікування]
+    B2 -->|D| CH{файл змінився<br/>після старту?}
+    CH -->|так| FC[/failed:changed - watcher повторить/]
+    CH -->|ні| X[disarm_apply: бекап -> заміна / видалення]
     X --> OUT2[/docscan-disarm: шлях -> дія/]
-    J & OUT2 --> REC[watcher: JSON-рядок + macro + critical<br/>results/docscan-results.json -> Wazuh]
+    B2 & OUT2 & FC & MAC --> REC[watcher: JSON-рядок + macro + critical<br/>results/docscan-results.json -> Wazuh]
 ```
 
 ### Те саме текстом
 
 ```
- новий файл ──► watcher ──► yara64 -w --docscan-json [--docscan-disarm] [--docscan-extract] [--critical-*] -C rules.yarc <файл>
-                               │
-     ┌─────────────────────────▼───────────────────────────────┐
-     │ ПРОХІД 1 · МОДУЛЬ docscan — тільки ФАКТИ (read-only)     │
-     │  magic ─► ooxml │ ole │ rtf │ pdf │ lnk                  │
-     │  vbaProject.bin ─► CFB ─► MS-OVBA ─► vba_code            │
-     │  parts[] · external_rels[] · dde[] · packages · lnk      │
-     └──────────┬──────────────────────────────────────────────┘
-                │ правила docscan-index.yar на файлі
-     ┌──────────┴───────────────┬─────────────────────────────┐
-     ▼                          ▼                             ▼
- ПОЛІТИКА (meta.severity)   vendor-правила по файлу      ПРОХІД 2: ті самі правила
- findings, verdict, details  yara_file_matches            по vba_code → yara_matches,
- meta.disarm → що лікувати                                по parts[] → yara_part_matches
-     └──────────────► {JSON}         vba_code ──► macros\<sha256>.vba.txt (+ копія на сервер)
-                        │
-                        ▼  ПРОХІД 3 (лише ПК юриста / бухгалтера / кадровика), до лікування
-              text.c: текст документа ─► копія (нижній регістр, один пробіл) ─► правила E5Search
-                        │ збіг                                     │ немає збігу
-                        ▼                                          ▼
-              critical.c: фрагменти + JSON ─► critical\critical.json ─► інший watcher ─► E5Search
-                        │
-                        ▼
-              лікування (disarm.c): docscan-disarm: ... -> дія | detect-only
-                        └──► watcher: results\docscan-results.json (+ macro, critical) ─► Wazuh
+ новий файл ──► watcher (SYSTEM) ──► yara64 -w --docscan-json [--docscan-disarm] [--docscan-extract] [--critical-*] -C rules.yarc <файл>
+                                       │
+                       БРОКЕР (SYSTEM, Windows): нічого не розбирає; запускає себе як воркер
+                                       │  yara64 --docscan-worker=<канал> <ті самі аргументи>
+     ┌─────────────────────────────────▼───────────────────────────────────────────────────┐
+     │ ВОРКЕР — пісочниця: токен рівня Users, untrusted, без привілеїв, job object           │
+     │  до lockdown: правила + файл у пам'ять ─► RevertToSelf ─► далі лише пам'ять           │
+     │                                                                                     │
+     │  ПРОХІД 1 · МОДУЛЬ docscan — тільки ФАКТИ (read-only)                                │
+     │   magic ─► ooxml │ ole │ rtf │ pdf │ lnk;  vbaProject.bin ─► CFB ─► MS-OVBA ─► vba_code │
+     │   parts[] · external_rels[] · dde[] · packages · lnk                                 │
+     │            │ правила docscan-index.yar на файлі                                      │
+     │   ПОЛІТИКА (meta.severity) · vendor-правила по файлу · ПРОХІД 2 (VBA, parts[])       │
+     │            └──► {JSON} ─► stdout                     vba_code ─► запис X             │
+     │   ПРОХІД 3 (лише ПК юриста / бухгалтера / кадровика): текст ─► правила E5Search      │
+     │            збіг ─► фрагменти + JSON ─► запис C                                       │
+     │   ЛІКУВАННЯ — лише план: дія + вилікувані байти в пам'яті ─► запис D                 │
+     └─────────────────────────────────┬───────────────────────────────────────────────────┘
+                                       │ stdout + канал результатів
+                       БРОКЕР застосовує записи:
+                         X ─► файл --docscan-extract (watcher: macros\<sha256>.vba.txt + копія на сервер)
+                         C ─► рядок у critical\critical.json ─► інший watcher ─► E5Search
+                         D ─► файл не змінився? ─► бекап ─► заміна / видалення ─► docscan-disarm: ... -> дія
+                                                  змінився ─► failed:changed (watcher повторить)
+                                       │
+                                       └──► watcher: results\docscan-results.json (+ macro, critical) ─► Wazuh
+
+ macOS / Linux, тека, список файлів, --docscan-no-sandbox: те саме в одному процесі, без брокера і записів.
 ```
 
 ## 3. Карта файлів
@@ -163,12 +185,14 @@ libyara/modules/docscan/            МОДУЛЬ (C, вшитий у libyara)
   oleobj.c                          об'єкти в CFB (Package, Equation, ActiveX, XLM) + частини для Шару 2
   text.c                            текст + метадані документа для критичної інформації (третій прохід)
   critical.c                        копія для пошуку, SHA-256, фрагменти, JSON для черги E5Search
-libyara/include/yara/docscan_disarm.h   контракт лікування (docscan_disarm_info, docscan_disarm)
+libyara/include/yara/docscan_disarm.h   контракт лікування (docscan_disarm_info, docscan_disarm, _plan / _apply)
 libyara/include/yara/docscan_critical.h контракт третього проходу (docscan_text_extract, docscan_critical_json, ...)
 libyara/modules/module_list         + MODULE(docscan)
-Makefile.am                         + 18 рядків MODULES += .../docscan/*.c
+Makefile.am                         + 18 рядків MODULES += .../docscan/*.c; cli/docscan_sandbox.{c,h} у yara_SOURCES
 windows/vs20{15,17,19}/libyara/libyara.vcxproj   + ті самі 18 ClCompile docscan
+windows/vs2019/yara/yara.vcxproj    + cli/docscan_sandbox.c, /DELAYLOAD user32 / crypt32 / ws2_32 (§4.11)
 cli/yara.c                          + прапори --docscan-json/-extract/-disarm, --file-vars, --critical-*, JSON, Шар 2, do_disarm, critical_process
+cli/docscan_sandbox.{c,h}           ПІСОЧНИЦЯ (Windows): брокер / воркер, токени, job object, записи X C D (§4.11)
 
 docscan-project/
   SCAN-FLOW.md / SCAN-FLOW.en.md    цей документ (українська / англійська)
@@ -181,16 +205,17 @@ docscan-project/
   watcher/docscan-watcher.ps1       авто-скан нових файлів → results\docscan-results.json
   deploy/                           пакет розгортання: build_package.ps1, install.ps1, uninstall.ps1, README.txt,
                                     DocScan-Setup.ps1 (irm | iex), DocScan-Install.ps1, manager/ (Wazuh)
-  fuzz/                             libFuzzer: 2 фазери, словник, корпус, build.sh, regressions/
+  fuzz/                             libFuzzer: 2 фазери, словник, корпус, build.sh, build_windows.ps1, regressions/ (8)
+  ci/                               CI одною кнопкою: cirun (Go), build-test-unix.sh, check_verdicts, expected-verdicts.tsv (ci/README.md)
   test-critical/                    тести третього проходу: run_tests.py, корпус E5Search (md2office, eval_corpus),
                                     «компот» (mix_corpus, eval_mix), ворожі файли (hostile, hostile_run)
   test-range/
     run_tests.ps1                   регресійний тест (копія → детект+лікування → повторний скан)
     gen_range.ps1                   генератор полігону (Windows + Word COM)
-    gen_test_range.py               швидкий синтетичний генератор (без Office)
+    gen_test_range.py               швидкий синтетичний генератор (без Office); вихід range/ — не в git
   test-samples/                     ОРИГІНАЛИ тест-набору (не лікувати напряму!)
     provided/  (7)                  реальні семпли замовника (живий C2) — НЕ в git
-    generated/ (24)                 безпечний полігон, по файлу на вектор
+    generated/ (42)                 безпечний полігон, по файлу на вектор (еталон — ci/expected-verdicts.tsv)
   vendor-sources/                   git-клони джерел vendor-правил на зафіксованих комітах (не в git)
 ```
 
@@ -445,7 +470,7 @@ MS-OVBA. Ланцюжок: **CFB → потоки → пошук контейн�
 | `--docscan-extract=FILE` | `docscan_extract_utf8` | пише розпакований `vba_code` у FILE (до лікування; шлях UTF-8, на Windows — з оригінальних Unicode-аргументів, як `--docscan-backup-dir`); watcher так зберігає код макросів (`macros\`) |
 | `--docscan-disarm` | `docscan_disarm_flag` | після скану лікує файл за `meta.disarm` правил, що спрацювали; HIGH без дій → `detect-only` |
 | `--docscan-backup-dir=DIR` | `docscan_backup_dir_utf8` | бекапи й карантин у DIR (має існувати). На Windows значення береться з оригінальних Unicode-аргументів (парсер YARA віддає рядкові опції в ANSI — кирилиця б загубилась) |
-| `--docscan-confine-check` | `docscan_worker_confine_check` + `confine_lines` | Windows: перевірка пісочниці (§4.11). Воркер після lockdown пробує прочитати свій exe і `%WINDIR%\win.ini`, записати в `%TEMP%` і `C:\ProgramData`, відкрити `HKLM\SOFTWARE`, запустити `cmd.exe` — **усе має бути заблоковано**, рівень цілісності — untrusted, привілеїв ≤ 1; брокер — job object, привілеї видалено, `cmd.exe` заблоковано. `RESULT: CONFINED` (код 0). Крок CI `confine` на кожній Windows-машині |
+| `--docscan-confine-check` | `docscan_worker_confine_check` + `confine_lines` | Windows: перевірка пісочниці (§4.11). Воркер після lockdown пробує прочитати приватний файл (брокер створює його з доступом лише SYSTEM і Administrators — як документ у чужому профілі; шлях — у змінній `DOCSCAN_PROBE_SECRET`), записати в `%TEMP%` і `C:\ProgramData`, створити ключ у `HKLM\SOFTWARE`, прочитати `HKLM\SAM`, запустити `cmd.exe` — **усе має бути заблоковано** (читання свого exe лише показується: файли, доступні всім, воркер читати може), рівень цілісності — untrusted, привілеїв ≤ 1; брокер — job object, привілеї видалено, `cmd.exe` заблоковано. `RESULT: CONFINED` (код 0). Крок CI `confine` на кожній Windows-машині |
 | `--docscan-no-sandbox` | `docscan_no_sandbox` | Windows, діагностика: розбирати в цьому ж процесі (лише job object + видалені привілеї, як до пісочниці) |
 | `--docscan-worker=PIPE` | `docscan_worker_arg` | **внутрішній**: так брокер запускає воркер (номер дескриптора каналу результатів); вручну не викликається |
 | `--critical-rules=FILE` | `critical_rules` | третій прохід: правила E5Search (окремий набір, компілюється на старті); шукаються в **тексті** документа (§15) |
@@ -467,6 +492,9 @@ MS-OVBA. Ланцюжок: **CFB → потоки → пошук контейн�
 - `CALLBACK_MSG_SCAN_FINISHED` → `print_docscan_json`.
 - Після `yr_scanner_scan_file` (одно- і багатопотоковий шлях): з `--critical-rules` — `critical_process`
   (на оригіналі, **до** лікування); потім `--docscan-disarm` і (є дія з політики **або** вердикт HIGH) → `do_disarm`.
+- **У воркері** (Windows, §4.11) ті самі функції працюють інакше: `scan_file` сканує відображений у пам'ять
+  файл (`yr_scanner_scan_mem`), `--docscan-extract` → запис `X`, `critical_process` бере байти й дати файлу з
+  воркера і шле запис `C`, `do_disarm` лише планує (`docscan_disarm_plan`) і шле запис `D`. Файли пише брокер.
 
 **Функції:**
 
@@ -479,7 +507,9 @@ MS-OVBA. Ланцюжок: **CFB → потоки → пошук контейн�
 | `vendor_match_cb(...)` | Колбек другого сканера: додає правила **без** `meta.severity` (політика описує документи, не текст VBA). |
 | `docscan_json_evidence` / `docscan_defang` / `docscan_json_puts` | Друк доказів з defang (`http`→`hxxp`) і JSON-екрануванням. |
 | `docscan_list_add` / `docscan_list_has` / `docscan_state_reset` / `docscan_copy_string` | Допоміжні: JSON-списки, скидання стану (звільняє копію VBA), копіювання рядків модуля. |
-| `do_disarm(file_path, ds)` | `docscan_disarm` + рядок `docscan-disarm: <шлях> -> <дія>`; на Windows Unicode — wide→UTF-8. |
+| `do_disarm(file_path, ds)` | `docscan_disarm` + рядок `docscan-disarm: <шлях> -> <дія>`; на Windows Unicode — wide→UTF-8. У воркері — `docscan_disarm_plan` по байтах з пам'яті і запис `D` (рядок друкує брокер). |
+| `file_vars_set(scanner, path, head, head_len)` | Змінні THOR/LOKI для файлу; `filetype` — з перших байтів `head` (у воркері файл уже в пам'яті, повторно не відкривається). |
+| `docscan_worker_warmup()` | Воркер, до lockdown: один прогін правила з `hash.*`, щоб OpenSSL ініціалізувався, поки є доступ до файлів. |
 | `critical_setup()` | Перевіряє `--critical-out`/`--critical-chunk`, читає й компілює `--critical-rules` окремим компілятором. |
 | `critical_process(file_path)` | Третій прохід: файл (≤ 100 МБ) → `docscan_text_extract` → копія для пошуку → `yr_rules_scan_mem` по ній → фрагменти + JSON → рядок у чергу (під `output_mutex`) і `docscan-critical: queued fragments=N rules=…` у stdout. Пропуск — `docscan-critical: skipped (<причина>)` у stderr. |
 | `critical_callback(...)` | Назви правил, що спрацювали, і `e5_chunk_size`/`e5_chunk_overlap` з першого правила, де вони є. |
@@ -532,7 +562,7 @@ watcher ── yara64 --docscan-json [--docscan-disarm ...] файл         ←
 
 | Що | Як |
 |---|---|
-| **Токен воркера** | `CreateRestrictedToken`, обмежувальні SID — **Users, Everyone, Authenticated Users, RESTRICTED**: кожна перевірка доступу робиться двічі, вдруге — лише з цими SID, тож воркер після lockdown **читає тільки те, що може прочитати будь-який звичайний користувач** (System32, Program Files), але **не** профілі користувачів, теки DocScan, SAM; рівень цілісності — **untrusted** (воркер знижує його сам) → **записати не може нічого** (файли, реєстр); привілеїв немає (лишається `SeChangeNotify`); job object → жодного процесу. Документ і правила він відкриває до lockdown через імперсонацію. З привілеїв на старті є ще `SeImpersonate` — щоб Windows не знизила імперсонацію; воркер видаляє його сам, ще до того, як торкнеться документа. **Повний lockdown** (обмежувальний SID — NULL SID: не читається нічого, як у Chrome) поки не стартує — процес падає з `0xC0000142` ще до `main`; крок `confine` запускає такий воркер під налагоджувачем (усі DLL, виключення, код виходу) — це наступний крок. **Початковий токен** (імперсонація до lockdown) — обмежувальні SID: користувач + усі увімкнені групи + RESTRICTED |
+| **Токен воркера** | `CreateRestrictedToken`, обмежувальні SID — **Users, Everyone, Authenticated Users, RESTRICTED**: кожна перевірка доступу робиться двічі, вдруге — лише з цими SID, тож воркер після lockdown **читає тільки те, що може прочитати будь-який звичайний користувач** (System32, Program Files), але **не** профілі користувачів, теки DocScan, SAM; рівень цілісності — **untrusted** (воркер знижує його сам) → **записати не може нічого** (файли, реєстр); привілеїв немає (лишається `SeChangeNotify`); job object → жодного процесу. Документ і правила він відкриває до lockdown через імперсонацію. З привілеїв на старті є ще `SeImpersonate` — щоб Windows не знизила імперсонацію; воркер видаляє його сам, ще до того, як торкнеться документа. **Повний lockdown** (обмежувальний SID — NULL SID: не читається нічого, як у Chrome) не стартує — процес падає з `0xC0000142` в ініціалізації KernelBase, ще до `main`. **Рішення (2026-11-14): лишаємо рівень Users** — воркер і так не може нічого записати, запустити чи прочитати з профілів і тек DocScan; повний lockdown додав би лише заборону читати файли, доступні всім користувачам. Діагностика для повернення до задачі лишилась: `--docscan-confine-check` друкує, які комбінації токенів стартують (`probe_matrix`), і запускає NULL-SID-воркер під налагоджувачем (`probe_debug`: DLL, виключення, код виходу) — це видно в лозі кроку CI `confine`. **Початковий токен** (імперсонація до lockdown) — обмежувальні SID: користувач + усі увімкнені групи + RESTRICTED |
 | **Старт воркера** | `CreateProcessAsUserW` (призупинений) → job object (1 активний процес, UI-обмеження, `KILL_ON_JOB_CLOSE`) → `SetThreadToken` головного потоку — «початковий» токен (обмежений, але з тим самим доступом, що й брокер: Windows дає обмеженому процесу імперсонувати лише обмежений токен; **не підвищений** — `Administrators` deny-only, без привілеїв: не підвищений процес не може імперсонувати підвищений токен того самого користувача, Windows тихо знижує його до «identification», і процес падає з `0xC0000142`; доступ до файлів дає SID користувача SYSTEM) → `ResumeThread`. Так воркер завантажує DLL і правила, відкриває файл; потім `RevertToSelf()` і перевірка, що імперсонації більше немає |
 | **Один потік завантажувача** | завантажувач Windows 10+ вантажить DLL нового процесу паралельно на службових потоках; вони **не імперсонують** — працюють з lockdown-токеном, не відкривають жодної DLL, і процес падає з `0xC0000142`, хоча імперсонація головного потоку діє (рівень 2). Брокер записує в призупинений воркер `RTL_USER_PROCESS_PARAMETERS.LoaderThreads = 1` (те саме, що опція `MaxLoaderThreads`): DLL вантажить лише головний потік |
 | **Що воркер успадковує** | рівно 4 дескриптори (`PROC_THREAD_ATTRIBUTE_HANDLE_LIST`): `NUL` як stdin, канали stdout / stderr / результатів |
@@ -554,6 +584,9 @@ watcher ── yara64 --docscan-json [--docscan-disarm ...] файл         ←
 1. **Підготовка.** Оригінал не чіпаємо: для ручних тестів — копія `work.<ext>`
    (`run_tests.ps1` робить це сам і звіряє SHA256 оригіналів). Watcher сканує файл на місці.
 2. **Компіляція правил.** `docscan-index.yar` = `docscan-policy.yar` + `file-index.yar` → `g_rules`.
+2a. **Пісочниця (Windows, один файл).** `yara64` стає брокером і запускає себе воркером (§4.11); кроки 3–7
+   (розбір, правила, текст, план лікування) виконує воркер з пам'яті, а файли — дамп макросу, рядок черги,
+   бекап і заміну — пише брокер за записами `X` / `C` / `D`. На macOS / Linux і для теки — один процес.
 3. **Модуль.** `module_load`: magic → інспектор → факти й прапорці (див. §4). Факти копіюються в CLI.
 4. **Правила на файлі.** Правила політики (`meta.severity`) → знахідки, вердикт, дії лікування;
    решта правил → `yara_file_matches`, правила з тегом `docscan_info` → `yara_info_matches`.
@@ -587,6 +620,7 @@ watcher ── yara64 --docscan-json [--docscan-disarm ...] файл         ←
    | будь-яка | OOXML з частиною, що не читається / > 64 МБ | лікування скасовано | `failed:unreadable-part` |
    | будь-яка | OOXML: оригінал не вдалося підмінити (файл відкритий у Word) | оригінал не змінено, тимчасовий файл прибрано; вотчер повторить пізніше | `failed:replace` |
    | будь-яка | не вдалося записати вилікований файл (тимчасовий OOXML / RTF) | оригінал не змінено | `failed:write` |
+   | будь-яка | Windows: файл змінився між стартом воркера і лікуванням (розмір або час зміни) | нічого не чіпається; вотчер повторить | `failed:changed` |
 
    Будь-яка дія: якщо бекап не вдався → `failed:backup`, файл не змінюється. Дія, що не підходить до типу файлу, ігнорується.
 8. **Контроль.** Повторний скан вилікуваної копії → очікуємо `INFO` (LNK відсутній, PDF лишається HIGH).
@@ -1050,7 +1084,7 @@ make -j8 yara.exe      # PE32+ x64, залежить лише від UCRT (є у
 
 ## 10. Тестування
 
-### Тест-набір `docscan-project/test-samples/` (31 файл: 24 у `generated/` + 7 у `provided/`, оригінали)
+### Тест-набір `docscan-project/test-samples/` (49 файлів: 42 у `generated/` + 7 у `provided/`, оригінали)
 
 `provided/` — реальні семпли замовника (усі ведуть на один внутрішній C2; у git не входять):
 
@@ -1064,42 +1098,91 @@ make -j8 yara.exe      # PE32+ x64, залежить лише від UCRT (є у
 | `Platizhka_315368.pdf` | `/OpenAction` + `/JavaScript` | PDF_JS_AUTO, HIGH |
 | `Rakhunok-faktura_315368.pdf.lnk` | LNK → powershell -w Hidden IEX DownloadString | LNK_URL_ARGS + LNK_OBFUSCATED + LNK_LOLBIN, HIGH |
 
-`generated/` — безпечний полігон (`gen_range.ps1`; інертні макроси, URL на `malware-test.local`):
+`generated/` — безпечний полігон (`gen_test_range.py`, частина — `gen_range.ps1`; інертні макроси, URL на
+`malware-test.local` / `docscan-test.invalid`). **Еталон — `docscan-project/ci/expected-verdicts.tsv`**; CI
+перевіряє його на кожній платформі (`check_verdicts.py` / `.ps1`): вердикт, дія лікування, повторний скан
+вилікуваної копії, оригінали не змінені. Змінюється лише свідомо (`check_verdicts.py --write`).
 
-| Файл | Очікувано |
-|---|---|
-| `remote_template.docx` | REMOTE_TEMPLATE, HIGH |
-| `protocol_handler.docx` | PROTOCOL_HANDLER, HIGH |
-| `dde_auto.docx` | DDE_AUTO, HIGH |
-| `dde_link.docx` | DDE_LINK (`DDE cmd.exe /c …`, не AUTO), HIGH |
-| `dde_split.docx` | DDE_AUTO (`DDE` + `AUTO cmd.exe …` у двох `<w:instrText>`), HIGH |
-| `excel_dde_formula.xlsx` | DDE_LINK (формула `cmd\|' /C notepad.exe'!A0`), HIGH |
-| `excel_ddelink.xlsx` | DDE_LINK (`<ddeLink ddeService="cmd" ddeTopic="/c notepad.exe">`), HIGH |
-| `external_ole.docx` | EXTERNAL_OLE, **MEDIUM** |
-| `embedded_pe.docx` | EMBEDDED_PE, HIGH |
-| `embedded_lnk.docx` | EMBEDDED_LNK, HIGH |
-| `macro_suspicious.docm` | MACRO_SUSPICIOUS + MACRO_PRESENT, HIGH |
-| `vendor_shellexec.docm` | те саме + Шар 2 `gen_macro_ShellExecute_action` |
-| `rtf_objupdate.rtf` | RTF_OBJUPDATE, HIGH |
-| `pdf_js_auto.pdf` | PDF_JS_AUTO, HIGH |
-| `pdf_launch.pdf` | PDF_LAUNCH + PDF_OPENACTION, HIGH |
-| `lnk_lolbin.lnk` | LNK_URL_ARGS + LNK_OBFUSCATED + LNK_LOLBIN, HIGH |
+| Файл | Що перевіряє | Вердикт | Лікування | Після |
+|---|---|---|---|---|
+| `activex_control.docx` | ActiveX — браузерний контрол (лише детект) | HIGH | detect-only | HIGH |
+| `altchunk.docx` | altChunk (CVE-2023-36884) | MEDIUM | - | MEDIUM |
+| `archive_broken.zip` | зламаний ZIP з ярликом `.pdf.lnk` (імена — з центрального каталогу) | HIGH | quarantined | DELETED |
+| `archive_clean.zip` | звичайний архів зі звітом (макрос зведеної таблиці) | INFO | - | INFO |
+| `archive_docm.zip` | архів з макродокументом, що запускає програми | HIGH | quarantined | DELETED |
+| `archive_encrypted.zip` | архів з паролем | INFO | - | INFO |
+| `archive_exe.zip` | програма в архіві (інертна заглушка) | MEDIUM | - | MEDIUM |
+| `archive_lnk.zip` | ярлик з подвійним розширенням в архіві | HIGH | quarantined | DELETED |
+| `dde_auto.docx` | `DDEAUTO` | HIGH | stripped | INFO |
+| `dde_link.docx` | `DDE cmd.exe /c …` (не AUTO) | HIGH | stripped | INFO |
+| `dde_split.docx` | DDE, розбите на два `<w:instrText>` | HIGH | stripped | INFO |
+| `embedded_lnk.docx` | вкладений LNK | HIGH | removed | INFO |
+| `embedded_pe.docx` | вкладений PE | HIGH | removed | INFO |
+| `encrypted.docx` | зашифрований OOXML (регресія хибної тривоги) | INFO | - | INFO |
+| `encrypted_macro.xlsm` | зашифрований файл з ім'ям макроформату — макрос не перевірити | MEDIUM | - | MEDIUM |
+| `equation.rtf` | Equation Editor в RTF (CVE-2017-11882) | HIGH | quarantined | DELETED |
+| `equation_ole.docx` | Equation Editor в OOXML | HIGH | removed | INFO |
+| `excel_dde_formula.xlsx` | DDE-формула `cmd\|' /C notepad.exe'!A0` | HIGH | stripped | INFO |
+| `excel_ddelink.xlsx` | `<ddeLink ddeService="cmd">` | HIGH | stripped | INFO |
+| `external_ole.docx` | зовнішній OLE-об'єкт за URL | MEDIUM | - | MEDIUM |
+| `external_ole_local.docx` | діаграма, зв'язана з локальною книгою (регресія хибної тривоги) | INFO | - | INFO |
+| `lnk_lolbin.lnk` | LNK → powershell з URL і обфускацією | HIGH | deleted | DELETED |
+| `lnk_remote_exec.lnk` | LNK → `.exe` на мережевій шарі | HIGH | deleted | DELETED |
+| `macro_deep_shell.docm` | `Shell` глибоко в довгому модулі (> 4 КБ) | HIGH | removed | INFO |
+| `macro_deleted.xls` | видалений макрос (порожні модулі) | INFO | - | INFO |
+| `macro_empty_modules.xls` | порожні модулі аркушів | INFO | - | INFO |
+| `macro_pike_mail.xlsm` | робочий звіт з макросом оновлення (регресія хибної тривоги) | INFO | - | INFO |
+| `macro_pike_report.xls` | те саме у `.xls` | INFO | - | INFO |
+| `macro_recorded.xls` | записаний макрос без автозапуску | INFO | - | INFO |
+| `macro_stomped.xls` | VBA stomping: p-code без тексту | MEDIUM | - | MEDIUM |
+| `macro_suspicious.docm` | AutoOpen + powershell / Shell / DownloadFile | HIGH | removed | INFO |
+| `package_script.docx` | OLE Package зі скриптом | HIGH | removed | INFO |
+| `package_script.rtf` | OLE Package зі скриптом у RTF | HIGH | quarantined | DELETED |
+| `pdf_js_auto.pdf` | `/OpenAction` + небезпечний JavaScript | HIGH | quarantined | DELETED |
+| `pdf_launch.pdf` | `/Launch` | HIGH | quarantined | DELETED |
+| `protocol_handler.docx` | Follina, `ms-msdt:` | HIGH | removed | INFO |
+| `remote_template.docx` | віддалений шаблон | HIGH | removed | INFO |
+| `rtf_objupdate.rtf` | `\objupdate` | HIGH | stripped | INFO |
+| `rtf_text_objupdate.rtf` | слово `\objupdate` у тексті документа (регресія хибної тривоги) | INFO | - | INFO |
+| `vendor_shellexec.docm` | макрос + Шар 2 `gen_macro_ShellExecute_action` | HIGH | removed | INFO |
+| `xlm_macrosheet.xls` | макроаркуш Excel 4.0 у `.xls` | MEDIUM | - | MEDIUM |
+| `xlm_macrosheet.xlsm` | макроаркуш Excel 4.0 у `.xlsm` | MEDIUM | - | MEDIUM |
 
-### `test-range/run_tests.ps1` — регресія
+Разом: детект HIGH 25 / MEDIUM 7 / INFO 10; після лікування INFO 25 / MEDIUM 7 / HIGH 1 (`activex_control.docx` —
+лише детект) / DELETED 9 (видалено або в карантині).
+
+### `test-range/run_tests.ps1` — регресія вручну
 Для кожного файлу: копія → `work.<ext>`; прогін 1 `--docscan-json --docscan-disarm`; прогін 2
 `--docscan-json` (контроль після лікування); видалення копії й бекапу. Таблиця + JSON + підсумок;
 наприкінці SHA256 оригінали до/після. Параметри: `-Yara`, `-Rules`, `-Samples`, `-WorkDir`.
-Файл лише ASCII (вивід англійською) — BOM і кодування консолі не мають значення.
+Файл лише ASCII (вивід англійською) — BOM і кодування консолі не мають значення. Для щоденної перевірки
+його замінив CI (наступний розділ); `run_tests.ps1` лишається для ручної перевірки на робочій машині.
 
-**Еталонний результат (31 файл, з 2026-11-05):** детект HIGH 27 / MEDIUM 4; після лікування INFO 19 /
-MEDIUM 4 / HIGH 1 (`activex_control.docx` — лише детект) / DELETED 7. Нові зразки (крок 4):
-`equation_ole.docx`, `package_script.docx`, `activex_control.docx`, `altchunk.docx`, `xlm_macrosheet.xlsm`,
-`equation.rtf`, `package_script.rtf`, `xlm_macrosheet.xls`.
+### CI — одна кнопка: усі тести на macOS і Windows
 
-Було (23 файли): детект HIGH 22 / MEDIUM 1; після лікування INFO 17 / DELETED 5
-(2 LNK видалено, 3 PDF у карантині) / MEDIUM 1 (`external_ole`); оригінали не змінені; з
-`docscan-index.yar` — `vendor_shellexec.docm` → `yara_matches:["gen_macro_ShellExecute_action"]`.
-Однаковий на macOS і Windows (MSVC).
+`go run -C docscan-project/ci/cirun .` (▷ у VS Code): коміт з перевіркою для публічного репозиторію → збірка й
+тести на Маку і на ВМ Windows (WinRM) паралельно → **push на GitHub лише після зеленого прогону**. Набір для
+розгортання збирається, але не публікується (`deploy.publish: false`). Подробиці — `docscan-project/ci/README.md`.
+
+| Крок | Що перевіряє | macOS | Windows ВМ |
+|---|---|---|---|
+| build | збірка (autotools / MSBuild) | ✓ | ✓ |
+| documents | 42 зразки за еталоном: вердикт, лікування, повторний скан | ✓ | ✓ (через пісочницю) |
+| confine | `--docscan-confine-check`: воркер нічого не може записати, прочитати приватне, запустити | — | ✓ |
+| critical | третій прохід, 299 перевірок (`test-critical/run_tests.py`) | ✓ | ✓ |
+| hostile | 35 ворожих / зламаних файлів — без падінь і зависань | ✓ | ✓ |
+| corpus | ~4 000 документів публічних корпусів (Apache POI, Apache Tika, pdf.js, plaso, LibreOffice, oletools, LNK); вердикти Мака і Windows мають збігатися точно | ✓ | ✓ |
+| malware | **справжнє** шкідливе ПЗ, 949 файлів (XMRig, EICAR, theZoo, InQuest, MalwareBazaar) — лише сканування; 437 обов'язкових виявлень | ✓ | ✓ (видаляється після тесту) |
+| fuzz | регресійні входи (`fuzz/regressions/`: 8, на Windows — 6 для розборщиків) + фазинг 300 с з ASan + UBSan; база — усі тестові файли | обидва фазери | фазер розборщиків |
+
+**Бойовий тест** (`cirun --combat`, ВМ Windows, ~2 год): пакет ставиться `install.ps1`, як на робочій станції, і
+установлений watcher (SYSTEM) обробляє кожен тестовий файл, що з'являється в теці, — 42 зразки, реальні зразки
+замовника, шкідливе ПЗ, корпуси (з файлового сервера); `check_watcher.py` звіряє записи `docscan-results.json` з
+еталонами. Подробиці — `ci/README.md`.
+
+Корпуси й шкідливе ПЗ — не в git: Мак пакує їх і кладе в приватне сховище пакетів Forgejo, ВМ завантажує й
+після тестів видаляє. Корпус і правила E5Search (третій прохід) у CI не входять — їх перевірено окремо (§10
+«Історія перевірок»).
 
 ### Фазинг (libFuzzer)
 
@@ -1122,7 +1205,9 @@ cd /tmp/docscan-fuzz
 ./docscan_parsers_fuzzer -dict=<repo>/docscan-project/fuzz/docscan.dict -max_len=262144 -max_total_time=900 corpus/parsers
 ./docscan_fuzzer         -dict=<repo>/docscan-project/fuzz/docscan.dict -max_len=262144 -max_total_time=900 corpus/module
 ```
-Знахідки зберігаються як `crash-*` / `oom-*` / `timeout-*`; відтворення — `./docscan_parsers_fuzzer <файл>`.
+Знахідки зберігаються як `crash-*` / `oom-*` / `timeout-*` / `leak-*`; відтворення — `./docscan_parsers_fuzzer <файл>`.
+`slow-unit-*` (один запуск довше 10 с) — не помилка: CI лише показує такий файл і кладе в артефакти
+(на завантаженій ВМ так буває з входом, який на Маці обробляється за мілісекунди).
 Після виправлення вхід кладеться в `regressions/` з описовою назвою.
 `-fno-sanitize=function` — бо upstream `hash.c:218` викликає деструктор через узагальнений тип покажчика
 (це не наш код, але без прапора кожен прогін падає ще до docscan).
@@ -1137,10 +1222,13 @@ cd /tmp/docscan-fuzz
 | `parsers-asan-rels-missing-type` | `rels.c` | `<Relationship>` без `Type` → `strrchr` по неініціалізованому стековому буферу | буфери ініціалізуються `""` |
 | `module-dos-zip-bomb` | `zip.c` | ZIP 1.3 КБ заявляє запис 3 ГБ → miniz виділяє 3 ГБ | записи > 64 МБ (`DOCSCAN_ZIP_MAX_ENTRY`) не розпаковуються |
 | `parsers-asan-disarm-remove-elements` | `disarm.c` | `strncmp` за кінцем не-NUL-термінованої частини | порівняння з перевіркою довжини |
+| `parsers-ub-zip-empty-entry-name` (2026-11-13, CI) | `inspect_ooxml.c` | запис ZIP з порожнім ім'ям → `name[strlen(name) - 1]` читає байт перед буфером | перевірка `name[0] == '\0'` |
 
 Підсумкові прогони після виправлень: модуль — 2,28 млн входів, парсери — 0,96 млн входів (по 15 хв) без знахідок.
 2026-11-07 (третій прохід, стартовий корпус — 552 справжні документи у 8 форматах): 2 год — 6,0 млн входів текстового
 шляху + 1,7 млн модуля, потім ще 0,54 млн після виправлення обмеження тексту — без знахідок.
+З 2026-11-13 фазинг іде в кожному прогоні CI (300 с на кожну платформу, Windows — `build_windows.ps1`);
+2026-11-14 на ВМ Windows: 6/6 регресій, 139 740 запусків, 0 падінь.
 
 ### Тести третього проходу — `docscan-project/test-critical/`
 
@@ -1179,6 +1267,9 @@ python3 docscan-project/test-critical/run_tests.py --yara ./yara           # Win
   оригіналу. 35 ворожих файлів (Mac + Windows) — без падінь і зависань. Кирилиця в шляхах, відкритий документ (у черзі
   один раз, лікування після звільнення), гонка з читачем черги (184 = 184, 0 зламаних, 0 дублів). Фазинг 2 год
   (6,0 млн запусків текстового шляху + 1,7 млн модуля) — 0 падінь. Регресія `run_tests.ps1` 31/31 без змін.
+- **Повна перевірка на ВМ Windows 11 через CI** (2026-11-14, коміт `6f3f2c2b`, усе через пісочницю): documents
+  42/42, confine (`CONFINED`; також від SYSTEM через завдання планувальника), critical, hostile 35, corpus ~4 000
+  (вердикти = Мак), malware 437/437, fuzz 6/6 регресій + 139 740 запусків без падінь. Мак — те саме, обидва фазери.
 - Політика в правилах (2026-11-02, macOS): 19/19 вердиктів (з `dde_link.docx` — 20/20) і дій лікування як в еталоні; тест на хибні спрацювання — див. §6.1.
 - Watcher на VM: 23 файли в `inbox`/`Downloads` + ручні документи на робочому столі (2 чисті
   робочі звіти → INFO, 3 семпли → HIGH) — 2026-11-02. Хибних спрацювань не було.
@@ -1374,6 +1465,15 @@ yara_descriptions[{rule, description}], details[]}`. В індексі все ц
 **CLI**
 - `--docscan-json` придушує звичайний вивід збігів — vendor-збіги є в `yara_file_matches`.
 
+**Пісочниця (Windows)**
+- Діє лише для **одного файлу** в командному рядку (так працює watcher). Тека, список файлів (`--scan-list`) і
+  `--docscan-no-sandbox` — розбір у процесі `yara64` з job object і видаленими привілеями, але з токеном
+  того, хто запустив.
+- Воркер читає все, що може прочитати будь-який звичайний користувач (System32, Program Files); повний
+  lockdown з NULL SID не стартує (`0xC0000142`) — свідомо лишаємо рівень Users (§4.11).
+- Ще один процес на файл — десятки мс; таймаут воркера — `--timeout` + 30 с (не більше 630 с).
+- `LoaderThreads = 1` записується в параметри процесу за зсувом структури — лише x64.
+
 **Watcher**
 - Defender у звичайних теках може забрати шкідливий файл раніше → у лозі `gone before scan`, у JSON запису немає.
 - Скан — лише на **появу або зміну** файлу (Created / Changed / Renamed), не на відкриття чи запуск.
@@ -1413,9 +1513,9 @@ git push docscan feature/docscan-module
 
 **Ніколи не публікується** (`.gitignore`): `docscan-project/test-samples/provided/` (живі семпли
 замовника, внутрішній C2), `attack-vectors`, `docscan-project/vendor-sources/` (клони джерел правил),
-`.claude/`, `docscan-project/test-range/samples/`, `docscan-project/fuzz/external/`, `docscan-project/dist/`, `*.docscan-bak`, `*.docscan-tmp`. Upstream-правило
+`.claude/`, `docscan-project/test-range/samples/`, `docscan-project/test-range/range/` (вихід генератора), `docscan-project/fuzz/external/`, `docscan-project/dist/`, `docscan-project/ci/config.yaml` (внутрішні адреси), `ci-out/`, `*.docscan-bak`, `*.docscan-tmp`. Поза репозиторієм лишаються також справжнє шкідливе ПЗ (`~/docscan-ci/malware`), корпус і правила E5Search. Upstream-правило
 `test-*[^.c]` ховає теки `test-range`/`test-samples` — для них у `.gitignore` є явний виняток.
-Репозиторій публічний: перед кожним пушем перевіряти, що немає внутрішніх IP, імен хостів, облікових даних.
+Репозиторій публічний: перед кожним комітом cirun перевіряє, що немає внутрішніх IP, імен хостів, облікових даних (ci/README.md); на GitHub потрапляє лише коміт після зеленого прогону CI.
 
 Апстрім такий модуль не прийме: YARA в maintenance mode, нове — у YARA-X (Rust, модулі через
 Protobuf). Офіційний шлях — лише порт логіки на YARA-X (окрема задача).

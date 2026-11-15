@@ -9,7 +9,7 @@
 // Запуск (з кореня репозиторію або будь-де в ньому):
 //
 //	go run -C docscan-project/ci/cirun . [--config FILE] [--only macos,windows] [--fuzz SECONDS]
-//	        [-m "повідомлення"] [--no-commit] [--no-push] [--no-publish] [--plan] [--push-only]
+//	        [-m "повідомлення"] [--no-commit] [--no-push] [--no-publish] [--plan] [--push-only] [--combat]
 //	        [--publish-dir DIR]
 //	go run -C docscan-project/ci/cirun . windows      (лише Windows за змінними середовища — для ci.yml)
 //
@@ -63,6 +63,7 @@ func main() {
 	noPush := flag.Bool("no-push", false, "do not git push the commit to GitHub after a green run")
 	noPublish := flag.Bool("no-publish", false, "do not upload the deployment set to the server")
 	plan := flag.Bool("plan", false, "check config, secrets and machines; build nothing")
+	combat := flag.Bool("combat", false, "Windows combat test: install the package and let the watcher scan every test file (~2 h)")
 	pushOnly := flag.Bool("push-only", false, "only git push HEAD to GitHub (after an earlier green run)")
 	publishDir := flag.String("publish-dir", "", "only publish an existing deployment set (ci-out/<run>/deploy)")
 	flag.Parse()
@@ -121,7 +122,7 @@ func main() {
 	}
 
 	o := &orchestrator.Orchestrator{Cfg: cfg, Sec: sec, Forgejo: fj,
-		Opt: orchestrator.Options{Only: splitList(*only), Push: !*noPush, Branch: branch, Fuzz: *fuzz}}
+		Opt: orchestrator.Options{Only: splitList(*only), Push: !*noPush, Branch: branch, Fuzz: *fuzz, Combat: *combat}}
 
 	if *pushOnly {
 		err := o.PublishCommit(ctx, sha)

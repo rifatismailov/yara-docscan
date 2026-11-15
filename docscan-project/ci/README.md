@@ -8,7 +8,8 @@
         ▼
 хвиля 1 (паралельно):  macOS — цей Мак (local)          Windows — ВМ, інакше ПК 216 (WinRM)
                        build → documents → critical →    checkout (git або zip) → build (MSBuild) →
-                       hostile → fuzz → yara-*.tar.gz     documents → critical → DocScan-<версія>.zip
+                       hostile → corpus → malware →       documents → confine → critical → assets →
+                       fuzz → yara-*.tar.gz               hostile → corpus → malware → fuzz → DocScan-<версія>.zip
         │  обидві зелені?
         ▼
 хвиля 2:               Linux — Ubuntu (SSH): те саме, що на macOS        (requires: [windows, macos])
@@ -17,7 +18,7 @@
 git push на GitHub (push.remote) — ЗАВЖДИ, від Forgejo не залежить
         │                (Forgejo, якщо увімкнено й доступний: mirror-sync і статуси cirun/<ОС>)
         ▼
-набір для розгортання → сервер (scp, sha256, DocScan-latest.txt) → RESULT
+набір для розгортання → ci-out/<прогін>/deploy/ (на сервер — лише з deploy.publish: true; зараз вимкнено) → RESULT
 ```
 
 Отже, на GitHub потрапляє **лише протестований** коміт, а слухач на іншому сервері сам бачить його там і
@@ -41,8 +42,9 @@ git push на GitHub (push.remote) — ЗАВЖДИ, від Forgejo не зал�
 | `.forgejo/workflows/ci.yml` | Дія у Forgejo (нічний прогін); її завдання windows кличе `cirun windows` (змінні середовища) |
 
 Тести в кожному прогоні: **документи** (42 зразки, серед них 7 макросів VBA, 4 регресії хибних тривог / шифрування і 6 zip-архівів: вердикт, лікування,
-повторний скан, оригінали не змінені), **3-й прохід** (`test-critical/run_tests.py`, 299 перевірок), **ворожі файли**
-(35, якщо на машині є корпус `seeds`), **фазинг** (обидва фазери, ASan + UBSan; на Windows не запускається).
+повторний скан, оригінали не змінені), **пісочниця** (Windows, `confine`), **3-й прохід** (`test-critical/run_tests.py`,
+299 перевірок), **ворожі файли** (35), **корпуси** (~4 000 документів), **шкідливе ПЗ** (949 файлів, лише сканування),
+**фазинг** (ASan + UBSan; Мак — обидва фазери, Windows — фазер розборщиків). Повна таблиця — нижче.
 
 ## Запуск
 
@@ -63,8 +65,8 @@ go run -C docscan-project/ci/cirun . -h                  # усі прапорц
 (`[windows 10.0.0.5 (pc-216)] build PASS (57s)   74%`), раз на 30 с — рядок стану. Підсумок і артефакти —
 `ci-out/run-<час>/` (`macos/yara-darwin-arm64.tar.gz`, `windows/DocScan-<версія>.zip`, логи кроків, `summary.txt`).
 
-Код виходу: **0** — усе зелене, коміт на GitHub, набір викладено; **1** — провал (збірка, тести або
-публікація набору); **2** — зелене, але push на GitHub не вдався (повторити: `--push-only`).
+Код виходу: **0** — усе зелене, коміт на GitHub (і набір викладено, якщо публікацію увімкнено); **1** — провал
+(збірка, тести або публікація набору); **2** — зелене, але push на GitHub не вдався (повторити: `--push-only`).
 
 ## Конфіг і паролі (KeePassXC)
 
@@ -77,7 +79,7 @@ token_ref:    "keepassxc:CI/Forgejo/api-token"
 # також: "hosts:<профіль>[.<поле>]" (старий ~/.docscan/hosts.json), "env:<ЗМІННА>"
 ```
 
-База — `~/.docscan/docscan-ci.kdbx` (окрема, лише для CI; групи `CI/Windows`, `CI/Forgejo`, `CI/Deploy`,
+База — `~/Documents/docscan-ci.kdbx` (окрема, лише для CI; групи `CI/Windows`, `CI/Forgejo`, `CI/Deploy`,
 `Infra`). Відкривається **один раз за запуск** (`keepassxc-cli export` у пам'ять; майстер-пароль — через stdin, не
 аргументом). Режим `unlock`:
 
@@ -116,14 +118,30 @@ token_ref:    "keepassxc:CI/Forgejo/api-token"
 
 | Крок | Що | Звідки файли |
 |---|---|---|
-| documents | 42 неактивні зразки: вердикт, лікування, повторний скан | git (`test-samples/generated`) |
+| documents | 42 неактивні зразки: вердикт, лікування, повторний скан (на Windows — через пісочницю) | git (`test-samples/generated`) |
+| confine | лише Windows: `yara64 --docscan-confine-check` — воркер не може записати, прочитати приватний файл, запустити процес; брокер — job object, без привілеїв. `RESULT: CONFINED` | створює сам |
 | critical | третій прохід, 299 перевірок | створює сам |
 | hostile | 35 ворожих файлів (зламані, гігантські, глибока вкладеність) | з корпусу seeds |
 | corpus | ~4 000 документів з публічних тестових корпусів | POI, pdf.js, plaso, LibreOffice RTF, LNK, Apache Tika, oletools |
 | malware | **справжнє** шкідливе ПЗ — 949 зразків (майнер XMRig, EICAR, theZoo, InQuest, MalwareBazaar): лише сканування, ніколи не запускається | `~/docscan-ci/malware` |
-| fuzz | регресійні файли знайдених падінь (`fuzz/regressions`) + фазинг `fuzz_seconds` с; база — **усі** тестові файли: корпуси, 42 згенеровані зразки, seeds (шкідливе ПЗ — ні). Мак/Linux — обидва фазери (модуль і розборщики); Windows — фазер розборщиків (усі парсери DocScan і лікування; clang-cl + libFuzzer + ASan, на ВМ потрібен LLVM: `choco install llvm`, інакше SKIP). Падіння → `fuzz-crashes` в артефактах прогону | корпуси + git |
+| fuzz | регресійні файли знайдених падінь (`fuzz/regressions`) + фазинг `fuzz_seconds` с; база — **усі** тестові файли: корпуси, 42 згенеровані зразки, seeds (шкідливе ПЗ — ні). Мак/Linux — обидва фазери (модуль і розборщики); Windows — фазер розборщиків (усі парсери DocScan і лікування; clang-cl + libFuzzer + ASan, на ВМ потрібен LLVM: `choco install llvm`, інакше SKIP). Падіння (`crash-` / `timeout-` / `oom-` / `leak-`) → крок червоний, файли — `fuzz-crashes` в артефактах прогону; `slow-unit-*` (повільний запуск) лише показується в лозі й зберігається, помилкою не є | корпуси + git |
 
 ПК 216 — робоча станція: `full_tests: false`, лише збірка і documents (без корпусів і шкідливого ПЗ).
+
+### Бойовий тест (`--combat`, лише Windows, ~2 год)
+
+```sh
+go run -C docscan-project/ci/cirun . --combat --only windows --fuzz 0
+```
+
+Перевіряє систему так, як вона працює на робочій станції, а не `yara64` напряму:
+
+| Крок | Що |
+|---|---|
+| combat-setup | `combat_setup.ps1`: пакет цього коміту → `install.ps1` (оновлення: `C:\Program Files\DocScan`, `C:\ProgramData\DocScan`, завдання «DocScan Watcher» від SYSTEM; watcher стежить за `C:\Users` і тестовою текою `C:\ci\inbox`); тестові файли з **файлового сервера** (`fileserver` у config.yaml): `yara\corpus`, `yara\seeds`, `yara\malware\malware.zip` і `provided.zip` (пароль `infected`, розпаковуються лише в `C:\ci\combat`) + 42 зразки з git; знімок стану |
+| combat-feed | `combat_feed.ps1` (окреме завдання SYSTEM): кладе файли в `C:\ci\inbox` партіями по 50 і чекає, поки watcher упорається; cirun раз на 30 с показує хід |
+| combat | `check_watcher.py`: на кожен файл, який watcher має сканувати (за його списками розширень), є запис без `ERROR`; 42 зразки — вердикт, лікування і вердикт після лікування за еталоном; реальні зразки замовника — HIGH; шкідливе ПЗ — кожен шлях `expected.txt`, який watcher сканує, виявлений (решта — список «не сканується через розширення»); корпус — вердикт політики = прямому скану (крок corpus). Звіт — `combat-report.txt`, записи — `combat-records.json`, лог watcher-а — `combat-watcher.log` |
+| combat-cleanup | `combat_cleanup.ps1` (завжди): тестові файли, розпаковане шкідливе ПЗ, бекапи й копії макросів, створені тестом, рядки тесту в черзі E5Search. DocScan лишається встановленим (оновленим до перевіреної збірки) |
 
 **Звірка між платформами.** Вердикти корпусу (`corpus-verdicts.tsv`) кожної платформи порівнюються: рішення
 DocScan (вердикт і знахідки) на тих самих файлах мають збігатися точно — інакше прогін не зелений.
@@ -190,11 +208,11 @@ DocScan-Setup.ps1 / -Pilot / -Critical   завантажувачі для irm |
 critical-rules.yar                       правила E5Search (якщо задано deploy.critical_rules у config.yaml)
 ```
 
-**Публікація — за замовчуванням** (▷ / Cmd+Shift+B): набір іде на
-сервер розгортання по ssh, звіряє SHA256 на сервері і лише тоді перемикає `DocScan-latest.txt` — з цього моменту
-`irm http://<сервер>:8080/docscan/DocScan-Setup.ps1 | iex` ставить новий пакет. Не зелений прогін — не публікується.
-Без публікації: `--no-publish` (*Run Task → «DocScan CI without publishing»*). Викласти готовий набір без збірки:
-`go run -C docscan-project/ci/cirun . --publish-dir ci-out/<прогін>/deploy`.
+**Публікація зараз вимкнена** (`deploy.publish: false` у `config.yaml`): набір лише лежить у `ci-out/<прогін>/deploy/`.
+З `publish: true` набір іде на сервер розгортання по ssh, SHA256 звіряється на сервері і лише тоді перемикається
+`DocScan-latest.txt` — з цього моменту `irm http://<сервер>:8080/docscan/DocScan-Setup.ps1 | iex` ставить новий пакет.
+Не зелений прогін — не публікується ніколи. Разово без публікації: `--no-publish`. Викласти готовий набір без
+збірки: `go run -C docscan-project/ci/cirun . --publish-dir ci-out/<прогін>/deploy`.
 
 Сервер розгортання — розділ `deploy` у `config.yaml` (`host`, `user_ref`, `password_ref`, `dir`, `url`,
 `critical_rules`). Для нічної Дії у Forgejo (завдання windows → `cirun windows`) потрібні секрети Forgejo
@@ -261,7 +279,7 @@ forgejo-runner register --no-interactive --instance http://<forgejo>:3000 --toke
 
 ### 5. VS Code
 `.vscode/tasks.json` уже в репозиторії:
-- **Cmd+Shift+B** → «DocScan CI»: коміт → усі системи + фазинг 300 с → push і набір (якщо зелене);
+- **Cmd+Shift+B** → «DocScan CI»: коміт → усі системи + фазинг 300 с → push (і набір на сервер, якщо `publish: true`), лише якщо зелене;
 - *Terminal → Run Task…* → «DocScan CI (no fuzzing)», «DocScan local: build + tests on this Mac (no push)».
 
 Адресу Forgejo і токени `cirun` бере з `config.yaml` (розділ `forgejo`, посилання на KeePassXC). Кнопка в рядку стану — розширення *Task Buttons*
@@ -277,10 +295,10 @@ forgejo-runner register --no-interactive --instance http://<forgejo>:3000 --toke
    `rules/LICENSE-*`) — чужий публічний текст із хешами комітів, SHA-1 зразків, назвами фірм із сертифікатів і
    рядками атакувальних інструментів — перевірку рядків не проходять (розмір файлу — так); у
    `build_vendor_rules.py` дозволені 40-символьні хеші закріплених комітів. Правила руками не редагуються.
-3. Далі в терміналі: push → синхронізація → «run #N: <посилання>» → стан кожної системи.
-3. Наприкінці — `RESULT: SUCCESS/FAILURE`, підсумок по системах і артефакти в `ci-out/run-<N>/`
-   (`windows11/DocScan-<дата>-<коміт>.zip` — готовий пакет; `macos/yara-darwin-arm64.tar.gz`; логи кроків).
-4. Те саме — у Forgejo → репозиторій → **Дії** → прогін (логи кожного кроку, кнопки завантаження артефактів).
+3. Далі в терміналі: машина кожної платформи, кожен крок з результатом і відсотком; після зеленого — push на GitHub.
+4. Наприкінці — `RESULT: SUCCESS/FAILURE`, підсумок по системах і артефакти в `ci-out/run-<час>/`
+   (`windows/DocScan-<дата>-<коміт>.zip` — готовий пакет; `macos/yara-darwin-arm64.tar.gz`; логи кроків).
+5. Нічна Дія у Forgejo (якщо увімкнено) — Forgejo → репозиторій → **Дії** → прогін.
 
 Червоне — відкрити лог кроку (`<крок>.log` в артефактах або в Дії). Еталон документів змінюється лише
 свідомо: `python3 docscan-project/ci/check_verdicts.py --yara ./yara --rules … --samples … --expected … --write`.

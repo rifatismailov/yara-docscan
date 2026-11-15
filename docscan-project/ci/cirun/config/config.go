@@ -142,6 +142,15 @@ type Deploy struct {
 }
 
 // Config — увесь конфіг.
+// FileServer — файловий сервер тестової платформи (SMB): звідти бойовий тест (--combat) бере тестові файли,
+// шкідливе ПЗ і реальні зразки (лише запаролені zip).
+type FileServer struct {
+	UNC         string `yaml:"unc"`          // \\<сервер>\<шара>
+	User        string `yaml:"user"`         // користувач SMB...
+	UserRef     string `yaml:"user_ref"`     // ...або посилання на нього
+	PasswordRef string `yaml:"password_ref"` // посилання на пароль
+}
+
 type Config struct {
 	Version     int    `yaml:"version"`
 	OutDir      string `yaml:"out_dir"`      // куди складати результати прогонів (ci-out)
@@ -150,12 +159,13 @@ type Config struct {
 		Commit  string `yaml:"commit"`  // auto — комітити зміни (з перевіркою безпеки); off — збирати HEAD
 		Message string `yaml:"message"` // порожньо — "ci: <файли>"
 	} `yaml:"repo"`
-	Secrets   Secrets              `yaml:"secrets"`
-	Platforms map[string]*Platform `yaml:"platforms"`
-	Tests     Tests                `yaml:"tests"`
-	Push      Push                 `yaml:"push"`
-	Forgejo   Forgejo              `yaml:"forgejo"`
-	Deploy    Deploy               `yaml:"deploy"`
+	Secrets    Secrets              `yaml:"secrets"`
+	Platforms  map[string]*Platform `yaml:"platforms"`
+	Tests      Tests                `yaml:"tests"`
+	Push       Push                 `yaml:"push"`
+	Forgejo    Forgejo              `yaml:"forgejo"`
+	Deploy     Deploy               `yaml:"deploy"`
+	FileServer FileServer           `yaml:"fileserver"`
 
 	Path string `yaml:"-"` // звідки завантажено
 }

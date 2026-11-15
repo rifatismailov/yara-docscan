@@ -41,6 +41,7 @@ type Options struct {
 	Push   bool     // push коміту на GitHub після зеленого прогону
 	Branch string   // гілка для push
 	Fuzz   int      // секунди фазингу
+	Combat bool     // Windows: бойовий тест — установлений watcher проганяє всі тестові файли
 }
 
 // Orchestrator — один прогін.
@@ -79,7 +80,11 @@ func (o *Orchestrator) newPlatform(name string, rep platform.Reporter) platform.
 	case "linux":
 		return platform.NewLinux(p, o.Sec, o.Opt.Fuzz, o.RunDir, o.Assets, rep)
 	case "windows":
-		return platform.NewWindows(p, o.Sec, o.Opt.Fuzz, o.Assets, rep)
+		w := platform.NewWindows(p, o.Sec, o.Opt.Fuzz, o.Assets, rep)
+		if o.Opt.Combat {
+			w.EnableCombat(o.Cfg.FileServer)
+		}
+		return w
 	}
 	return nil
 }
@@ -413,15 +418,19 @@ func contains(list []string, s string) bool {
 
 // weights — звичайна тривалість кроків (секунди): відсоток рахується за ними, бо фазинг займає
 // більшу частину часу і простий підрахунок кроків вводив би в оману.
-func weights(name string, fuzz int) map[string]float64 {
+func weights(name string, fuzz int, combat bool) map[string]float64 {
 	fz := 1.0
 	if fuzz > 0 {
 		fz = float64(fuzz)/2 + 40 // два фазери паралельно по fuzz/2 с + їх збірка
 	}
 	switch name {
 	case "windows":
-		return map[string]float64{"checkout": 15, "build": 70, "documents": 90, "confine": 5, "critical": 30, "assets": 60,
+		w := map[string]float64{"checkout": 15, "build": 70, "documents": 90, "confine": 5, "critical": 30, "assets": 60,
 			"hostile": 60, "corpus": 300, "malware": 30, "fuzz": float64(fuzz) + 60, "package": 40}
+		if combat { // ~5 500 файлів по одному, як у бою
+			w["combat-setup"], w["combat-feed"], w["combat"], w["combat-cleanup"] = 300, 7200, 30, 30
+		}
+		return w
 	case "linux":
 		return map[string]float64{"build": 180, "documents": 20, "critical": 5, "hostile": 20, "corpus": 120, "malware": 15, "fuzz": fz}
 	}
@@ -448,7 +457,7 @@ type progress struct {
 func newProgress(o *Orchestrator, planned []string) *progress {
 	p := &progress{o: o, order: planned, tracks: map[string]*track{}, quit: make(chan struct{})}
 	for _, n := range planned {
-		p.tracks[n] = &track{w: weights(n, o.Opt.Fuzz), done: map[string]bool{}}
+		p.tracks[n] = &track{w: weights(n, o.Opt.Fuzz, o.Opt.Combat), done: map[string]bool{}}
 	}
 	return p
 }

@@ -16,7 +16,7 @@
 3. [Шлях одного файлу через код](#3-шлях-одного-файлу-через-код)
 4. [Модуль `docscan` (libyara/modules/docscan)](#4-модуль-docscan)
 5. [Лікування — `disarm.c`](#5-лікування--disarmc)
-6. [CLI — наші частини `cli/yara.c`](#6-cli--наші-частини-cliyarac)
+6. [CLI — наші частини `cli/yara.c`](#6-cli--наші-частини-cliyarac) (6a — пісочниця `cli/docscan_sandbox.c`)
 7. [Вотчер — `docscan-watcher.ps1`](#7-вотчер--docscan-watcherps1)
 8. [Розгортання — `install.ps1`, `build_package.ps1`, `uninstall.ps1`](#8-розгортання)
 9. [Правила — генератор та інструменти (Python)](#9-правила--генератор-та-інструменти)
@@ -50,10 +50,11 @@ libyara/modules/docscan/          МОДУЛЬ (C) — розбір докуме
   disarm.c         ЛІКУВАННЯ (викликається тільки з CLI, не з модуля)
   text.c           ТРЕТІЙ ПРОХІД: повний текст + метадані документа (docx/xlsx/pptx, odt/ods/odp, doc/xls/ppt, rtf, txt/csv)
   critical.c       ТРЕТІЙ ПРОХІД: копія для пошуку, SHA-256, ділення на фрагменти, JSON для черги E5Search
-libyara/include/yara/docscan_disarm.h   інтерфейс лікування (docscan_disarm_info, docscan_disarm)
+libyara/include/yara/docscan_disarm.h   інтерфейс лікування (docscan_disarm_info, docscan_disarm, _plan / _apply / _free)
 libyara/include/yara/docscan_critical.h інтерфейс третього проходу (docscan_text_t, docscan_text_extract, docscan_critical_json)
 libyara/modules/module_list              рядок MODULE(docscan) — реєстрація модуля в YARA
 cli/yara.c                                CLI yara64: прапори --docscan-*, JSON, 2-й скан, лікування, --file-vars, --critical-* (3-й прохід)
+cli/docscan_sandbox.c/.h                  ПІСОЧНИЦЯ (Windows): той самий yara64 як брокер і воркер, токени, job object, записи X C D
 
 docscan-project/
   rules/docscan-policy.yar   політика: 29 правил DS_* (рівень, лікування, текст для алерту)
@@ -65,8 +66,9 @@ docscan-project/
   deploy/                    install.ps1, uninstall.ps1, build_package.ps1, manager/ (Wazuh)
   test-range/                генератори тестових зразків, run_tests.ps1
   test-critical/             тести третього проходу (Python): run_tests.py, корпус, «компот», ворожі файли
-  test-samples/generated/    31 тестовий зразок (у git); provided/ — реальні, НЕ в git
-  fuzz/                      libFuzzer-харнеси, корпус, регресії
+  test-samples/generated/    42 тестові зразки (у git); provided/ — реальні, НЕ в git
+  fuzz/                      libFuzzer-харнеси, корпус, регресії (build.sh — Мак/Linux, build_windows.ps1 — Windows)
+  ci/                        CI одною кнопкою: cirun (Go), build-test-unix.sh, check_verdicts.*, expected-verdicts.tsv
   vendor-sources/            клони джерел правил (НЕ в git)
   SCAN-FLOW.md / .en.md      архітектура й довідник; CODE-GUIDE.md — цей файл
 ```
@@ -183,6 +185,24 @@ UTF-8 (`put_utf8`, `cpy_utf16` у lnk.c; `WideCharToMultiByte` у yara.c), що�
 
 Чому факти копіюються в кроці 9, а не читаються пізніше: YARA вивантажує модуль **до** колбеків про збіги
 правил, тож потім поля модуля вже недоступні.
+
+**На Windows між кроками 4 і 5 з'являється пісочниця** (розділ 6a). Процес, який запустив вотчер, стає
+**брокером**: нічого не розбирає, а запускає себе ж воркером і чекає.
+
+```
+ 4a. брокер (main → docscan_broker_run): токени, канал, CreateProcessAsUserW(yara64 --docscan-worker=<канал> …)
+       призупинений → job object → LoaderThreads = 1 → SetThreadToken (початковий токен) → ResumeThread
+ 4b. воркер (main → docscan_worker_init): правила, docscan_worker_warmup(), docscan_worker_lockdown(файл):
+       файл відкрито й відображено в пам'ять → SeImpersonate прибрано → untrusted → RevertToSelf
+ 5–11 як вище, але у воркері: scan_file → yr_scanner_scan_mem по відображенню
+ 12. воркер: do_disarm → docscan_disarm_plan (у пам'яті) → запис 'D'; --docscan-extract → запис 'X';
+       critical_process → запис 'C'; JSON — у stdout
+ 12a. брокер: pump-потоки передають stdout/stderr вотчеру; apply_records: 'X' → файл, 'C' → черга,
+       'D' → перевірка, що файл не змінився (file_stamp) → docscan_disarm_apply → рядок docscan-disarm:
+```
+
+Воркер, що впав, не призводить до повторного розбору в брокері: `docscan_broker_run` повертає 1 («воркер
+стартував») і код падіння, вотчер бачить `ERROR`. Розбір у процесі — лише якщо воркер узагалі не стартував.
 
 ---
 
@@ -370,11 +390,17 @@ CFB — «FAT-файлова система» всередині файлу: с�
 Компілюється в libyara, але **викликається тільки з CLI** (`do_disarm`), бо модуль YARA має лише читати.
 Усі шляхи — UTF-8; на Windows файлові операції через `_wfopen/_wremove/_wrename` (кирилиця в шляхах).
 
+Лікування поділено на дві частини, бо на Windows їх виконують різні процеси: **план** (розбір ворожих байтів)
+— у воркері без прав, **застосування** (файлові операції) — у брокері, який нічого не розбирає.
+
 | Функція | Що робить |
 |---|---|
-| `docscan_disarm(path, info, out_action, sz)` | Диспетчер. Немає дії → `detect-only`. `.doc/.xls`, RTF з вбудованим об'єктом, PDF з `quarantine` → карантин. Спершу **бекап** (не вдався → `failed:backup`, файл не чіпається). Далі: карантин/LNK → видалення; RTF → `cure_rtf`; OOXML → `cure_ooxml`. |
-| `cure_ooxml(path, info, action, sz)` | Перепаковує ZIP у пам'яті без макросу / вкладень / шкідливих зв'язків, правка DDE; запис у `<file>.docscan-tmp` і підміна оригіналу. Коди: `removed:…`, `stripped:dde`; збої: `failed:unreadable-part`, `failed:write`, `failed:replace` (файл відкритий в іншій програмі — вотчер повторить). Оригінал не видаляється, якщо вилікована копія не може стати на його місце. |
-| `cure_rtf(path, action, sz)` | `\objupdate` → `\objupdatX` (та сама довжина) → `stripped:objupdate` або `failed:write`. |
+| `docscan_disarm(path, info, out_action, sz)` | = `read_file` → `docscan_disarm_plan` → `docscan_disarm_apply`. Так працюють Мак/Linux, тека й `--docscan-no-sandbox`. |
+| `docscan_disarm_plan(data, len, info, &cured, &cured_len, action, sz)` | **Лише пам'ять, жодного файлу.** Немає дії → `detect-only` (`NONE`). `.doc/.xls`, RTF з вбудованим об'єктом, ZIP, PDF з `quarantine`, LNK з `lnk_bad` → `DELETE` (карантин / видалення). RTF → `cure_rtf_mem`, OOXML → `cure_ooxml_mem` → `REPLACE` + вилікувані байти. Помилка → `FAILED` (`failed:unreadable-part`). |
+| `docscan_disarm_apply(path, backup_dir, kind, cured, cured_len, plan_action, out, sz)` | **Лише файли, нічого не розбирає.** Спершу **бекап** (не вдався → `failed:backup`, файл не чіпається); `DELETE` → видалення; `REPLACE` → `<file>.docscan-tmp` і підміна оригіналу (`failed:write` / `failed:replace` — файл відкритий в іншій програмі, вотчер повторить). |
+| `docscan_disarm_free(p)` | Звільнити вилікований буфер (виділений у libyara — звільняти там само). |
+| `cure_ooxml_mem(data, len, info, &out, …)` | Перепаковує ZIP у пам'яті без макросу / вкладень / шкідливих зв'язків, правка DDE. Коди: `removed:…`, `stripped:dde`; частина не читається / > 64 МБ → лікування скасовано. |
+| `cure_rtf_mem(data, len, &out, …)` | `\objupdate` → `\objupdatX` (та сама довжина) → `stripped:objupdate`. |
 | `remove_elements(in, len, markers, n, &out_len)` | Копія XML без елементів `<Relationship>` / `<Override>`, що містять маркер. |
 | `strip_dde`, `blank_dde_fields`, `remove_dde_formulas`, `blank_ddelink` | Знешкодження DDE у Word/Excel. |
 | `backup(path, backup_dir)` | Копія оригіналу (`<тека>\<ім'я>.<n>.docscan-bak`). |
@@ -388,6 +414,7 @@ CFB — «FAT-файлова система» всередині файлу: с�
 Решта `yara.c` — upstream YARA. Наше:
 
 **Глобальні прапори:** `docscan_json`, `docscan_extract`, `docscan_disarm_flag`, `docscan_backup_dir(_utf8)`,
+`docscan_confine_check`, `docscan_no_sandbox`, `docscan_worker_arg` (пісочниця),
 `file_vars`, `g_rules` (завантажені правила — для 2-го скану); для третього проходу — `critical_rules` (окремо скомпільовані
 правила E5Search), `critical_out_utf8`, `critical_rules_utf8`, `critical_chunk_size/overlap`.
 
@@ -397,21 +424,22 @@ CFB — «FAT-файлова система» всередині файлу: с�
 
 | Функція | Що робить |
 |---|---|
-| `file_vars_set(scanner, path)` | Для кожного файлу задає змінні THOR/LOKI: `filename`, `filepath` (абсолютна тека), `extension`, `filetype`, `owner`. |
+| `file_vars_set(scanner, path, head, head_len)` | Для кожного файлу задає змінні THOR/LOKI: `filename`, `filepath` (абсолютна тека), `extension`, `filetype` (з перших байтів `head`), `owner`. |
 | `file_vars_type(h, n, ext)` | Тип за першими байтами (`EXE`, `ZIP`, `RTF`…) або за розширенням (`VBS`, `PowerShell`…). |
-| `scan_file(scanner, filename)` | Відкриває файл і сканує (`file_vars_set` перед сканом). Дві версії: Windows і POSIX. |
+| `scan_file(scanner, filename)` | Відкриває файл і сканує (`file_vars_set` перед сканом). Дві версії: Windows і POSIX. У воркері — `yr_scanner_scan_mem` по файлу, відображеному до lockdown (`docscan_worker_data`). |
 | `docscan_capture(m, st)` | На `MODULE_IMPORTED`: скидає стан, визначає тип, копіює докази, VBA і `parts[]` з полів модуля. |
 | `docscan_on_match(rule, st)` | На кожне правило, що спрацювало. З `meta.severity` → політика: рівень, `findings`, `findings_text` (`meta.text`), `details`, прапори лікування з `meta.disarm`. Без — вендорне: `docscan_info` → `info_matches`; `docscan_doc` → `doc_matches`; інше → `file_matches`; `meta.description` → `descriptions`. |
 | `print_docscan_json(st)` | На `SCAN_FINISHED`: 2-й скан (VBA → `yara_matches`, кожна частина → `yara_part_matches`) і друк одного JSON-рядка. |
 | `vendor_match_cb(...)` | Колбек 2-го скану: збирає вендорні правила (не політику, не індикатори) і їхні описи. |
-| `do_disarm(file_path, ds)` | Викликає `docscan_disarm`, друкує `docscan-disarm: <шлях> -> <дія>`. |
+| `do_disarm(file_path, ds)` | Викликає `docscan_disarm`, друкує `docscan-disarm: <шлях> -> <дія>`. У воркері — `docscan_disarm_plan` і запис `D` (`[kind][дія]\0[вилікувані байти]`), рядок друкує брокер. |
+| `docscan_worker_warmup()` | У воркері до lockdown: один скан правилом з `hash.md5/sha1/sha256/crc32` — OpenSSL ініціалізується ліниво, після lockdown це тихо не вдалося б. |
 | `docscan_meta(rule, name)` | Значення рядкового `meta` правила. |
 | `docscan_has_tag(rule, tag)` / `docscan_is_info(rule)` | Чи має правило тег. |
 | `docscan_list_add`, `docscan_list_has`, `docscan_obj_add` | JSON-списки (`"a","b"`) і масив `{"rule","description"}` з екрануванням і обмеженням розміру. |
 | `docscan_json_puts`, `docscan_json_evidence`, `docscan_defang` | Друк рядків у JSON; `http` → `hxxp` у доказах. |
 | `docscan_state_reset`, `docscan_copy_string` | Скинути стан (звільнити копії); скопіювати рядок з поля модуля. |
 | `critical_setup()` | Після завантаження основних правил: перевіряє `--critical-out` і `--critical-chunk`, читає файл `--critical-rules` і компілює його окремим компілятором (`yr_compiler_add_string`). |
-| `critical_process(file_path)` | Третій прохід для одного файлу (після скану, **до** лікування): читає файл (≤ 100 МБ) → `docscan_text_extract` → `docscan_text_normalize` → `yr_rules_scan_mem` з `critical_callback` → розмір фрагментів (meta правила → `--critical-chunk` → 700/120) → SHA-256, дати файлу, якщо в документі їх немає → `docscan_critical_json` → дописує рядок у чергу під `output_mutex` і друкує `docscan-critical: queued …`. Текст документа ніде не друкується. |
+| `critical_process(file_path)` | Третій прохід для одного файлу (після скану, **до** лікування): читає файл (≤ 100 МБ; у воркері — байти й дати з `docscan_worker_data` / `docscan_worker_times`, а рядок черги йде записом `C`) → `docscan_text_extract` → `docscan_text_normalize` → `yr_rules_scan_mem` з `critical_callback` → розмір фрагментів (meta правила → `--critical-chunk` → 700/120) → SHA-256, дати файлу, якщо в документі їх немає → `docscan_critical_json` → дописує рядок у чергу під `output_mutex` і друкує `docscan-critical: queued …`. Текст документа ніде не друкується. |
 | `critical_callback` | Збирає назви правил, що спрацювали, і `e5_chunk_size` / `e5_chunk_overlap` з першого правила, де вони є. |
 | `critical_print`, `iso_utc`, `filetime_utc`, `fopen_utf8` | Друк вузьким рядком (на Windows консоль у широкому режимі — тимчасово `_O_TEXT`); дати ISO UTC; відкриття файлу за UTF-8 шляхом (`_wfopen`). |
 
@@ -419,6 +447,41 @@ CFB — «FAT-файлова система» всередині файлу: с�
 
 Шляхи `--docscan-backup-dir`, `--critical-rules`, `--critical-out` на Windows беруться з широкого `argv` (UTF-8):
 парсер опцій віддає їх в ANSI і кирилиця губиться.
+
+**`main`, Windows:** `--docscan-worker` → цей процес — воркер (`docscan_worker_init`; з `--docscan-confine-check` —
+одразу перевірка). Інакше, якщо є будь-яка `--docscan-*`/`--critical-rules` опція і в командному рядку **один
+файл** — брокер: `docscan_broker_run(&cfg, &rc)`; повернув 1 → вихід з кодом воркера (файл тут більше не
+розбирається). Тека, список, `--docscan-no-sandbox` або воркер не стартував → `docscan_confine()` і скан у процесі.
+
+---
+
+## 6a. Пісочниця — `cli/docscan_sandbox.c`
+
+Лише Windows (на інших системах `docscan_worker_active()` — макрос `0`). Повний опис і причини кожного рішення —
+`SCAN-FLOW.md` §4.11.
+
+| Функція | Хто | Що робить |
+|---|---|---|
+| `docscan_broker_run(cfg, &exit_code)` | брокер | Усе: запам'ятати розмір і час файлу (`file_stamp`), токени (`make_tokens`), канали stdout / stderr / результатів (`make_pipe`), `STARTUPINFOEX` з рівно 4 дескрипторами, `CreateProcessAsUserW` призупиненим → `limited_job` → `single_loader_thread` → `SetThreadToken` → `ResumeThread`; потім `docscan_confine()` для себе, чекання з тайм-аутом (`--timeout` + 30 с, ≤ 630 с), `apply_records`. 1 — воркер стартував. |
+| `make_tokens(&lockdown, &initial)` → `make_tokens_ex(…)` | брокер | Lockdown-токен: `CreateRestrictedToken`, обмежувальні SID Users / Everyone / Authenticated Users / RESTRICTED, привілеї лише `SeChangeNotify` + `SeImpersonate`. Початковий (для імперсонації до lockdown): обмежувальні SID — користувач + увімкнені групи + RESTRICTED, рівень імперсонації — impersonation. `DS_TOKEN_NULL` — варіант з NULL SID (повний lockdown, не стартує). |
+| `single_loader_thread(proc)` | брокер | `PEB → ProcessParameters → LoaderThreads = 1` у призупиненому воркері (x64): DLL вантажить лише головний потік, який імперсонує. |
+| `limited_job()` | обидва | Job object: 1 активний процес, UI-обмеження, `KILL_ON_JOB_CLOSE`. |
+| `drop_privileges()`, `docscan_confine()`, `docscan_confine_report()` | обидва | Видалити всі привілеї токена; job для себе; звіт для `--docscan-confine-check`. |
+| `pump(p)` | брокер | Потік, що копіює stdout / stderr воркера у свої (JSON іде вотчеру як і раніше). |
+| `apply_records(cfg, buf, len, …)` | брокер | Розбирає записи `[тег][довжина LE32][дані]`: `X` → файл `--docscan-extract`; `C` → рядок повідомлення в stdout + рядок у `--critical-out`; `D` → `file_stamp` (змінився → `failed:changed`) → `docscan_disarm_apply` → `docscan-disarm: <шлях> -> <дія>`. |
+| `docscan_worker_init(arg)` / `docscan_worker_active()` | воркер | Дескриптор каналу результатів з `--docscan-worker=`; чи цей процес — воркер. |
+| `docscan_worker_lockdown(target)` | воркер | Поки головний потік імперсонує: відкрити й відобразити файл; прибрати `SeImpersonate`; `lower_integrity` (untrusted); `RevertToSelf` і перевірка, що імперсонації немає. |
+| `docscan_worker_data(&size, &open_failed)` / `docscan_worker_times(&c, &m)` | воркер | Відображений файл і його дати (для третього проходу). |
+| `docscan_worker_send(tag, a, alen, b, blen)` | воркер | Записати один запис у канал результатів. |
+| `docscan_worker_confine_check()` | воркер | Проби після lockdown: приватний файл (`DOCSCAN_PROBE_SECRET`), запис у `%TEMP%` і `C:\ProgramData`, ключ у `HKLM\SOFTWARE`, читання `HKLM\SAM`, `cmd.exe` (`try_child_process`) — усе має бути заблоковано. |
+| `probe_matrix()`, `probe_one`, `probe_start`, `probe_debug` | брокер | Діагностика в `--docscan-confine-check`: які комбінації токенів стартують; NULL-SID-воркер під налагоджувачем (DLL, виключення, код виходу). |
+
+Що треба пам'ятати, змінюючи код, який виконується у воркері:
+- після `docscan_worker_lockdown` **не можна** відкривати файли, писати, вантажити нові DLL, запускати процеси —
+  усе це заблоковано. Потрібне від брокера — новий тип запису в `docscan_sandbox.h` і гілка в `apply_records`;
+- усе, що ініціалізується ліниво (OpenSSL, нові модулі), прогріти до lockdown (`docscan_worker_warmup`);
+- нова DLL на старті (особливо `user32`/`gdi32`) може зламати старт воркера — тоді `/DELAYLOAD` у `yara.vcxproj`;
+- перевірка — крок CI `confine` і всі кроки Windows (вони йдуть через пісочницю).
 
 ---
 
@@ -508,14 +571,23 @@ E5Search за цей запуск — повторний скан того са�
 
 ## 10. Тести й фазинг
 
+Основна перевірка — **CI одною кнопкою** (▷ у VS Code, `go run -C docscan-project/ci/cirun .`): збірка й усі
+тести на Маку і на ВМ Windows, push на GitHub лише після зеленого прогону. Що саме перевіряється — `SCAN-FLOW.md`
+§10 і `docscan-project/ci/README.md`.
+
 | Файл | Що робить |
 |---|---|
-| `test-range/gen_test_range.py` | Генерує нешкідливі зразки: `write_docx`, `write_xlsx`, `rels`, `build_cfb(stream, name)`, `vba_project`, `ovba_container`, `build_lnk`, `ole10native`, `ole1_object`, `gen()` / `gen_objects()`. |
-| `test-range/run_tests.ps1` | Регресія на Windows: копія зразків → детект+лікування → повторний скан → підсумок (еталон: 31 файл). |
+| `ci/cirun/` (Go) | Коміт з перевіркою для публічного репозиторію (`gitops/git.go`, винятки — `skipChecks`), платформи `unix.go` / `windows.go`, хвилі, підсумок, push. |
+| `ci/build-test-unix.sh` | Збірка й тести на macOS / Linux: documents, critical, hostile, corpus, malware, fuzz. |
+| `ci/check_verdicts.py` / `.ps1`, `ci/expected-verdicts.tsv` | Документи: вердикт, лікування, повторний скан, оригінали — проти еталона 42 зразків (`--write` — свідома зміна еталона). |
+| `ci/check_corpus.py` | Корпуси й шкідливе ПЗ: вердикти в TSV для звірки Мак ↔ Windows; `expected.txt` — обов'язкові виявлення. |
+| `test-range/gen_test_range.py` | Генерує нешкідливі зразки: `write_docx`, `write_xlsx`, `write_zip`, `rels`, `build_cfb(stream, name)`, `build_cfb_multi`, `vba_project`, `ovba_container`, `build_lnk`, `ole10native`, `ole1_object`, `gen()` / `gen_objects()` / `gen_vba_projects()` / `gen_fp_regressions()` / `gen_archives()`. Вихід (`range/`) — не в git; потрібні файли копіюються в `test-samples/generated/`. |
+| `test-range/run_tests.ps1` | Регресія вручну на Windows: копія зразків → детект+лікування → повторний скан → підсумок. |
 | `test-range/gen_range.ps1` | Справжні Office-документи через Word COM (на Windows з Office). |
 | `fuzz/docscan_fuzzer.cc` | `LLVMFuzzerInitialize` компілює вбудоване правило з `import "docscan"`; `LLVMFuzzerTestOneInput` сканує випадковий вхід через модуль (`yr_rules_scan_mem`). |
 | `fuzz/docscan_parsers_fuzzer.cc` | Перший байт обирає парсер (`% 8`): OLE, LNK, RTF, PDF, OOXML, MS-OVBA, rels, лікування. Звільняє `vba_code` і `parts[]`. |
 | `fuzz/build.sh` | Окрема збірка з ASan/UBSan + прогін регресій `fuzz/regressions/`. Перший байт ≥ 0xF0 у `docscan_parsers_fuzzer` — третій прохід (витяг тексту, нормалізація, JSON). |
+| `fuzz/build_windows.ps1` | Windows: фазер розборщиків через clang-cl + libFuzzer + ASan (`choco install llvm`). |
 | `test-critical/run_tests.py` | Третій прохід: ділення проти еталона E5Search, інваріанти JSON, усі формати, параметри, поведінка без опції (`--yara`, `--legacy DIR`). |
 | `test-critical/md2office.py`, `eval_corpus.py` | Корпус E5Search (`.md`) → docx/xlsx/pptx (далі LibreOffice → doc/odt/rtf/xls/ppt); оцінка: у черзі чи ні проти розмітки. |
 | `test-critical/mix_corpus.py`, `eval_mix.py` | «Компот»: документи корпусу + безпечні вектори 1-го і 2-го проходів; перевірка вердикту, лікування й тексту в черзі (режими `cli` / `watcher`). |
@@ -528,11 +600,13 @@ E5Search за цей запуск — повторний скан того са�
 make -j8                                                    # збірка ./yara
 ./yara -D -w docscan-project/rules/docscan.yar <файл>       # -D: показати всі поля модуля (факти)
 ./yara -w --docscan-json docscan-project/rules/docscan-index.yar <файл>
-for f in docscan-project/test-samples/generated/* docscan-project/test-samples/provided/*; do
-  ./yara -w --docscan-json docscan-project/rules/docscan-index.yar "$f" | grep -oE '"verdict":"[A-Z]+"'
-done | sort | uniq -c                                       # еталон: 27 HIGH, 4 MEDIUM
+python3 docscan-project/ci/check_verdicts.py --yara ./yara --rules docscan-project/rules/docscan-index.yar \
+  --samples docscan-project/test-samples/generated --expected docscan-project/ci/expected-verdicts.tsv
 sh docscan-project/fuzz/build.sh /шлях/до/теки             # фазер (потрібен brew llvm)
 ```
+
+Новий зразок: функція в `gen_test_range.py` → файл у `test-samples/generated/` → рядок в `expected-verdicts.tsv`
+(`check_verdicts.py --write` і переглянути різницю).
 
 ---
 
@@ -549,7 +623,8 @@ sh docscan-project/fuzz/build.sh /шлях/до/теки             # фазе�
    (`<ClCompile Include=…>`), а також у `fuzz/build_windows.ps1`.
 5. **Перевірка:** `./yara -D -w docscan-project/rules/docscan.yar <зразок>` — поле має з'явитися.
 6. **Рішення** — правило в `docscan-policy.yar` (див. 11.2). Сам факт рівня не має.
-7. **Тестовий зразок** — функція в `gen_test_range.py`, файл у `test-samples/generated/`, оновити еталон.
+7. **Тестовий зразок** — функція в `gen_test_range.py`, файл у `test-samples/generated/`, оновити еталон
+   (`ci/expected-verdicts.tsv`).
 8. **Фазинг** — новий код розбирає ворожі дані: прогнати обидва фазери.
 
 ### 11.2 Правило політики
@@ -614,4 +689,9 @@ rule DS_XLM_MACROSHEET
 | PowerPoint 97 | Текст полів зберігається двічі + зразок слайдів («Click to edit Master…») | Пропуск повторів (`ppt_seen`) і контейнерів MainMaster/Handout |
 | Обмеження розміру | Великий шматок тексту, що не влазить, відкидався цілком | Дописувати те, що влазить, і різати на межі UTF-8 |
 | Самоперевірка правил | `yara64 --critical-rules` без `--file-vars` → основні правила (змінні `filepath` тощо) не компілюються | Будь-який запуск з `docscan-index.yar` — з `--file-vars` або `--docscan-json` |
+| Воркер падає з `0xC0000142` | Обмежений процес не завантажує DLL: `user32` на старті хоче window station; службові потоки завантажувача Windows не імперсонують; підвищений токен для імперсонації тихо знижується до identification; NULL SID не проходить ініціалізацію KernelBase | `/DELAYLOAD`, `LoaderThreads = 1`, не підвищений початковий токен, lockdown рівня Users; діагностика — `probe_matrix` у кроці `confine` |
+| Код падіння як від'ємне `int` | `0xC0000142` у `int` < 0 → код сприймався як «воркер не стартував» → файл, що вбив воркер, сканувався повторно з правами брокера | `docscan_broker_run` повертає окремо «стартував» і код виходу |
+| Нові файлові операції у воркері | Після lockdown воркер не може нічого відкрити чи записати — нова функція «тихо не працює» лише на Windows | Усе з файлами — у брокері через запис; читання — до lockdown |
+| `slow-unit-*` у фазингу | libFuzzer зберіг повільний (> 10 с на завантаженій ВМ) вхід — CI рахував його як падіння | Падіння — лише `crash-` / `timeout-` / `oom-` / `leak-` |
+| Вихід генератора в git | `gen_test_range.py` пише в `test-range/range/`, ця тека потрапила в коміт | Тека в `.gitignore`; у git — лише `test-samples/generated/` |
 | Повторний скан | Повтор лікування відкритого файлу ставив документ у чергу E5Search ще раз | `$CritQueued` — один раз на вміст (sha256) за запуск |

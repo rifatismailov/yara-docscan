@@ -20,10 +20,11 @@ type Windows struct {
 	cfg    *config.Platform
 	sec    *config.Resolver
 	report Reporter
-	fuzz   int               // секунди фазингу
-	assets *assets.Assets    // тестові файли поза git (nil — немає)
-	full   bool              // вибрана машина проганяє всі тести (Candidate.full_tests)
-	extra  map[string][]byte // corpus-verdicts.tsv, malware-verdicts.tsv — у артефакти
+	fuzz   int                // секунди фазингу
+	assets *assets.Assets     // тестові файли поза git (nil — немає)
+	full   bool               // вибрана машина проганяє всі тести (Candidate.full_tests)
+	extra  map[string][]byte  // corpus-verdicts.tsv, malware-verdicts.tsv — у артефакти
+	combat *config.FileServer // бойовий тест (--combat): звідки брати тестові файли; nil — вимкнено
 
 	t    transport.Transport
 	wdir string // робоча тека на Windows (C:\ci)
@@ -44,6 +45,9 @@ func NewWindows(cfg *config.Platform, sec *config.Resolver, fuzz int, as *assets
 }
 
 func (w *Windows) Name() string { return "windows" }
+
+// EnableCombat вмикає бойовий тест (--combat) з тестовими файлами з файлового сервера fs.
+func (w *Windows) EnableCombat(fs config.FileServer) { w.combat = &fs }
 
 // Prepare: перший кандидат з відкритим портом; WinRM-транспорт з робочою текою w.wdir.
 func (w *Windows) Prepare(ctx context.Context) error {
@@ -342,7 +346,128 @@ if ($bad -gt 0 -or $rc -ne 0 -or $n -gt 0) { exit 1 }
 `, 3))
 		w.keep(ctx, "fuzz-crashes.zip")
 	}
+	if w.combat != nil {
+		steps = append(steps, w.runCombat(ctx, py)...)
+	}
 	return steps, nil
+}
+
+// runCombat — бойовий тест: пакет цього коміту встановлюється install.ps1 як на робочій станції, і
+// установлений watcher (SYSTEM) обробляє КОЖЕН тестовий файл, що з'являється в теці (42 зразки, реальні зразки
+// замовника, шкідливе ПЗ, корпуси, seeds — з файлового сервера). Кроки:
+//
+//	combat-setup    combat_setup.ps1: пакет, install.ps1, файли з сервера, знімок стану, подавач (завдання SYSTEM);
+//	combat-feed     подавач кладе файли партіями й чекає, поки watcher упорається; тут — лише опитування стану;
+//	combat          check_watcher.py: запис на кожен файл, вердикти проти еталонів, звіт;
+//	combat-cleanup  combat_cleanup.ps1: тестові файли, шкідливе ПЗ, їхні бекапи — геть (завжди).
+func (w *Windows) runCombat(ctx context.Context, py string) (steps []StepResult) {
+	work, inbox := w.wdir+`\combat`, w.wdir+`\inbox`
+	fail := func(name, msg string) []StepResult {
+		w.report(Event{Platform: "windows", Kind: "start", Step: name})
+		r := StepResult{Name: name, Status: "FAIL", Log: msg}
+		w.logs[name] = msg
+		w.report(Event{Platform: "windows", Kind: "done", Step: name, Result: &r})
+		return append(steps, r)
+	}
+	fs := w.combat
+	if fs.UNC == "" {
+		return fail("combat-setup", "no fileserver section in the config: the combat test takes its files from the file server")
+	}
+	user := fs.User
+	if user == "" && fs.UserRef != "" {
+		u, err := w.sec.Get(fs.UserRef)
+		if err != nil {
+			return fail("combat-setup", "fileserver user: "+err.Error())
+		}
+		user = u
+	}
+	pass, err := w.sec.Get(fs.PasswordRef)
+	if err != nil {
+		return fail("combat-setup", "fileserver password: "+err.Error())
+	}
+	q := func(s string) string { return strings.ReplaceAll(s, "'", "''") }
+	defer func() {
+		steps = append(steps, w.step(context.Background(), "combat-cleanup", `
+& powershell -NoProfile -ExecutionPolicy Bypass -File "$repo\docscan-project\ci\combat_cleanup.ps1" -Work '`+work+`' -Inbox '`+inbox+`'
+exit 0
+`, -1))
+	}()
+	setup := w.step(ctx, "combat-setup", `
+$env:DOCSCAN_SHARE_PASS = '`+q(pass)+`'
+Set-Location $repo
+& powershell -NoProfile -ExecutionPolicy Bypass -File docscan-project\ci\combat_setup.ps1 -Repo $repo -Work '`+work+`' -Inbox '`+inbox+`' -Version {{V}} -Share '`+q(fs.UNC)+`' -ShareUser '`+q(user)+`'
+exit $LASTEXITCODE
+`, -1)
+	steps = append(steps, setup)
+	if setup.Status != "PASS" {
+		return steps
+	}
+
+	// combat-feed: подавач працює завданням SYSTEM на машині; тут — опитування раз на 30 с
+	w.report(Event{Platform: "windows", Kind: "start", Step: "combat-feed"})
+	t0 := time.Now()
+	feed := StepResult{Name: "combat-feed", Status: "FAIL"}
+	var lines []string
+	lastNote := time.Time{}
+	for time.Since(t0) < 8*time.Hour {
+		r, err := w.t.Run(ctx, w.fill(`Get-Content '`+work+`\feed-status.txt' -EA 0; "task: " + (Get-ScheduledTask -TaskName "DocScan combat feed" -EA 0).State`), nil)
+		if ctx.Err() != nil {
+			break
+		}
+		st, task := "", ""
+		for _, l := range strings.Split(r.Output, "\n") {
+			l = strings.TrimSpace(l)
+			switch {
+			case strings.HasPrefix(l, "task: "):
+				task = strings.TrimPrefix(l, "task: ")
+			case l != "":
+				st = l
+			}
+		}
+		if err == nil && st != "" && (len(lines) == 0 || lines[len(lines)-1] != st) {
+			lines = append(lines, time.Now().Format("15:04:05")+" "+st)
+			if time.Since(lastNote) > 10*time.Minute || strings.HasPrefix(st, "done") {
+				w.report(Event{Platform: "windows", Kind: "note", Step: "combat: " + st})
+				lastNote = time.Now()
+			}
+		}
+		if strings.HasPrefix(st, "done") {
+			feed.Status = "PASS"
+			break
+		}
+		if err == nil && task != "Running" && task != "Queued" && time.Since(t0) > 2*time.Minute {
+			lines = append(lines, "the feeder task is not running any more (state: "+task+")")
+			break
+		}
+		select {
+		case <-ctx.Done():
+		case <-time.After(30 * time.Second):
+		}
+	}
+	feed.Duration = time.Since(t0)
+	feed.Log = strings.Join(lines, "\n")
+	w.logs["combat-feed"] = feed.Log
+	w.report(Event{Platform: "windows", Kind: "done", Step: "combat-feed", Result: &feed})
+	steps = append(steps, feed)
+
+	// combat: що watcher записав на кожен файл (навіть якщо подавач не дійшов до кінця — звіт по тому, що є)
+	steps = append(steps, w.step(ctx, "combat", py+`
+Set-Location $repo
+$snap = Get-Content '`+work+`\snap.json' -Raw | ConvertFrom-Json
+$res = "$env:ProgramData\DocScan\results"
+$cv = @(); if (Test-Path "$w\corpus-verdicts.tsv") { $cv = @("--corpus-verdicts", "$w\corpus-verdicts.tsv") }
+$co = @(); if ($snap.critical_on) { $co = @("--critical-on") }
+& $py docscan-project\ci\check_watcher.py --results "$res\docscan-results.json" --results-offset $snap.results --log "$res\watcher.log" --log-offset $snap.log --inbox '`+inbox+`' --src '`+work+`\src' --watcher "$env:ProgramW6432\DocScan\watcher\docscan-watcher.ps1" --expected docscan-project\ci\expected-verdicts.tsv @cv @co --records "$w\combat-records.json" --report "$w\combat-report.txt"
+$rc = $LASTEXITCODE
+# the watcher log of the test (from the snapshot on)
+$in = [IO.File]::Open("$res\watcher.log", 'Open', 'Read', 'ReadWrite'); $o = [long]$snap.log; if ($o -gt $in.Length) { $o = 0 }
+[void]$in.Seek($o, 'Begin'); $out = [IO.File]::Create("$w\combat-watcher.log"); $in.CopyTo($out); $out.Close(); $in.Close()
+exit $rc
+`, 3))
+	for _, f := range []string{"combat-report.txt", "combat-records.json", "combat-watcher.log"} {
+		w.keep(context.Background(), f)
+	}
+	return steps
 }
 
 // keep забирає файл результату з робочої теки машини (для артефактів і звірки між платформами).

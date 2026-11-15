@@ -53,6 +53,9 @@ Principles:
   policy without rebuilding.
 - **The module is read-only.** It runs on a read-only buffer in the middle of a scan and never writes.
   Disarm happens in the CLI layer (`cli/yara.c` → `disarm.c`) **after** the scan, once the file is closed.
+- **A hostile document is never parsed with SYSTEM rights.** On Windows `yara64` splits into a broker and a
+  worker (the same exe): everything that touches document bytes runs in the worker without rights (sandbox,
+  §4.11); only the broker, which parses nothing, writes files.
 - **Type by magic bytes**, not by extension (an `invoice.pdf` that is really a docx is OOXML).
 - **No XML parser.** `.rels`/`document.xml` are parsed by token search — safer for untrusted input.
   Every binary read is bounds-checked.
@@ -64,81 +67,100 @@ Principles:
 
 ## 2. Overall diagram
 
+On Windows one and the same `yara64.exe` runs in two roles (§4.11): the **broker** (the process the watcher
+starts, SYSTEM) parses nothing, and the **worker** (the same exe with `--docscan-worker`) parses the document in a
+sandbox and only tells the broker what to write. On macOS / Linux and for a folder or a file list everything runs
+in one process — the same flow, just without the broker.
+
 ```mermaid
 flowchart TD
-    FS([New file in the system]) --> W[docscan-watcher.ps1<br/>FileSystemWatcher]
+    FS([New file in the system]) --> W[docscan-watcher.ps1 · SYSTEM<br/>FileSystemWatcher]
     W --> CAT{extension}
     CAT -->|Office / RTF / PDF / LNK<br/>+ odt ods odp txt csv on third-pass PCs| DOC[document]
     CAT -->|exe dll ps1 js hta zip iso ...| GEN[general]
     CAT -->|other| IGN([ignored])
     DOC --> Y[yara64 -w --docscan-json --docscan-disarm<br/>--docscan-extract macros<br/>+ --critical-rules / --critical-out on third-pass PCs]
     GEN --> Y2[yara64 -w --docscan-json]
+    Y & Y2 --> B[BROKER · SYSTEM<br/>parses nothing<br/>remembers the file size and time]
+    B -->|starts itself as the worker:<br/>the same arguments + pipe| WK
 
-    Y --> D[Rules: rules.yarc<br/>docscan-policy.yar + file-index.yar]
-    Y2 --> D
-    D --> E[PASS 1: scan the file -> module_load docscan]
+    subgraph SB[WORKER · sandbox: Users-level token · untrusted · no privileges · job object]
+        WK[yara64 --docscan-worker=pipe<br/>before the lockdown: rules.yarc<br/>docscan-policy.yar + file-index.yar<br/>+ the file mapped into memory] --> LD[lockdown: RevertToSelf<br/>from now on it cannot write or start anything]
+        LD --> E[PASS 1: scan from memory -> module_load docscan]
 
-    subgraph M[docscan module · FACTS]
-        E --> F{magic.c<br/>type by bytes}
-        F -->|PK zip| G1[inspect_ooxml.c<br/>zip.c + rels.c]
-        F -->|D0CF11E0| G2[inspect_ole.c<br/>cfb.c + oleobj.c]
-        F -->|curly-rtf| G3[inspect_rtf.c]
-        F -->|%PDF| G4[inspect_pdf.c]
-        F -->|4C000000| G5[lnk.c]
-        G1 -->|vbaProject.bin| V[vba.c + msovba.c<br/>VBA decompression]
-        G2 --> V
-        G1 & G2 & G3 & G4 & G5 & V --> R[vba_code · parts · external_rels · dde<br/>packages · activex · evidence]
+        subgraph M[docscan module · FACTS]
+            E --> F{magic.c<br/>type by bytes}
+            F -->|PK zip| G1[inspect_ooxml.c<br/>zip.c + rels.c]
+            F -->|D0CF11E0| G2[inspect_ole.c<br/>cfb.c + oleobj.c]
+            F -->|curly-rtf| G3[inspect_rtf.c]
+            F -->|%PDF| G4[inspect_pdf.c]
+            F -->|4C000000| G5[lnk.c]
+            G1 -->|vbaProject.bin| V[vba.c + msovba.c<br/>VBA decompression]
+            G2 --> V
+            G1 & G2 & G3 & G4 & G5 & V --> R[vba_code · parts · external_rels · dde<br/>packages · activex · evidence]
+        end
+
+        R --> CAP[MODULE_IMPORTED: copy of the facts]
+        R --> P[Rules on the file]
+        P -->|meta.severity| POL[POLICY<br/>findings · verdict · meta.disarm]
+        P -->|no meta.severity| VEN[vendor rules<br/>yara_file_matches]
+        CAP --> L2[PASS 2: the same rules<br/>on the VBA code -> yara_matches<br/>on the parts -> yara_part_matches]
+        POL & VEN & L2 --> J[/JSON line/]
+        CAP --> RX[record X: VBA code]
+
+        J --> C3{PASS 3<br/>on?}
+        C3 -->|yes| T[text.c: text + metadata<br/>copy: lowercase, single spaces]
+        T --> CR{E5Search rule<br/>phrases?}
+        CR -->|yes| RC[critical.c: fragments 700/120 + JSON<br/>record C]
+        C3 -->|no| H
+        CR -->|no| H
+        RC --> H{--docscan-disarm and<br/>meta.disarm or HIGH?}
+        H -->|yes| PL[disarm_plan: what to do<br/>+ cured bytes in memory<br/>record D]
     end
 
-    R --> CAP[MODULE_IMPORTED: copy of the facts]
-    R --> P[Rules on the file]
-    P -->|meta.severity| POL[POLICY<br/>findings · verdict · meta.disarm]
-    P -->|no meta.severity| VEN[vendor rules<br/>yara_file_matches]
-    CAP --> L2[PASS 2: the same rules<br/>on the VBA code -> yara_matches<br/>on the parts -> yara_part_matches]
-    CAP --> MAC[VBA code -> macros/sha256.vba.txt<br/>+ a copy POSTed to the server]
-    POL & VEN & L2 --> J[/JSON line/]
-
-    J --> C3{PASS 3<br/>on?}
-    C3 -->|yes| T[text.c: text + metadata<br/>copy: lowercase, single spaces]
-    T --> CR{E5Search rule<br/>phrases?}
-    CR -->|yes| Q[critical.c: fragments 700/120 + JSON<br/>-> a line in critical/critical.json]
+    J -->|stdout| B2[BROKER applies the records from the pipe]
+    RX & RC & PL -->|result pipe| B2
+    B2 -->|X| MAC[--docscan-extract file -> watcher:<br/>macros/sha256.vba.txt + a copy POSTed to the server]
+    B2 -->|C| Q[a line in critical/critical.json]
     Q --> OW[another watcher: takes the file<br/>by renaming it -> E5Search]
-    C3 -->|no| H
-    CR -->|no| H
-    Q --> H{--docscan-disarm and<br/>meta.disarm or HIGH?}
-    H -->|yes| X[disarm.c: backup -> disarm]
+    B2 -->|D| CH{file changed<br/>since the start?}
+    CH -->|yes| FC[/failed:changed - the watcher retries/]
+    CH -->|no| X[disarm_apply: backup -> replace / delete]
     X --> OUT2[/docscan-disarm: path -> action/]
-    J & OUT2 --> REC[watcher: JSON line + macro + critical<br/>results/docscan-results.json -> Wazuh]
+    B2 & OUT2 & FC & MAC --> REC[watcher: JSON line + macro + critical<br/>results/docscan-results.json -> Wazuh]
 ```
 
 ### The same as text
 
 ```
- new file ──► watcher ──► yara64 -w --docscan-json [--docscan-disarm] [--docscan-extract] [--critical-*] -C rules.yarc <file>
-                               │
-     ┌─────────────────────────▼───────────────────────────────┐
-     │ PASS 1 · docscan MODULE — FACTS only (read-only)        │
-     │  magic ─► ooxml │ ole │ rtf │ pdf │ lnk                  │
-     │  vbaProject.bin ─► CFB ─► MS-OVBA ─► vba_code            │
-     │  parts[] · external_rels[] · dde[] · packages · lnk      │
-     └──────────┬──────────────────────────────────────────────┘
-                │ docscan-index.yar rules on the file
-     ┌──────────┴───────────────┬─────────────────────────────┐
-     ▼                          ▼                             ▼
- POLICY (meta.severity)     vendor rules on the file     PASS 2: the same rules
- findings, verdict, details  yara_file_matches            on vba_code → yara_matches,
- meta.disarm → what to cure                               on parts[] → yara_part_matches
-     └──────────────► {JSON}         vba_code ──► macros\<sha256>.vba.txt (+ copy to the server)
-                        │
-                        ▼  PASS 3 (only the lawyer / accountant / HR PCs), before disarm
-              text.c: document text ─► copy (lowercase, single spaces) ─► E5Search rules
-                        │ match                                     │ no match
-                        ▼                                           ▼
-              critical.c: fragments + JSON ─► critical\critical.json ─► another watcher ─► E5Search
-                        │
-                        ▼
-              disarm (disarm.c): docscan-disarm: ... -> action | detect-only
-                        └──► watcher: results\docscan-results.json (+ macro, critical) ─► Wazuh
+ new file ──► watcher (SYSTEM) ──► yara64 -w --docscan-json [--docscan-disarm] [--docscan-extract] [--critical-*] -C rules.yarc <file>
+                                     │
+                     BROKER (SYSTEM, Windows): parses nothing; starts itself as the worker
+                                     │  yara64 --docscan-worker=<pipe> <the same arguments>
+     ┌───────────────────────────────▼─────────────────────────────────────────────────────┐
+     │ WORKER — sandbox: Users-level token, untrusted, no privileges, job object            │
+     │  before the lockdown: rules + file into memory ─► RevertToSelf ─► memory only        │
+     │                                                                                     │
+     │  PASS 1 · docscan MODULE — FACTS only (read-only)                                    │
+     │   magic ─► ooxml │ ole │ rtf │ pdf │ lnk;  vbaProject.bin ─► CFB ─► MS-OVBA ─► vba_code │
+     │   parts[] · external_rels[] · dde[] · packages · lnk                                 │
+     │            │ docscan-index.yar rules on the file                                     │
+     │   POLICY (meta.severity) · vendor rules on the file · PASS 2 (VBA, parts[])          │
+     │            └──► {JSON} ─► stdout                     vba_code ─► record X            │
+     │   PASS 3 (only the lawyer / accountant / HR PCs): text ─► E5Search rules             │
+     │            match ─► fragments + JSON ─► record C                                     │
+     │   DISARM — plan only: action + cured bytes in memory ─► record D                     │
+     └───────────────────────────────┬─────────────────────────────────────────────────────┘
+                                     │ stdout + result pipe
+                     BROKER applies the records:
+                       X ─► the --docscan-extract file (watcher: macros\<sha256>.vba.txt + copy to the server)
+                       C ─► a line in critical\critical.json ─► another watcher ─► E5Search
+                       D ─► file unchanged? ─► backup ─► replace / delete ─► docscan-disarm: ... -> action
+                                              changed ─► failed:changed (the watcher retries)
+                                     │
+                                     └──► watcher: results\docscan-results.json (+ macro, critical) ─► Wazuh
+
+ macOS / Linux, a folder, a file list, --docscan-no-sandbox: the same in one process, no broker, no records.
 ```
 
 ## 3. File map
@@ -163,12 +185,14 @@ libyara/modules/docscan/            MODULE (C, built into libyara)
   oleobj.c                          objects in CFB (Package, Equation, ActiveX, XLM) + parts for Layer 2
   text.c                            document text + metadata for critical information (third pass)
   critical.c                        search copy, SHA-256, fragments, JSON for the E5Search queue
-libyara/include/yara/docscan_disarm.h   disarm contract (docscan_disarm_info, docscan_disarm)
+libyara/include/yara/docscan_disarm.h   disarm contract (docscan_disarm_info, docscan_disarm, _plan / _apply)
 libyara/include/yara/docscan_critical.h third-pass contract (docscan_text_extract, docscan_critical_json, ...)
 libyara/modules/module_list         + MODULE(docscan)
-Makefile.am                         + 18 lines MODULES += .../docscan/*.c
+Makefile.am                         + 18 lines MODULES += .../docscan/*.c; cli/docscan_sandbox.{c,h} in yara_SOURCES
 windows/vs20{15,17,19}/libyara/libyara.vcxproj   + the same 18 docscan ClCompile entries
+windows/vs2019/yara/yara.vcxproj    + cli/docscan_sandbox.c, /DELAYLOAD user32 / crypt32 / ws2_32 (§4.11)
 cli/yara.c                          + --docscan-json/-extract/-disarm, --file-vars, --critical-* flags, JSON, Layer 2, do_disarm, critical_process
+cli/docscan_sandbox.{c,h}           SANDBOX (Windows): broker / worker, tokens, job object, records X C D (§4.11)
 
 docscan-project/
   SCAN-FLOW.md / SCAN-FLOW.en.md    this document (Ukrainian / English)
@@ -181,16 +205,17 @@ docscan-project/
   watcher/docscan-watcher.ps1       auto-scan of new files → results\docscan-results.json
   deploy/                           deployment package: build_package.ps1, install.ps1, uninstall.ps1, README.txt,
                                     DocScan-Setup.ps1 (irm | iex), DocScan-Install.ps1, manager/ (Wazuh)
-  fuzz/                             libFuzzer: 2 fuzzers, dictionary, corpus, build.sh, regressions/
+  fuzz/                             libFuzzer: 2 fuzzers, dictionary, corpus, build.sh, build_windows.ps1, regressions/ (8)
+  ci/                               one-button CI: cirun (Go), build-test-unix.sh, check_verdicts, expected-verdicts.tsv (ci/README.md)
   test-critical/                    third-pass tests: run_tests.py, the E5Search corpus (md2office, eval_corpus),
                                     the "compote" (mix_corpus, eval_mix), hostile files (hostile, hostile_run)
   test-range/
     run_tests.ps1                   regression test (copy → detect+disarm → re-scan)
     gen_range.ps1                   test-range generator (Windows + Word COM)
-    gen_test_range.py               quick synthetic generator (no Office)
+    gen_test_range.py               quick synthetic generator (no Office); its output range/ is not in git
   test-samples/                     ORIGINAL test set (never disarm in place!)
     provided/  (7)                  real customer samples (live C2) — NOT in git
-    generated/ (24)                 safe test range, one file per vector
+    generated/ (42)                 safe test range, one file per vector (reference: ci/expected-verdicts.tsv)
   vendor-sources/                   git clones of the vendor rule sources at pinned commits — not in git
 ```
 
@@ -445,7 +470,7 @@ memory (`mz_zip_writer_init_heap`) and written by our `write_file` — miniz's f
 | `--docscan-extract=FILE` | `docscan_extract_utf8` | writes the decompressed `vba_code` to FILE (before disarm); the watcher keeps the macro code this way (`macros\`) (UTF-8 path; on Windows taken from the original Unicode arguments, like `--docscan-backup-dir`) |
 | `--docscan-disarm` | `docscan_disarm_flag` | after the scan, disarms the file according to `meta.disarm` of the matching rules; HIGH without actions → `detect-only` |
 | `--docscan-backup-dir=DIR` | `docscan_backup_dir_utf8` | backups and quarantine go to DIR (must exist). On Windows the value is taken from the original Unicode arguments (YARA's parser hands string options over as ANSI — Cyrillic would be lost) |
-| `--docscan-confine-check` | `docscan_worker_confine_check` + `confine_lines` | Windows: test of the sandbox (§4.11). After the lockdown the worker tries to read its own exe and `%WINDIR%\win.ini`, write to `%TEMP%` and `C:\ProgramData`, open `HKLM\SOFTWARE`, start `cmd.exe` — **all must be blocked**, integrity untrusted, ≤ 1 privilege; the broker: job object, privileges removed, `cmd.exe` blocked. `RESULT: CONFINED` (exit 0). CI step `confine` on every Windows machine |
+| `--docscan-confine-check` | `docscan_worker_confine_check` + `confine_lines` | Windows: test of the sandbox (§4.11). After the lockdown the worker tries to read a private file (the broker creates it readable only by SYSTEM and Administrators — like a document in someone else's profile; the path is in `DOCSCAN_PROBE_SECRET`), write to `%TEMP%` and `C:\ProgramData`, create a key under `HKLM\SOFTWARE`, read `HKLM\SAM`, start `cmd.exe` — **all must be blocked** (reading its own exe is only reported: the worker may read world-readable files), integrity untrusted, ≤ 1 privilege; the broker: job object, privileges removed, `cmd.exe` blocked. `RESULT: CONFINED` (exit 0). CI step `confine` on every Windows machine |
 | `--docscan-no-sandbox` | `docscan_no_sandbox` | Windows, diagnostics: parse in this process (only the job object + removed privileges, as before the sandbox) |
 | `--docscan-worker=PIPE` | `docscan_worker_arg` | **internal**: how the broker starts the worker (handle number of the result pipe); never called by hand |
 | `--critical-rules=FILE` | `critical_rules` | third pass: the E5Search rules (a separate set, compiled at start), matched against the document **text** (§15) |
@@ -467,6 +492,10 @@ the JSON is printed at `SCAN_FINISHED`, when everything is known.
 - `CALLBACK_MSG_SCAN_FINISHED` → `print_docscan_json`.
 - After `yr_scanner_scan_file` (single- and multi-threaded path): with `--critical-rules` — `critical_process`
   (on the original, **before** disarm); then `--docscan-disarm` and (a policy action **or** a HIGH verdict) → `do_disarm`.
+- **In the worker** (Windows, §4.11) the same functions work differently: `scan_file` scans the file mapped into
+  memory (`yr_scanner_scan_mem`), `--docscan-extract` → record `X`, `critical_process` takes the file bytes and
+  times from the worker and sends record `C`, `do_disarm` only plans (`docscan_disarm_plan`) and sends record `D`.
+  The broker writes the files.
 
 **Functions:**
 
@@ -479,7 +508,9 @@ the JSON is printed at `SCAN_FINISHED`, when everything is known.
 | `vendor_match_cb(...)` | Second-scanner callback: adds rules **without** `meta.severity` (the policy describes documents, not VBA text). |
 | `docscan_json_evidence` / `docscan_defang` / `docscan_json_puts` | Evidence printing with defang (`http`→`hxxp`) and JSON escaping. |
 | `docscan_list_add` / `docscan_list_has` / `docscan_state_reset` / `docscan_copy_string` | Helpers: JSON lists, state reset (frees the VBA copy), copying module strings. |
-| `do_disarm(file_path, ds)` | `docscan_disarm` + the line `docscan-disarm: <path> -> <action>`; on Windows Unicode — wide→UTF-8. |
+| `do_disarm(file_path, ds)` | `docscan_disarm` + the line `docscan-disarm: <path> -> <action>`; on Windows Unicode — wide→UTF-8. In the worker — `docscan_disarm_plan` over the bytes in memory and record `D` (the broker prints the line). |
+| `file_vars_set(scanner, path, head, head_len)` | THOR/LOKI variables for the file; `filetype` from the first bytes `head` (in the worker the file is already in memory and is not opened again). |
+| `docscan_worker_warmup()` | Worker, before the lockdown: runs a `hash.*` rule once so OpenSSL initialises while file access still works. |
 | `critical_setup()` | Checks `--critical-out`/`--critical-chunk`, reads and compiles `--critical-rules` with a separate compiler. |
 | `critical_process(file_path)` | Third pass: the file (≤ 100 MB) → `docscan_text_extract` → the search copy → `yr_rules_scan_mem` over it → fragments + JSON → a line in the queue (under `output_mutex`) and `docscan-critical: queued fragments=N rules=…` on stdout. Skipped — `docscan-critical: skipped (<reason>)` on stderr. |
 | `critical_callback(...)` | Names of the matched rules and `e5_chunk_size`/`e5_chunk_overlap` from the first rule that has them. |
@@ -532,7 +563,7 @@ watcher ── yara64 --docscan-json [--docscan-disarm ...] file         ← the
 
 | What | How |
 |---|---|
-| **Worker token** | `CreateRestrictedToken`, restricting SIDs **Users, Everyone, Authenticated Users, RESTRICTED**: every access check is done twice, the second time with these SIDs only, so after the lockdown the worker **reads only what any ordinary user may read** (System32, Program Files) but **not** user profiles, the DocScan folders, SAM; integrity **untrusted** (the worker lowers it itself) → **it cannot write anything** (files, registry); no privileges (only `SeChangeNotify`); job object → no process. It opens the document and the rules before the lockdown through impersonation. At start it also holds `SeImpersonate` — so that Windows does not downgrade the impersonation; the worker removes it itself before it touches the document. **Full lockdown** (the NULL SID as the only restricting SID: nothing readable, as in Chrome) does not start yet — the process dies with `0xC0000142` before `main`; the `confine` step starts such a worker under the debugger (every DLL, exception, exit code) — the next step. **Initial token** (impersonation until the lockdown) — restricting SIDs: the user + every enabled group + RESTRICTED |
+| **Worker token** | `CreateRestrictedToken`, restricting SIDs **Users, Everyone, Authenticated Users, RESTRICTED**: every access check is done twice, the second time with these SIDs only, so after the lockdown the worker **reads only what any ordinary user may read** (System32, Program Files) but **not** user profiles, the DocScan folders, SAM; integrity **untrusted** (the worker lowers it itself) → **it cannot write anything** (files, registry); no privileges (only `SeChangeNotify`); job object → no process. It opens the document and the rules before the lockdown through impersonation. At start it also holds `SeImpersonate` — so that Windows does not downgrade the impersonation; the worker removes it itself before it touches the document. **Full lockdown** (the NULL SID as the only restricting SID: nothing readable, as in Chrome) does not start — the process dies with `0xC0000142` in the KernelBase initialisation, before `main`. **Decision (2026-11-14): we keep the Users level** — the worker still cannot write, start or read anything from user profiles and the DocScan folders; a full lockdown would only add a ban on reading files every user may read. The diagnostics for coming back to it stay: `--docscan-confine-check` prints which token combinations start (`probe_matrix`) and runs the NULL-SID worker under the debugger (`probe_debug`: DLLs, exceptions, exit code) — visible in the log of the CI step `confine`. **Initial token** (impersonation until the lockdown) — restricting SIDs: the user + every enabled group + RESTRICTED |
 | **Worker start** | `CreateProcessAsUserW` (suspended) → job object (1 active process, UI limits, `KILL_ON_JOB_CLOSE`) → `SetThreadToken` on the main thread with the "initial" token (restricted but with the broker's access: Windows lets a restricted process impersonate only a restricted token; **not elevated** — `Administrators` deny-only, no privileges: a non-elevated process cannot impersonate an elevated token of the same user, Windows silently downgrades it to "identification" and the process dies with `0xC0000142`; file access comes from the SYSTEM user SID) → `ResumeThread`. So the worker loads its DLLs and rules and opens the file; then `RevertToSelf()` and a check that it no longer impersonates |
 | **One loader thread** | the Windows 10+ loader maps a new process's DLLs in parallel on worker threads; they **do not impersonate** — they run with the lockdown token, open no DLL, and the process dies with `0xC0000142` although the main thread's impersonation works (level 2). The broker writes `RTL_USER_PROCESS_PARAMETERS.LoaderThreads = 1` (the same as the `MaxLoaderThreads` option) into the suspended worker: only the main thread loads DLLs |
 | **What the worker inherits** | exactly 4 handles (`PROC_THREAD_ATTRIBUTE_HANDLE_LIST`): `NUL` as stdin, the stdout / stderr / result pipes |
@@ -554,6 +585,10 @@ verdicts must match the Mac (no sandbox there) exactly.
 1. **Preparation.** The original is never touched: for manual tests use a copy `work.<ext>`
    (`run_tests.ps1` does this itself and compares the originals' SHA256). The watcher scans the file in place.
 2. **Rule compilation.** `docscan-index.yar` = `docscan-policy.yar` + `file-index.yar` → `g_rules`.
+2a. **Sandbox (Windows, one file).** `yara64` becomes the broker and starts itself as the worker (§4.11); steps
+   3–7 (parsing, rules, text, disarm plan) run in the worker from memory, and the files — the macro dump, the
+   queue line, the backup and the replacement — are written by the broker from records `X` / `C` / `D`. On
+   macOS / Linux and for a folder — one process.
 3. **Module.** `module_load`: magic → inspector → facts and flags (see §4). The facts are copied in the CLI.
 4. **Rules on the file.** Policy rules (`meta.severity`) → findings, verdict, disarm actions; other
    rules → `yara_file_matches`, rules tagged `docscan_info` → `yara_info_matches`.
@@ -587,6 +622,7 @@ verdicts must match the Mac (no sandbox there) exactly.
    | any | OOXML with an unreadable / > 64 MB part | cure aborted | `failed:unreadable-part` |
    | any | OOXML: the original could not be replaced (file open in Word) | original untouched, temp file removed; the watcher retries later | `failed:replace` |
    | any | the cured file could not be written (OOXML temp / RTF) | original untouched | `failed:write` |
+   | any | Windows: the file changed between the worker start and the disarm (size or modification time) | nothing is touched; the watcher retries | `failed:changed` |
 
    Any action: if the backup fails → `failed:backup`, the file is not changed. An action that does not fit the file type is ignored.
 8. **Check.** Re-scan the disarmed copy → expect `INFO` (LNK gone, PDF stays HIGH).
@@ -1050,7 +1086,7 @@ then `autoreconf` + `configure` (macOS).
 
 ## 10. Testing
 
-### Test set `docscan-project/test-samples/` (31 files: 24 in `generated/` + 7 in `provided/`, originals)
+### Test set `docscan-project/test-samples/` (49 files: 42 in `generated/` + 7 in `provided/`, originals)
 
 `provided/` — real customer samples (all point to one internal C2; not in git):
 
@@ -1064,42 +1100,91 @@ then `autoreconf` + `configure` (macOS).
 | `Platizhka_315368.pdf` | `/OpenAction` + `/JavaScript` | PDF_JS_AUTO, HIGH |
 | `Rakhunok-faktura_315368.pdf.lnk` | LNK → powershell -w Hidden IEX DownloadString | LNK_URL_ARGS + LNK_OBFUSCATED + LNK_LOLBIN, HIGH |
 
-`generated/` — safe test range (`gen_range.ps1`; inert macros, URLs to `malware-test.local`):
+`generated/` — safe test range (`gen_test_range.py`, some from `gen_range.ps1`; inert macros, URLs to
+`malware-test.local` / `docscan-test.invalid`). **Reference — `docscan-project/ci/expected-verdicts.tsv`**; CI
+checks it on every platform (`check_verdicts.py` / `.ps1`): verdict, disarm action, re-scan of the cured copy,
+originals unchanged. Changed only on purpose (`check_verdicts.py --write`).
 
-| File | Expected |
-|---|---|
-| `remote_template.docx` | REMOTE_TEMPLATE, HIGH |
-| `protocol_handler.docx` | PROTOCOL_HANDLER, HIGH |
-| `dde_auto.docx` | DDE_AUTO, HIGH |
-| `dde_link.docx` | DDE_LINK (`DDE cmd.exe /c …`, not AUTO), HIGH |
-| `dde_split.docx` | DDE_AUTO (`DDE` + `AUTO cmd.exe …` in two `<w:instrText>`), HIGH |
-| `excel_dde_formula.xlsx` | DDE_LINK (formula `cmd\|' /C notepad.exe'!A0`), HIGH |
-| `excel_ddelink.xlsx` | DDE_LINK (`<ddeLink ddeService="cmd" ddeTopic="/c notepad.exe">`), HIGH |
-| `external_ole.docx` | EXTERNAL_OLE, **MEDIUM** |
-| `embedded_pe.docx` | EMBEDDED_PE, HIGH |
-| `embedded_lnk.docx` | EMBEDDED_LNK, HIGH |
-| `macro_suspicious.docm` | MACRO_SUSPICIOUS + MACRO_PRESENT, HIGH |
-| `vendor_shellexec.docm` | same + Layer 2 `gen_macro_ShellExecute_action` |
-| `rtf_objupdate.rtf` | RTF_OBJUPDATE, HIGH |
-| `pdf_js_auto.pdf` | PDF_JS_AUTO, HIGH |
-| `pdf_launch.pdf` | PDF_LAUNCH + PDF_OPENACTION, HIGH |
-| `lnk_lolbin.lnk` | LNK_URL_ARGS + LNK_OBFUSCATED + LNK_LOLBIN, HIGH |
+| File | What it tests | Verdict | Disarm | After |
+|---|---|---|---|---|
+| `activex_control.docx` | ActiveX — browser control (detect only) | HIGH | detect-only | HIGH |
+| `altchunk.docx` | altChunk (CVE-2023-36884) | MEDIUM | - | MEDIUM |
+| `archive_broken.zip` | malformed ZIP with a `.pdf.lnk` shortcut (names from the central directory) | HIGH | quarantined | DELETED |
+| `archive_clean.zip` | ordinary archive with a report (PivotTable macro) | INFO | - | INFO |
+| `archive_docm.zip` | archive with a macro document that runs programs | HIGH | quarantined | DELETED |
+| `archive_encrypted.zip` | password-protected archive | INFO | - | INFO |
+| `archive_exe.zip` | program in an archive (inert stub) | MEDIUM | - | MEDIUM |
+| `archive_lnk.zip` | double-extension shortcut in an archive | HIGH | quarantined | DELETED |
+| `dde_auto.docx` | `DDEAUTO` | HIGH | stripped | INFO |
+| `dde_link.docx` | `DDE cmd.exe /c …` (not AUTO) | HIGH | stripped | INFO |
+| `dde_split.docx` | DDE split over two `<w:instrText>` | HIGH | stripped | INFO |
+| `embedded_lnk.docx` | embedded LNK | HIGH | removed | INFO |
+| `embedded_pe.docx` | embedded PE | HIGH | removed | INFO |
+| `encrypted.docx` | encrypted OOXML (false-positive regression) | INFO | - | INFO |
+| `encrypted_macro.xlsm` | encrypted file with a macro-enabled name — the macro cannot be checked | MEDIUM | - | MEDIUM |
+| `equation.rtf` | Equation Editor in RTF (CVE-2017-11882) | HIGH | quarantined | DELETED |
+| `equation_ole.docx` | Equation Editor in OOXML | HIGH | removed | INFO |
+| `excel_dde_formula.xlsx` | DDE formula `cmd\|' /C notepad.exe'!A0` | HIGH | stripped | INFO |
+| `excel_ddelink.xlsx` | `<ddeLink ddeService="cmd">` | HIGH | stripped | INFO |
+| `external_ole.docx` | external OLE object by URL | MEDIUM | - | MEDIUM |
+| `external_ole_local.docx` | chart linked to a local workbook (false-positive regression) | INFO | - | INFO |
+| `lnk_lolbin.lnk` | LNK → powershell with a URL and obfuscation | HIGH | deleted | DELETED |
+| `lnk_remote_exec.lnk` | LNK → an `.exe` on a network share | HIGH | deleted | DELETED |
+| `macro_deep_shell.docm` | `Shell` deep in a long module (> 4 KB) | HIGH | removed | INFO |
+| `macro_deleted.xls` | deleted macro (empty modules) | INFO | - | INFO |
+| `macro_empty_modules.xls` | empty sheet modules | INFO | - | INFO |
+| `macro_pike_mail.xlsm` | business report with a refresh macro (false-positive regression) | INFO | - | INFO |
+| `macro_pike_report.xls` | the same as `.xls` | INFO | - | INFO |
+| `macro_recorded.xls` | recorded macro without auto-run | INFO | - | INFO |
+| `macro_stomped.xls` | VBA stomping: p-code without source | MEDIUM | - | MEDIUM |
+| `macro_suspicious.docm` | AutoOpen + powershell / Shell / DownloadFile | HIGH | removed | INFO |
+| `package_script.docx` | OLE Package with a script | HIGH | removed | INFO |
+| `package_script.rtf` | OLE Package with a script in RTF | HIGH | quarantined | DELETED |
+| `pdf_js_auto.pdf` | `/OpenAction` + dangerous JavaScript | HIGH | quarantined | DELETED |
+| `pdf_launch.pdf` | `/Launch` | HIGH | quarantined | DELETED |
+| `protocol_handler.docx` | Follina, `ms-msdt:` | HIGH | removed | INFO |
+| `remote_template.docx` | remote template | HIGH | removed | INFO |
+| `rtf_objupdate.rtf` | `\objupdate` | HIGH | stripped | INFO |
+| `rtf_text_objupdate.rtf` | the word `\objupdate` in the document text (false-positive regression) | INFO | - | INFO |
+| `vendor_shellexec.docm` | macro + Layer 2 `gen_macro_ShellExecute_action` | HIGH | removed | INFO |
+| `xlm_macrosheet.xls` | Excel 4.0 macro sheet in `.xls` | MEDIUM | - | MEDIUM |
+| `xlm_macrosheet.xlsm` | Excel 4.0 macro sheet in `.xlsm` | MEDIUM | - | MEDIUM |
 
-### `test-range/run_tests.ps1` — regression
+Total: detection HIGH 25 / MEDIUM 7 / INFO 10; after disarm INFO 25 / MEDIUM 7 / HIGH 1 (`activex_control.docx` —
+detect only) / DELETED 9 (deleted or quarantined).
+
+### `test-range/run_tests.ps1` — manual regression
 For each file: copy → `work.<ext>`; run 1 `--docscan-json --docscan-disarm`; run 2 `--docscan-json`
 (check after disarm); delete the copy and backup. Table + JSON + summary; at the end the originals'
 SHA256 before/after. Parameters: `-Yara`, `-Rules`, `-Samples`, `-WorkDir`.
-The file is ASCII-only (English output), so no BOM / code page issues.
+The file is ASCII-only (English output), so no BOM / code page issues. For the daily check CI replaced it
+(next section); `run_tests.ps1` stays for a manual check on a workstation.
 
-**Reference result (31 files, since 2026-11-05):** detection HIGH 27 / MEDIUM 4; after disarm INFO 19 /
-MEDIUM 4 / HIGH 1 (`activex_control.docx` — detect only) / DELETED 7. New samples (step 4):
-`equation_ole.docx`, `package_script.docx`, `activex_control.docx`, `altchunk.docx`, `xlm_macrosheet.xlsm`,
-`equation.rtf`, `package_script.rtf`, `xlm_macrosheet.xls`.
+### CI — one button: every test on macOS and Windows
 
-Before (23 files): detection HIGH 22 / MEDIUM 1; after disarm INFO 17 / DELETED 5
-(2 LNK deleted, 3 PDF quarantined) / MEDIUM 1 (`external_ole`); originals unchanged; with
-`docscan-index.yar` `vendor_shellexec.docm` → `yara_matches:["gen_macro_ShellExecute_action"]`.
-Identical on macOS and Windows (MSVC).
+`go run -C docscan-project/ci/cirun .` (▷ in VS Code): commit with the public-repository check → build and tests
+on the Mac and on the Windows VM (WinRM) in parallel → **push to GitHub only after a green run**. The deployment
+set is built but not published (`deploy.publish: false`). Details — `docscan-project/ci/README.md`.
+
+| Step | What it checks | macOS | Windows VM |
+|---|---|---|---|
+| build | build (autotools / MSBuild) | ✓ | ✓ |
+| documents | 42 samples against the reference: verdict, disarm, re-scan | ✓ | ✓ (through the sandbox) |
+| confine | `--docscan-confine-check`: the worker cannot write, read private files or start anything | — | ✓ |
+| critical | third pass, 299 checks (`test-critical/run_tests.py`) | ✓ | ✓ |
+| hostile | 35 hostile / broken files — no crashes or hangs | ✓ | ✓ |
+| corpus | ~4,000 documents from public corpora (Apache POI, Apache Tika, pdf.js, plaso, LibreOffice, oletools, LNK); Mac and Windows verdicts must match exactly | ✓ | ✓ |
+| malware | **real** malware, 949 files (XMRig, EICAR, theZoo, InQuest, MalwareBazaar) — scan only; 437 required detections | ✓ | ✓ (deleted after the test) |
+| fuzz | regression inputs (`fuzz/regressions/`: 8, on Windows the 6 for the parsers) + 300 s of fuzzing with ASan + UBSan; seeds — every test file | both fuzzers | parsers fuzzer |
+
+**Combat test** (`cirun --combat`, Windows VM, ~2 h): the package is installed with `install.ps1` as on a
+workstation, and the installed watcher (SYSTEM) handles every test file that appears in a folder — 42 samples, the
+customer's real samples, malware, corpora (from the file server); `check_watcher.py` checks the
+`docscan-results.json` records against the references. Details — `ci/README.md`.
+
+The corpora and the malware are not in git: the Mac packs them into the private Forgejo package registry, the VM
+downloads them and deletes them after the tests. The E5Search corpus and rules (third pass) are not part of CI —
+they were checked separately (§10 "Verification history").
 
 ### Fuzzing (libFuzzer)
 
@@ -1122,7 +1207,9 @@ cd /tmp/docscan-fuzz
 ./docscan_parsers_fuzzer -dict=<repo>/docscan-project/fuzz/docscan.dict -max_len=262144 -max_total_time=900 corpus/parsers
 ./docscan_fuzzer         -dict=<repo>/docscan-project/fuzz/docscan.dict -max_len=262144 -max_total_time=900 corpus/module
 ```
-Findings are saved as `crash-*` / `oom-*` / `timeout-*`; reproduce with `./docscan_parsers_fuzzer <file>`.
+Findings are saved as `crash-*` / `oom-*` / `timeout-*` / `leak-*`; reproduce with `./docscan_parsers_fuzzer <file>`.
+`slow-unit-*` (one run over 10 s) is not a failure: CI only reports such a file and keeps it in the artifacts
+(on a busy VM this happens with an input the Mac handles in milliseconds).
 Once fixed, the input goes into `regressions/` with a descriptive name.
 `-fno-sanitize=function` is needed because upstream `hash.c:218` calls a destructor through a generic
 pointer type (not our code, but without the flag every run aborts before docscan is reached).
@@ -1137,10 +1224,13 @@ pointer type (not our code, but without the flag every run aborts before docscan
 | `parsers-asan-rels-missing-type` | `rels.c` | `<Relationship>` without `Type` → `strrchr` over an uninitialised stack buffer | buffers initialised to `""` |
 | `module-dos-zip-bomb` | `zip.c` | a 1.3 KB ZIP claims a 3 GB entry → miniz allocates 3 GB | entries > 64 MB (`DOCSCAN_ZIP_MAX_ENTRY`) are not decompressed |
 | `parsers-asan-disarm-remove-elements` | `disarm.c` | `strncmp` past the end of a non-NUL-terminated part | length-checked compare |
+| `parsers-ub-zip-empty-entry-name` (2026-11-13, CI) | `inspect_ooxml.c` | a ZIP entry with an empty name → `name[strlen(name) - 1]` reads the byte before the buffer | `name[0] == '\0'` check |
 
 Final runs after the fixes: module — 2.28 M inputs, parsers — 0.96 M inputs (15 min each), no findings.
 2026-11-07 (third pass, seed corpus — 552 real documents in 8 formats): 2 h — 6.0 M text-path inputs + 1.7 M module
 inputs, then 0.54 M more after the text-cap fix — no findings.
+Since 2026-11-13 fuzzing runs in every CI run (300 s per platform, Windows — `build_windows.ps1`);
+2026-11-14 on the Windows VM: 6/6 regressions, 139,740 runs, 0 crashes.
 
 ### Third-pass tests — `docscan-project/test-critical/`
 
@@ -1179,6 +1269,10 @@ python3 docscan-project/test-critical/run_tests.py --yara ./yara           # Win
   in the queue. 35 hostile files (Mac + Windows) — no crash, no hang. Cyrillic paths, an open document (queued once,
   disarmed after release), a race with the queue reader (184 = 184, 0 broken, 0 duplicates). Fuzzing 2 h (6.0 M
   text-path + 1.7 M module runs) — 0 crashes. Regression `run_tests.ps1` 31/31 unchanged.
+- **Full check on the Windows 11 VM via CI** (2026-11-14, commit `6f3f2c2b`, everything through the sandbox):
+  documents 42/42, confine (`CONFINED`; also as SYSTEM through a scheduled task), critical, hostile 35, corpus
+  ~4,000 (verdicts = Mac), malware 437/437, fuzz 6/6 regressions + 139,740 runs without crashes. The Mac — the same,
+  both fuzzers.
 - Policy in rules (2026-11-02, macOS): 19/19 verdicts (with `dde_link.docx` — 20/20) and disarm actions match the reference; false-positive test — see §6.1.
 - Watcher on the VM: 23 files in `inbox`/`Downloads` + documents dropped on the desktop by hand (2
   clean work reports → INFO, 3 samples → HIGH) — 2026-11-02. No false positives.
@@ -1372,6 +1466,15 @@ agent's `ossec.log` (`localfile` not picked up).
 **CLI**
 - `--docscan-json` suppresses the normal match output — vendor matches are in `yara_file_matches`.
 
+**Sandbox (Windows)**
+- Only for **one file** on the command line (that is how the watcher calls it). A folder, a file list
+  (`--scan-list`) and `--docscan-no-sandbox` are parsed in the `yara64` process with the job object and removed
+  privileges, but with the token of whoever started it.
+- The worker reads whatever any ordinary user may read (System32, Program Files); the full NULL-SID lockdown does
+  not start (`0xC0000142`) — we keep the Users level on purpose (§4.11).
+- One more process per file — tens of ms; worker timeout — `--timeout` + 30 s (at most 630 s).
+- `LoaderThreads = 1` is written into the process parameters at a structure offset — x64 only.
+
 **Watcher**
 - Defender in ordinary folders may remove a malicious file first → the log says `gone before scan`, and there is no JSON record.
 - Scans happen only when a file **appears or changes** (Created / Changed / Renamed), not when it is opened or run.
@@ -1411,9 +1514,9 @@ git push docscan feature/docscan-module
 
 **Never published** (`.gitignore`): `docscan-project/test-samples/provided/` (live customer samples,
 internal C2), `attack-vectors`, `docscan-project/vendor-sources/` (rule source clones), `.claude/`,
-`docscan-project/test-range/samples/`, `docscan-project/fuzz/external/`, `docscan-project/dist/`, `*.docscan-bak`, `*.docscan-tmp`. The upstream rule
+`docscan-project/test-range/samples/`, `docscan-project/test-range/range/` (generator output), `docscan-project/fuzz/external/`, `docscan-project/dist/`, `docscan-project/ci/config.yaml` (internal addresses), `ci-out/`, `*.docscan-bak`, `*.docscan-tmp`. Also kept out of the repository: real malware (`~/docscan-ci/malware`), the E5Search corpus and rules. The upstream rule
 `test-*[^.c]` hides the `test-range`/`test-samples` folders — `.gitignore` re-includes them explicitly.
-The repository is public: before every push check that there are no internal IPs, host names or credentials.
+The repository is public: before every commit cirun checks that there are no internal IPs, host names or credentials (ci/README.md); only a commit after a green CI run reaches GitHub.
 
 Upstream will not accept such a module: YARA is in maintenance mode and new work goes into YARA-X
 (Rust, modules via Protobuf). The only official path is porting the logic to YARA-X (a separate task).
