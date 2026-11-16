@@ -449,7 +449,11 @@ rule DS_RTF_OBJUPDATE
 }
 
 // ================================= PDF =====================================
-// Raw-byte search, like the module (objects inside compressed streams are not seen).
+// The facts come from the docscan module (inspect_pdf.c): it reads REAL PDF names (/JS, /JavaScript,
+// /OpenAction, /AA, /Launch, /EmbeddedFile(s), #xx escapes decoded) and skips stream data, comments and
+// strings. Plain string search ("/JS", "/AA") matched bytes inside compressed images and font names such as
+// /AAAAAA+SegoeUI - false PDF_JS on ordinary PDFs (2026-11-16). Objects inside COMPRESSED object streams
+// are still not seen. The dangerous-API list for PDF_JS_AUTO is in the module (pdf_has_dangerous_js).
 
 rule DS_PDF_LAUNCH
 {
@@ -458,12 +462,11 @@ rule DS_PDF_LAUNCH
     text     = "PDF з дією /Launch: запуск зовнішньої програми"
     finding  = "PDF_LAUNCH"
     disarm   = "quarantine"   // a PDF cannot be cured in place
-  strings:
-    $launch = "/Launch"
   condition:
-    docscan.is_pdf == 1 and $launch
+    docscan.is_pdf == 1 and docscan.pdf_launch == 1
 }
 
+// JavaScript + an exploit / exec API (app.launchURL, exportDataObject, eval(, unescape(, powershell, ...)
 rule DS_PDF_JS_AUTO
 {
   meta:
@@ -471,33 +474,8 @@ rule DS_PDF_JS_AUTO
     text     = "PDF з JavaScript, що використовує небезпечні функції"
     finding  = "PDF_JS_AUTO"
     disarm   = "quarantine"
-  strings:
-    $js1  = "/JavaScript"
-    $js2  = "/JS"
-    $api1 = "app.launchURL"
-    $api2 = "exportDataObject"
-    $api3 = "importDataObject"
-    $api4 = "getAnnots"
-    $api5 = "submitForm"
-    $api6 = "Collab."
-    $api7 = "util.printf"
-    $api8 = "getIcon"
-    $api9 = "media.newPlayer"
-    $apia = "eval("
-    $apib = "unescape("
-    $apic = "String.fromCharCode"
-    $apid = ".exe"
-    $apie = "powershell"
-    $apif = "cmd.exe"
-    $apig = "rundll32"
-    $apih = "mshta"
-    $apii = "certutil"
-    $apij = "Net.HTTP"
-    $apik = "SOAP."
-    $apil = "heapLib"
-    $apim = "shellcode"
   condition:
-    docscan.is_pdf == 1 and any of ($js*) and any of ($api*)
+    docscan.is_pdf == 1 and docscan.pdf_js_auto == 1
 }
 
 rule DS_PDF_JS
@@ -506,11 +484,8 @@ rule DS_PDF_JS
     severity = "MEDIUM"
     text     = "PDF містить JavaScript"
     finding  = "PDF_JS"
-  strings:
-    $js1 = "/JavaScript"
-    $js2 = "/JS"
   condition:
-    docscan.is_pdf == 1 and any of them and not DS_PDF_JS_AUTO
+    docscan.is_pdf == 1 and docscan.pdf_js == 1 and not DS_PDF_JS_AUTO
 }
 
 // /OpenAction or /AA without JavaScript usually just sets the start page/zoom (very common in
@@ -522,13 +497,8 @@ rule DS_PDF_OPENACTION
     severity = "INFO"
     text     = "PDF з автоматичною дією при відкритті (без JavaScript)"
     finding  = "PDF_OPENACTION"
-  strings:
-    $oa  = "/OpenAction"
-    $aa  = "/AA"
-    $js1 = "/JavaScript"
-    $js2 = "/JS"
   condition:
-    docscan.is_pdf == 1 and ($oa or $aa) and not any of ($js*)
+    docscan.is_pdf == 1 and docscan.pdf_openaction == 1
 }
 
 rule DS_PDF_EMBEDDED
@@ -537,10 +507,8 @@ rule DS_PDF_EMBEDDED
     severity = "MEDIUM"
     text     = "PDF містить вкладений файл"
     finding  = "PDF_EMBEDDED"
-  strings:
-    $emb = "/EmbeddedFile"
   condition:
-    docscan.is_pdf == 1 and $emb
+    docscan.is_pdf == 1 and docscan.pdf_embedded == 1
 }
 
 // ========================= EMBEDDED OBJECTS ===============================

@@ -8,7 +8,8 @@ only files under --inbox) and checks them against the test files in --src/<set>/
   -CriticalExt with the third pass on) has a record and no ERROR;
   generated - verdict, disarm action and the verdict after disarm as in expected-verdicts.tsv;
   provided  - the customer's real samples: HIGH;
-  malware   - every path of malware/expected.txt the watcher scans is detected (MEDIUM / HIGH or a vendor
+  malware   - (malware/clean.txt: clean documents that once gave a false alarm stay INFO, no vendor match)
+              every path of malware/expected.txt the watcher scans is detected (MEDIUM / HIGH or a vendor
               rule); paths it does not scan because of the extension are listed, not failed;
   corpus    - the policy verdict equals the one of the direct scan (--corpus-verdicts, the corpus step).
 
@@ -100,7 +101,7 @@ def main():
         root = os.path.join(a.src, s)
         for dp, _, names in os.walk(root):
             for n in names:
-                if n == "expected.txt" and s == "malware":
+                if n in ("expected.txt", "clean.txt") and s == "malware":
                     continue
                 full = os.path.join(dp, n)
                 rel = os.path.normcase(os.path.relpath(full, root)).replace("\\", "/")
@@ -235,6 +236,22 @@ def main():
         exts = collections.Counter(os.path.splitext(p)[1] or "(none)" for p in notw)
         if exts:
             say("  not scanned, by extension: " + "  ".join("%s=%d" % kv for kv in exts.most_common(15)))
+        say()
+
+    # ---- malware/clean.txt: real clean documents that once gave a false alarm
+    cf = os.path.join(a.src, "malware", "clean.txt")
+    if os.path.exists(cf):
+        clean = [os.path.normcase(l.strip()).replace("\\", "/") for l in open(cf, encoding="utf-8")
+                 if l.strip() and not l.startswith("#")]
+        fp = 0
+        for p in clean:
+            rs = recs.get(("malware", p)) or []
+            alarm = [r for r in rs if dv(r) in ("MEDIUM", "HIGH") or r.get("yara_file_matches")
+                     or (r.get("docscan") or {}).get("yara_file_matches")]
+            if alarm:
+                fp += 1
+                fails.append("malware/%s: FALSE POSITIVE %s %s" % (p, dv(alarm[0]), alarm[0].get("summary") or ""))
+        say("clean documents (false-positive regression): %d, false alarms %d" % (len(clean), fp))
         say()
 
     # ---- corpus: the same policy verdict as the direct scan

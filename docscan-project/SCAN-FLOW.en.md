@@ -426,7 +426,7 @@ size exponents are validated (7–16) before shifting.
 |---|---|---|
 | `docscan_inspect_rtf` | `inspect_rtf.c` | `\objupdate` → `rtf_objupdate`; `\objdata`/`\objlink`/`\objhtml` → `rtf_embedded_object`; the hex after every `\objdata` is decoded as an OLE1 object: class `Equation…` → `equation_objects`, class `Package` → `packages[]` (file name from the native data); also `\objclass Equation` or hex `Equation` → `equation_objects`. |
 | `docscan_scan_ole_objects` | `oleobj.c` | Walks the CFB streams with their names (`docscan_cfb_foreach_named_stream`): `\x01Ole10Native` → `packages[]`, `Equation Native` → `equation_objects`, `\x03OCXNAME` → `activex[]` (`ocx`), `Workbook`/`Book` → BIFF8 `BOUNDSHEET` (0x0085) records of type 1 → `xlm_macrosheets`. Called for every OOXML `embeddings/oleObject*.bin` and for a whole OLE file. |
-| `docscan_inspect_pdf` | `inspect_pdf.c` | `/Launch` → `pdf_launch`; `/JavaScript` or `/JS` + a dangerous API → `pdf_js_auto`, without one → `pdf_js`; `/OpenAction` or `/AA` without JS → `pdf_openaction`; `/EmbeddedFile` → `pdf_embedded`. |
+| `docscan_inspect_pdf` | `inspect_pdf.c` | `/Launch` → `pdf_launch`; `/JavaScript` or `/JS` + a dangerous API → `pdf_js_auto`, without one → `pdf_js`; `/OpenAction` or `/AA` without JS → `pdf_openaction`; `/EmbeddedFile(s)` → `pdf_embedded`. The keys are matched as real PDF names (with `#xx` decoding: `/J#53` = `/JS`), not as substrings: `stream…endstream` data (except an uncompressed `/ObjStm`), comments and literal strings are skipped. Otherwise `/JS` turned up in compressed image bytes and `/AA` in font names such as `/AAAAAA+SegoeUI` (false PDF_JS / PDF_OPENACTION; fixed 2026-11-16). |
 | `pdf_has_dangerous_js` | `inspect_pdf.c` | Looks for: `app.launchURL`, `exportDataObject`, `importDataObject`, `getAnnots`, `submitForm`, `Collab.`, `util.printf`, `getIcon`, `media.newPlayer`, `eval(`, `unescape(`, `String.fromCharCode`, `.exe`, `powershell`, `cmd.exe`, `rundll32`, `mshta`, `certutil`, `Net.HTTP`, `SOAP.`, `heapLib`, `shellcode`. Benign viewer JS (`this.print`, `app.alert`) is deliberately not listed. |
 | `docscan_inspect_lnk` | `lnk.c` | MS-SHLLINK parsing (instead of the `WScript.Shell` COM object): HeaderSize=0x4C → LinkFlags → IDList → LinkInfo → StringData (Name, RelativePath, WorkDir, **Arguments**). **Target**, in order: `LocalBasePathUnicode` (if `LinkInfoHeaderSize ≥ 0x24`) → `LocalBasePath` (ANSI) → network: `NetName` + `CommonPathSuffix` (`\\server\share\…`) → `RelativePath` → path rebuilt from the IDList. UTF-16 strings → UTF-8 (Cyrillic preserved); ANSI bytes ≥ 0x80 → U+0080…U+00FF, so the output is always valid UTF-8. Flags `lnk_lolbin` / `lnk_url_args` / `lnk_obfuscated` (lists as in the policy). |
 | `put_utf8` / `cpy_utf16` / `cpy_ansi` / `cpy_stringdata` | `lnk.c` | UTF-16LE → UTF-8 (surrogate pairs; a lone surrogate → U+FFFD); ANSI → valid UTF-8; StringData (count + chars). |
@@ -674,7 +674,7 @@ A policy rule must not be `private` (YARA never reports private rules).
 | `DS_ARCHIVE_ENCRYPTED` | a password-protected archive: content not checked, names visible | INFO | — |
 | `DS_ZIP_UNREADABLE` | an archive that cannot be opened (`.zip`, or the directory shows no Office package): content not checked (T1027) | MEDIUM | — |
 | `DS_ZIP_UNREADABLE_DOC` | a damaged Office document (truncated download etc.) | INFO | — |
-| `DS_PDF_LAUNCH` | `/Launch` | HIGH | `quarantine` |
+| `DS_PDF_LAUNCH` | `/Launch` (all PDF rules use the module flags `docscan.pdf_*`, i.e. real PDF names, not a string search; since 2026-11-16) | HIGH | `quarantine` |
 | `DS_PDF_JS_AUTO` / `DS_PDF_JS` | `/JavaScript`/`/JS` with / without a dangerous API | HIGH (`quarantine`) / MEDIUM | |
 | `DS_PDF_OPENACTION` | `/OpenAction`/`/AA` without JS (usually start page/zoom) | INFO | — |
 | `DS_PDF_EMBEDDED` | `/EmbeddedFile` | MEDIUM | — |
@@ -1003,6 +1003,7 @@ powershell -ExecutionPolicy Bypass -File docscan-project\deploy\build_package.ps
 powershell -ExecutionPolicy Bypass -File .\install.ps1                     # watches C:\Users
 powershell -ExecutionPolicy Bypass -File .\install.ps1 -WatchPath 'C:\Users','D:\Shares'
 # or from the GitHub release (everything: program, rules, watcher, scripts):
+[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12   # GitHub needs TLS 1.2
 $f = "$env:TEMP\DocScan-Install.ps1"
 irm https://github.com/rifatismailov/yara-docscan/releases/latest/download/DocScan-Install.ps1 -OutFile $f
 powershell -ExecutionPolicy Bypass -File $f                                   # a normal PC

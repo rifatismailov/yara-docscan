@@ -425,7 +425,7 @@ MS-OVBA. Ланцюжок: **CFB → потоки → пошук контейн�
 |---|---|---|
 | `docscan_inspect_rtf` | `inspect_rtf.c` | `\objupdate` → `rtf_objupdate`; `\objdata`/`\objlink`/`\objhtml` → `rtf_embedded_object`; hex після кожного `\objdata` розкодовується як OLE1-об'єкт: клас `Equation…` → `equation_objects`, клас `Package` → `packages[]` (ім'я файлу з native-даних); також `\objclass Equation` або hex `Equation` → `equation_objects`. |
 | `docscan_scan_ole_objects` | `oleobj.c` | Обходить потоки CFB з іменами (`docscan_cfb_foreach_named_stream`): `\x01Ole10Native` → `packages[]`, `Equation Native` → `equation_objects`, `\x03OCXNAME` → `activex[]` (`ocx`), `Workbook`/`Book` → записи BIFF8 `BOUNDSHEET` (0x0085) з типом 1 → `xlm_macrosheets`. Викликається для кожного `embeddings/oleObject*.bin` в OOXML і для всього файлу OLE. |
-| `docscan_inspect_pdf` | `inspect_pdf.c` | `/Launch` → `pdf_launch`; `/JavaScript` або `/JS` + небезпечний API → `pdf_js_auto`, без нього → `pdf_js`; `/OpenAction` або `/AA` без JS → `pdf_openaction`; `/EmbeddedFile` → `pdf_embedded`. |
+| `docscan_inspect_pdf` | `inspect_pdf.c` | `/Launch` → `pdf_launch`; `/JavaScript` або `/JS` + небезпечний API → `pdf_js_auto`, без нього → `pdf_js`; `/OpenAction` або `/AA` без JS → `pdf_openaction`; `/EmbeddedFile(s)` → `pdf_embedded`. Ключі шукаються як справжні імена PDF (з розкодуванням `#xx`: `/J#53` = `/JS`), а не як підрядок: дані `stream…endstream` (крім нестисненого `/ObjStm`), коментарі й текстові рядки пропускаються. Інакше `/JS` траплявся у стиснених байтах картинок, а `/AA` - в іменах шрифтів `/AAAAAA+SegoeUI` (хибні PDF_JS / PDF_OPENACTION; виправлено 2026-11-16). |
 | `pdf_has_dangerous_js` | `inspect_pdf.c` | Шукає: `app.launchURL`, `exportDataObject`, `importDataObject`, `getAnnots`, `submitForm`, `Collab.`, `util.printf`, `getIcon`, `media.newPlayer`, `eval(`, `unescape(`, `String.fromCharCode`, `.exe`, `powershell`, `cmd.exe`, `rundll32`, `mshta`, `certutil`, `Net.HTTP`, `SOAP.`, `heapLib`, `shellcode`. Безпечний JS переглядача (`this.print`, `app.alert`) навмисно не в списку. |
 | `docscan_inspect_lnk` | `lnk.c` | Розбір MS-SHLLINK (замість COM `WScript.Shell`): HeaderSize=0x4C → LinkFlags → IDList → LinkInfo → StringData (Name, RelativePath, WorkDir, **Arguments**). **Ціль** — по черзі: `LocalBasePathUnicode` (якщо `LinkInfoHeaderSize ≥ 0x24`) → `LocalBasePath` (ANSI) → мережева: `NetName` + `CommonPathSuffix` (`\\сервер\шара\…`) → `RelativePath` → шлях, відновлений з IDList. Рядки UTF-16 → UTF-8 (кирилиця зберігається); ANSI-байти ≥ 0x80 → U+0080…U+00FF, тож вихід — завжди валідний UTF-8. Прапорці `lnk_lolbin` / `lnk_url_args` / `lnk_obfuscated` (списки — як у політиці). |
 | `put_utf8` / `cpy_utf16` / `cpy_ansi` / `cpy_stringdata` | `lnk.c` | UTF-16LE → UTF-8 (сурогатні пари; одиночний сурогат → U+FFFD); ANSI → валідний UTF-8; StringData (лічильник + символи). |
@@ -672,7 +672,7 @@ watcher ── yara64 --docscan-json [--docscan-disarm ...] файл         ←
 | `DS_ARCHIVE_ENCRYPTED` | архів з паролем: вміст не перевірено, імена видно | INFO | — |
 | `DS_ZIP_UNREADABLE` | архів не відкривається (`.zip` або в каталозі не пакет Office): вміст не перевірено (T1027) | MEDIUM | — |
 | `DS_ZIP_UNREADABLE_DOC` | пошкоджений документ Office (недокачаний тощо) | INFO | — |
-| `DS_PDF_LAUNCH` | `/Launch` | HIGH | `quarantine` |
+| `DS_PDF_LAUNCH` | `/Launch` (усі правила PDF беруть прапорці модуля `docscan.pdf_*`, тобто справжні імена PDF, а не пошук рядка; з 2026-11-16) | HIGH | `quarantine` |
 | `DS_PDF_JS_AUTO` / `DS_PDF_JS` | `/JavaScript`/`/JS` з небезпечним API / без | HIGH (`quarantine`) / MEDIUM | |
 | `DS_PDF_OPENACTION` | `/OpenAction`/`/AA` без JS (звичайно — стартова сторінка/масштаб) | INFO | — |
 | `DS_PDF_EMBEDDED` | `/EmbeddedFile` | MEDIUM | — |
@@ -1000,6 +1000,7 @@ powershell -ExecutionPolicy Bypass -File docscan-project\deploy\build_package.ps
 powershell -ExecutionPolicy Bypass -File .\install.ps1                     # стежить за C:\Users
 powershell -ExecutionPolicy Bypass -File .\install.ps1 -WatchPath 'C:\Users','D:\Shares'
 # або з релізу GitHub (усе: програма, правила, watcher, скрипти):
+[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12   # GitHub - лише TLS 1.2
 $f = "$env:TEMP\DocScan-Install.ps1"
 irm https://github.com/rifatismailov/yara-docscan/releases/latest/download/DocScan-Install.ps1 -OutFile $f
 powershell -ExecutionPolicy Bypass -File $f                                   # звичайний ПК

@@ -222,11 +222,22 @@ if ((Test-Path $ossecConf) -and -not $NoWazuhConfig) {
   Write-Host "  backup: $bak"
   Write-Host "  <localfile> json -> $results"
 
+  # Restart-Service sometimes fails with "Cannot stop WazuhSvc" (the agent hangs while stopping):
+  # wait for it, then end the agent process and start the service again
+  function Restart-Wazuh {
+    try { Restart-Service WazuhSvc -Force -ErrorAction Stop; return } catch { Write-Host "  Restart-Service: $($_.Exception.Message) - waiting / ending the agent process" -ForegroundColor Yellow }
+    for ($k = 0; $k -lt 10 -and (Get-Service WazuhSvc).Status -ne "Stopped"; $k++) { Start-Sleep 3 }
+    if ((Get-Service WazuhSvc).Status -ne "Stopped") {
+      Get-Process wazuh-agent, ossec-agent -EA SilentlyContinue | Stop-Process -Force -EA SilentlyContinue
+      Start-Sleep 3
+    }
+    try { Start-Service WazuhSvc -ErrorAction Stop } catch { Write-Host "  Start-Service: $($_.Exception.Message)" -ForegroundColor Yellow }
+  }
   $svc = Get-Service WazuhSvc -EA SilentlyContinue
   if ($svc) {
     $log = Join-Path $OssecDir "ossec.log"
     $mark = if (Test-Path $log) { (Get-Item $log).Length } else { 0 }
-    Restart-Service WazuhSvc -Force
+    Restart-Wazuh
     Start-Sleep 10
     $errs = @()
     if (Test-Path $log) {
@@ -238,7 +249,7 @@ if ((Test-Path $ossecConf) -and -not $NoWazuhConfig) {
       Write-Host "  the agent rejected the configuration - restoring the old ossec.conf" -ForegroundColor Yellow
       $errs | % { Write-Host "    $_" }
       Copy-Item -LiteralPath $bak $ossecConf -Force
-      Restart-Service WazuhSvc -Force
+      Restart-Wazuh
       Fail "ossec.conf rolled back (the agent runs on the old configuration)"
     }
     Write-Host "  WazuhSvc restarted, configuration accepted"
@@ -305,7 +316,13 @@ if (-not $NoStart) {
       $started = $tail -match "start: watching"
     }
   }
-  if (-not $started) { Fail "the watcher did not start (state: $state). See $log" }
+  if (-not $started) {
+    # why: the task's exit code (0x1 = the script exited with an error, 0x41303 = never ran) and the log tail
+    $ti = Get-ScheduledTaskInfo -TaskName $TaskName -EA SilentlyContinue
+    if ($ti) { Write-Host ("  task: last run {0}, result 0x{1:X}" -f $ti.LastRunTime, $ti.LastTaskResult) }
+    if (Test-Path $log) { Get-Content $log -Tail 15 | % { Write-Host "  | $_" } } else { Write-Host "  (no $log - the script did not get to logging: execution policy / antivirus?)" }
+    Fail "the watcher did not start (state: $state). See $log"
+  }
   Write-Host "  watcher is running"
 }
 
@@ -319,5 +336,7 @@ Write-Host ("  macros:     $DataDir\macros  (90 days / 500 MB)" + $(if ($MacroUp
 Write-Host ("  critical:   " + $(if (Test-Path -LiteralPath $critRules) { "$critRules -> queue $DataDir\critical\critical.json" } else { "off (no critical rules)" }))
 if ($legacyRemoved.Count) { Write-Host "  old DocScan (Wazuh active-response) fully removed" }
 if ($wazuhDone) { Write-Host "  Wazuh:      the agent reads results\docscan-results.json (json); on the manager - deploy\manager\cleanup_manager.sh" }
+elseif ($NoWazuhConfig) { Write-Host "  Wazuh:      not configured (-NoWazuhConfig)" }
+else { Write-Host "  Wazuh:      NO AGENT ($ossecConf not found) - results stay on this PC only; run the installer again after installing the agent" -ForegroundColor Yellow }
 Write-Host "  policy:     $InstallDir\rules\docscan-policy.yar  (after a change: Restart-ScheduledTask '$TaskName')"
 Write-Host "  uninstall:  powershell -ExecutionPolicy Bypass -File '$InstallDir\uninstall.ps1'"

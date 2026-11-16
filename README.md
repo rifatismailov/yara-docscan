@@ -100,6 +100,7 @@ Install or update on a workstation (PowerShell as administrator) from the
 rules, watcher, scripts):
 
 ```powershell
+[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12   # GitHub needs TLS 1.2 (Windows PowerShell 5.1)
 $f = "$env:TEMP\DocScan-Install.ps1"
 irm https://github.com/rifatismailov/yara-docscan/releases/latest/download/DocScan-Install.ps1 -OutFile $f
 powershell -ExecutionPolicy Bypass -File $f                                 # normal PC

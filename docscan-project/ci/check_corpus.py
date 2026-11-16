@@ -8,7 +8,8 @@ difference between macOS / Windows / Linux on the same files is a failure there.
 
 Malware mode (--expect FILE): FILE lists relative paths (one per line, # comments) that MUST be detected -
 a vendor rule match or a MEDIUM / HIGH verdict of the policy; a regression test on real samples. The samples are
-only read, never executed.
+only read, never executed. clean.txt next to FILE (if present) lists the opposite: real clean documents that once
+gave a false alarm - each must stay INFO with no vendor match (a false-positive regression test).
 
 The rules are compiled once (yarac, the file externals declared empty), then every file is scanned with
 -C in parallel (one yara process per file, --jobs at a time).
@@ -65,7 +66,7 @@ def main():
     files = []
     for root, _, names in os.walk(a.dir):
         for n in names:
-            if n in ("expected.txt", ".DS_Store"):
+            if n in ("expected.txt", "clean.txt", ".DS_Store"):
                 continue
             files.append(os.path.join(root, n))
     files.sort()
@@ -110,7 +111,22 @@ def main():
             print("  MISSED: %s" % w)
         print("expected detections: %d/%d" % (len(want) - len(missed), len(want)))
 
-    ok = not bad and not missed
+    falsepos = []
+    cf = os.path.join(os.path.dirname(a.expect), "clean.txt") if a.expect else ""
+    if cf and os.path.exists(cf):
+        clean = [l.strip() for l in open(cf, encoding="utf-8") if l.strip() and not l.startswith("#")]
+        got = dict(zip(rel, results))
+        for c in clean:
+            v = got.get(c)
+            if v is None:
+                falsepos.append("%s (not in the set)" % c)
+            elif v[0] in ("MEDIUM", "HIGH") or v[2]:
+                falsepos.append("%s: %s %s %s" % (c, v[0], v[1], v[2]))
+        for f in falsepos:
+            print("  FALSE POSITIVE: %s" % f)
+        print("clean documents without alarm: %d/%d" % (len(clean) - len(falsepos), len(clean)))
+
+    ok = not bad and not missed and not falsepos
     print("RESULT: %s" % ("PASS" if ok else "FAIL"))
     return 0 if ok else 1
 

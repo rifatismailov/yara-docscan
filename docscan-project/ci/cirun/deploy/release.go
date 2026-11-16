@@ -154,11 +154,13 @@ func (r *Release) Publish(sha string, say func(string, ...any)) error {
 	base := "https://github.com/" + r.Repo + "/releases/latest/download"
 	notes := fmt.Sprintf("DocScan %s for Windows 10/11 x64 - built and tested by cirun at commit %s.\n\n"+
 		"Install or update (PowerShell as Administrator):\n\n"+
+		"    [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12\n"+
 		"    $f = \"$env:TEMP\\DocScan-Install.ps1\"\n"+
 		"    irm %s/DocScan-Install.ps1 -OutFile $f\n"+
 		"    powershell -ExecutionPolicy Bypass -File $f                 # standard PC\n"+
 		"    powershell -ExecutionPolicy Bypass -File $f -DetectOnly     # pilot: detection and alerts only\n"+
 		"    powershell -ExecutionPolicy Bypass -File $f -Critical <file or URL of critical-rules.yar>\n\n"+
+		"Do not run it with irm | iex: the script ends with exit and would close the window.\n\n"+
 		"%s: yara64.exe, yarac64.exe, VC++ runtime, rules, watcher, install.ps1 / uninstall.ps1. "+
 		"The critical-information rules (E5Search) are not part of the release.", r.Version, sha, base, PkgAsset)
 	say("\nGitHub release %s on %s", r.Tag, r.Repo)

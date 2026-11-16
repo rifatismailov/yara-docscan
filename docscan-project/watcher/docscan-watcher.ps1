@@ -424,13 +424,13 @@ if (Test-Path -LiteralPath $MacroSent) {
   [IO.File]::WriteAllText($MacroSent, (($MacroSentSet.Keys | ForEach-Object { "$_`r`n" }) -join ""), $utf8)
 }
 foreach ($p in $Yara, $Rules) {
-  if (-not (Test-Path $p)) { Write-Host "NOT FOUND: $p" -ForegroundColor Red; exit 1 }
+  if (-not (Test-Path $p)) { Log "NOT FOUND: $p" "ERROR"; exit 1 }
 }
 # check that the rules compile (otherwise every scan would fail silently)
 $probe = Join-Path $OutDir "probe.txt"; "probe" | Set-Content $probe
 $e = & $Yara -w --file-vars $Rules $probe 2>&1 | Where-Object { "$_" -match 'error' }
 Remove-Item $probe
-if ($e) { Write-Host "The rules do not compile: $Rules`n$e" -ForegroundColor Red; exit 1 }
+if ($e) { Log "the rules do not compile: $Rules - $($e -join ' ')" "ERROR"; exit 1 }
 
 # The rules are compiled ONCE (yarac64 -> rules.yarc), then every scan runs with -C. Thousands of vendor
 # rules take ~0.5 s or more to compile - doing it for every file would mean seconds per scan.

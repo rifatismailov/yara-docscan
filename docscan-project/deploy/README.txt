@@ -7,6 +7,7 @@ DocScan стежить за новими файлами, перевіряє до
 
 1. З релізу GitHub (PowerShell від адміністратора)
 --------------------------------------------------
+     [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12   # GitHub - лише TLS 1.2
      $f = "$env:TEMP\DocScan-Install.ps1"
      irm https://github.com/rifatismailov/yara-docscan/releases/latest/download/DocScan-Install.ps1 -OutFile $f
      powershell -ExecutionPolicy Bypass -File $f                          # звичайний ПК (детект + лікування)
