@@ -204,7 +204,7 @@ docscan-project/
     general/, maldoc/               GENERATED: 8068 vendor rules from public sources, 1654 files (§6.2)
   watcher/docscan-watcher.ps1       auto-scan of new files → results\docscan-results.json
   deploy/                           deployment package: build_package.ps1, install.ps1, uninstall.ps1, README.txt,
-                                    DocScan-Setup.ps1 (irm | iex), DocScan-Install.ps1, manager/ (Wazuh)
+                                    DocScan-Install.ps1 (install from the GitHub release), manager/ (Wazuh)
   fuzz/                             libFuzzer: 2 fuzzers, dictionary, corpus, build.sh, build_windows.ps1, regressions/ (8)
   ci/                               one-button CI: cirun (Go), build-test-unix.sh, check_verdicts, expected-verdicts.tsv (ci/README.md)
   test-critical/                    third-pass tests: run_tests.py, the E5Search corpus (md2office, eval_corpus),
@@ -991,8 +991,7 @@ Start-ScheduledTask docscan-watcher          # Stop-ScheduledTask docscan-watche
 |---|---|
 | `build_package.ps1` | on the build machine: `DocScan-<version>.zip` = `bin\yara64.exe` + `vcruntime140*.dll` (yara64 is built with `/MD`; the UCRT ships with Windows 10/11) + `rules\` + `watcher\` + scripts + `VERSION.txt` + `SHA256SUMS.txt` |
 | `install.ps1` | on the target as administrator: verifies SHA256 → copies to `C:\Program Files\DocScan` → `C:\ProgramData\DocScan\{results,quarantine}` accessible only to SYSTEM + Administrators → **removes the old implementation completely** (Wazuh active-response: `doc-scan.ps1`, `doc-scan.cmd`, `tmp\docscan`, the old YARA `active-response\bin\yara` + `yara-scan.*`; the old quarantine is moved to `quarantine\legacy\`; other ARs are left alone; `-KeepLegacy`/`-KeepLegacyYara` to keep them) → **Wazuh agent**: `ossec.conf` (backed up) — removes doc-scan/yara-scan `<command>`/`<active-response>`, adds a json `<localfile>` for `results\docscan-results.json`, restarts `WazuhSvc`; rolled back if the agent rejects it → self-test (yara64, rule compilation, a test JSON) → task **"DocScan Watcher"**: at Windows startup, as SYSTEM, no time limit, restart on failure (999 × 1 min) → starts it and checks the watcher came up. Re-running = upgrade (previous rules → `rules.prev\`). Parameters: `-WatchPath`, `-InstallDir`, `-DataDir`, `-QuarantineGeneral`, `-NoStart`, `-NoAvExclusion` (do not add the Microsoft Defender exclusions for `C:\Program Files\DocScan` and `C:\ProgramData\DocScan`, otherwise added before the files are copied; `uninstall.ps1` removes the program exclusion, the data one with `-Purge`; ESET — a warning only, exclusions via an ESET PROTECT policy), `-DetectOnly` (pilot: the watcher runs with `-NoDisarm` — detection and alerts only, files are not changed), `-MacroUpload <url>` (macro code copies to a collector), `-CriticalRules <file>` (third pass: the E5Search rules → `C:\Program Files\DocScan\critical\`, compile check; without it the installed rules stay), `-NoCritical` (turn the third pass off and remove the rules) |
-| `DocScan-Setup.ps1` | ASCII bootstrap for `irm http://<server>:8080/docscan/DocScan-Setup.ps1 \| iex` (server copies: `DocScan-Setup-Pilot.ps1` passes `-DetectOnly`, `DocScan-Setup-Critical.ps1` — `-Critical`): downloads `DocScan-Install.ps1` to %TEMP% and runs it in a separate `powershell.exe`, so an error never closes the console; ASCII only because `irm` decodes text without a charset |
-| `DocScan-Install.ps1` | one-script install from an HTTP server: the package name from `<BaseUrl>/DocScan-latest.txt` (or `-Version`) → downloads the zip and `.sha256`, checks SHA256 → extracts → downloads the program (`bin\\`) from the GitHub release named in `BIN-URL.txt` (the server package has none; `install.ps1` checks it against the package `SHA256SUMS.txt`) → runs `install.ps1` in-process (`-DetectOnly`, `-WatchPath`, `-NoAvExclusion`, `-QuarantineGeneral` are passed through; `-MacroUpload` = the same server, `-NoMacroUpload` turns it off; `-Critical` — also `<BaseUrl>/critical-rules.yar` → `-CriticalRules`; `-NoCritical`) → removes temp files. In the repo `-BaseUrl` has no default (the repository is public); the server copy has the address filled in. New version: `cirun --release` — a GitHub release of the program + the set without the program on the server (zip + `.sha256`, the new name in `DocScan-latest.txt`) |
+| `DocScan-Install.ps1` | **the only script for a PC**, install and update from the **GitHub release** (no deployment servers): downloads `DocScan-windows-x64.zip` and `.sha256` from the latest release (`releases/latest/download/…`, no GitHub API) or from `docscan-<Version>` (`-Version`) → checks SHA256 → extracts → runs the package `install.ps1` in-process (`-DetectOnly`, `-WatchPath`, `-NoAvExclusion`, `-QuarantineGeneral`, `-MacroUpload <url>`, `-NoCritical` are passed through) → removes temp files. `-Critical <file / UNC / URL>` — the E5Search rules (not in the release: sensitive); a private URL — `-CriticalToken` or `$env:DOCSCAN_CRITICAL_TOKEN`. TLS 1.2 is enabled explicitly (PowerShell 5.1). New version: `cirun --release` |
 | `uninstall.ps1` | removes the task and the watcher process, deletes the program; `-Purge` also removes results and quarantine. Does not bring the old implementation back |
 | `README.txt` | administrator instructions (shipped in the package) |
 | `manager/cleanup_manager.sh` | **on the Wazuh manager** (root): backs up `ossec.conf`, removes doc-scan/yara-scan `<active-response>`/`<command>`, rules separately: the `manager/local_rules.docscan.xml` block into `local_rules.xml` (section 12.2), `wazuh-analysisd -t`, restarts only then; `--dry-run` shows the changes |
@@ -1003,16 +1002,19 @@ powershell -ExecutionPolicy Bypass -File docscan-project\deploy\build_package.ps
 # on every machine (unzip, PowerShell as administrator):
 powershell -ExecutionPolicy Bypass -File .\install.ps1                     # watches C:\Users
 powershell -ExecutionPolicy Bypass -File .\install.ps1 -WatchPath 'C:\Users','D:\Shares'
-# or from an HTTP server in one line (files in scripts/docscan/ on the server):
-irm http://<server>:8080/docscan/DocScan-Setup.ps1 | iex            # a normal PC
-irm http://<server>:8080/docscan/DocScan-Setup-Pilot.ps1 | iex      # pilot: detection only
-irm http://<server>:8080/docscan/DocScan-Setup-Critical.ps1 | iex   # lawyer / accountant / HR PC (+ third pass)
+# or from the GitHub release (everything: program, rules, watcher, scripts):
+$f = "$env:TEMP\DocScan-Install.ps1"
+irm https://github.com/rifatismailov/yara-docscan/releases/latest/download/DocScan-Install.ps1 -OutFile $f
+powershell -ExecutionPolicy Bypass -File $f                                   # a normal PC
+powershell -ExecutionPolicy Bypass -File $f -DetectOnly                       # pilot: detection only
+powershell -ExecutionPolicy Bypass -File $f -Critical D:\e5\critical-rules.yar  # lawyer / accountant / HR PC (+ third pass; file, UNC or URL)
 ```
 Verified on Windows 10 (2026-11-04): install, disarm right after start, upgrade, refusal of a tampered package,
 uninstall with `-Purge`; complete removal of the old implementation on a mock Wazuh agent (all traces removed,
 old quarantine moved, an unrelated AR left intact).
 After rollout remove the `<command>`/`<active-response>` for `doc-scan` and `yara-scan` on the Wazuh manager. The startup trigger is registered (`MSFT_TaskBootTrigger`); the start after a reboot was tested on Windows 11
-(2026-11-06). Installation via `irm | iex` (normal, pilot, with the third pass) and from a 32-bit PowerShell was tested 2026-11-06…07.
+(2026-11-06). Installation via `irm | iex` (normal, pilot, with the third pass) and from a 32-bit PowerShell was tested 2026-11-06…07. Since 2026-11-16 DocScan is distributed only as GitHub
+releases (`DocScan-Install.ps1`); installing the program from a release was tested on Windows 11 (2026-11-16).
 
 ## 8. Running — cheat sheet
 
@@ -1561,9 +1563,9 @@ puts the full text into a queue. E5Search gives the verdict; another watcher sen
   special exit codes. The Wazuh record only gets `critical: {queued, fragments, rules}`.
 - **Selected PCs only** (lawyer, accountant, HR). With the third pass on, the watcher also watches
   `.odt .ods .odp .txt .csv` (`-CriticalExt`); other PCs do not. The third pass is off by default. It is turned on by
-  `irm http://<server>:8080/docscan/DocScan-Setup-Critical.ps1 | iex` (= `DocScan-Install.ps1 -Critical`): it takes
-  `<BaseUrl>/critical-rules.yar`, `install.ps1` puts it into `C:\Program Files\DocScan\critical\` and checks that it
-  compiles. A normal update (`DocScan-Setup.ps1`) keeps the installed rules as they are; `-NoCritical` turns the
+  `DocScan-Install.ps1 -Critical <file / UNC / URL>`: the rules file comes from there (it is not in the GitHub
+  release), `install.ps1` puts it into `C:\Program Files\DocScan\critical\` and checks that it
+  compiles. A normal update (without `-Critical`) keeps the installed rules as they are; `-NoCritical` turns the
   check off and removes the rules. The rules are not in the package or the repository: an E5Search requirement.
 - **Once per content**: the watcher queues the same document (sha256) once per run (rescans - a disarm retry of an
   open file, DisarmPending, a copy in another folder - do not duplicate it); a changed version is queued again.

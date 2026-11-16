@@ -4,17 +4,18 @@
 //
 //	коміт локальних змін (з перевіркою безпеки, без push) -> збірка і всі тести на кожній увімкненій
 //	платформі (macOS, Windows, Linux — з config.yaml) -> якщо все зелене: git push на GitHub (завжди; слухач
-//	на іншому сервері сам бачить новий коміт; Forgejo — лише необов'язкове доповнення) -> набір на сервер.
+//	на іншому сервері сам бачить новий коміт; Forgejo — лише необов'язкове доповнення) -> з --release:
+//	реліз на GitHub (звідти ПК ставлять DocScan; файлових серверів для розгортання немає).
 //
 // Запуск (з кореня репозиторію або будь-де в ньому):
 //
 //	go run -C docscan-project/ci/cirun . [--config FILE] [--only macos,windows] [--fuzz SECONDS]
-//	        [-m "повідомлення"] [--no-commit] [--no-push] [--no-publish] [--plan] [--push-only] [--combat]
-//	        [--publish-dir DIR] [--release] [--release-run DIR]
+//	        [-m "повідомлення"] [--no-commit] [--no-push] [--plan] [--push-only] [--combat]
+//	        [--release] [--release-run DIR]
 //
-// --release: після зеленого прогону і push - реліз docscan-<версія> на GitHub (лише програма: yara64 /
-// yarac64 / рантайм VC++); внутрішній набір - пакет без програми (deploy/release.go).
-// --release-run DIR: той самий реліз (і набір, якщо deploy.publish) з уже зеленого запушеного прогону.
+// --release: після зеленого прогону і push - реліз docscan-<версія> на GitHub: увесь пакет (програма,
+// правила, watcher, скрипти) + DocScan-Install.ps1 + DocScan-Setup.ps1 (deploy/release.go).
+// --release-run DIR: той самий реліз з уже зеленого запушеного прогону.
 //
 //	go run -C docscan-project/ci/cirun . windows      (лише Windows за змінними середовища — для ci.yml)
 //
@@ -66,13 +67,11 @@ func main() {
 	flag.StringVar(msg, "message", "", "same as -m")
 	noCommit := flag.Bool("no-commit", false, "do not commit local changes (the last commit is built)")
 	noPush := flag.Bool("no-push", false, "do not git push the commit to GitHub after a green run")
-	noPublish := flag.Bool("no-publish", false, "do not upload the deployment set to the server")
 	plan := flag.Bool("plan", false, "check config, secrets and machines; build nothing")
 	combat := flag.Bool("combat", false, "Windows combat test: install the package and let the watcher scan every test file (~2 h)")
 	pushOnly := flag.Bool("push-only", false, "only git push HEAD to GitHub (after an earlier green run)")
-	publishDir := flag.String("publish-dir", "", "only publish an existing deployment set (ci-out/<run>/deploy)")
-	release := flag.Bool("release", false, "after a green, pushed run: GitHub release of the program (yara64/yarac64) with this version")
-	releaseRun := flag.String("release-run", "", "only make the GitHub release (and the deployment set) from an earlier green, pushed run (ci-out/<run>)")
+	release := flag.Bool("release", false, "after a green, pushed run: GitHub release docscan-<version> (package + installer scripts)")
+	releaseRun := flag.String("release-run", "", "only make the GitHub release from an earlier green, pushed run (ci-out/<run>)")
 	flag.Parse()
 
 	cfg, err := config.Load(*cfgPath)
@@ -86,14 +85,6 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
 
-	if *publishDir != "" {
-		s, err := deploy.ExistingSet(*publishDir)
-		if err == nil {
-			err = deploy.Publish(s, cfg.Deploy, sec, say)
-		}
-		result(err == nil, map[bool]string{true: "PUBLISHED", false: fmt.Sprint("NOT published: ", err)}[err == nil])
-		return
-	}
 	if *releaseRun != "" {
 		_, ver, err := deploy.FullPackage(*releaseRun)
 		var sha string
@@ -105,12 +96,12 @@ func main() {
 		}
 		tail := []string{}
 		if err == nil {
-			tail = doRelease(cfg, sec, *releaseRun, sha, !*noPublish)
+			tail = doRelease(cfg, *releaseRun, sha)
 		} else {
 			say("! release: %v", err)
 			tail = append(tail, "NOT released")
 		}
-		result(!contains(tail, "NOT released") && !contains(tail, "NOT published"), strings.Join(tail, "  "))
+		result(!contains(tail, "NOT released"), strings.Join(tail, "  "))
 		return
 	}
 	if *plan {
@@ -199,17 +190,14 @@ func main() {
 		say("\n! the run is not green - nothing is pushed or published")
 	}
 
-	// ---- реліз програми на GitHub (+ набір без програми на внутрішній сервер)
+	// ---- реліз на GitHub: звідти ПК ставлять DocScan
 	if green && *release {
 		if contains(tail, "PUSHED") {
-			tail = append(tail, doRelease(cfg, sec, o.RunDir, sha, !*noPublish)...)
+			tail = append(tail, doRelease(cfg, o.RunDir, sha)...)
 		} else {
 			say("! --release: the commit is not pushed to GitHub - no release")
 			tail = append(tail, "NOT released")
 		}
-	} else if green && cfg.Deploy.Publish && !*noPublish {
-		// без --release програма не викладається нікуди (вона лише в релізах GitHub)
-		say("\n(deploy.publish: the deployment set is published only together with a GitHub release - use --release)")
 	}
 
 	if part := o.Partial(); len(part) > 0 {
@@ -218,7 +206,7 @@ func main() {
 	abs, _ := filepath.Abs(o.RunDir)
 	say("\nRESULT: %s   (%d min)   artifacts: %s   %s%s", map[bool]string{true: "SUCCESS", false: "FAILURE"}[green],
 		int(time.Since(started).Minutes()), abs, strings.Join(tail, "  "), pushNote)
-	if !green || contains(tail, "NOT published") || contains(tail, "NOT released") {
+	if !green || contains(tail, "NOT released") {
 		os.Exit(1)
 	}
 	if contains(tail, "NOT pushed") {
@@ -314,10 +302,10 @@ func showPlan(ctx context.Context, cfg *config.Config, sec *config.Resolver, onl
 			}
 		}
 	}
-	if cfg.Deploy.Publish {
-		say("  deploy   %s:%s  %s", cfg.Deploy.Host, cfg.Deploy.Dir, deploy.Base(cfg.Deploy))
-		check("user", cfg.Deploy.UserRef)
-		check("password", cfg.Deploy.PasswordRef)
+	if out, err := exec.Command("gh", "auth", "status").CombinedOutput(); err != nil {
+		say("  release  gh not logged in - --release will fail: %s", strings.TrimSpace(string(out)))
+	} else {
+		say("  release  gh logged in (--release creates GitHub releases)")
 	}
 	if bad > 0 {
 		say("\n%d problem(s) found", bad)
@@ -407,9 +395,8 @@ func contains(list []string, s string) bool {
 	return false
 }
 
-// doRelease: пакет прогону -> DocScan-bin-<v>.zip (реліз GitHub) + DocScan-<v>.zip без програми ->
-// gh release create -> за deploy.publish - набір на внутрішній сервер (з перевіркою активу релізу).
-func doRelease(cfg *config.Config, sec *config.Resolver, runDir, sha string, publish bool) []string {
+// doRelease: пакет прогону -> активи релізу -> gh release create -> перевірка завантаження.
+func doRelease(cfg *config.Config, runDir, sha string) []string {
 	repo := cfg.Release.Repo
 	if repo == "" {
 		u, _ := gitops.Git("remote", "get-url", cfg.Push.Remote)
@@ -419,7 +406,7 @@ func doRelease(cfg *config.Config, sec *config.Resolver, runDir, sha string, pub
 		say("! release: no GitHub repository (release.repo or a github.com push remote)")
 		return []string{"NOT released"}
 	}
-	r, _, err := deploy.Prepare(runDir, repo)
+	r, err := deploy.Prepare(runDir, repo)
 	if err == nil {
 		err = r.Publish(sha, say)
 	}
@@ -427,17 +414,5 @@ func doRelease(cfg *config.Config, sec *config.Resolver, runDir, sha string, pub
 		say("! release: %v", err)
 		return []string{"NOT released"}
 	}
-	tail := []string{"RELEASED " + r.Tag}
-	if publish && cfg.Deploy.Publish {
-		s, err := deploy.Build(runDir, cfg.Deploy, say)
-		if err == nil && s != nil {
-			err = deploy.Publish(s, cfg.Deploy, sec, say)
-		}
-		if err != nil {
-			say("! publish: %v", err)
-			return append(tail, "NOT published")
-		}
-		tail = append(tail, "PUBLISHED")
-	}
-	return tail
+	return []string{"RELEASED " + r.Tag}
 }

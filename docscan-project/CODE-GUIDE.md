@@ -537,8 +537,7 @@ E5Search за цей запуск — повторний скан того са�
 | `Read-Text` / `Write-Text` | Читання/запис UTF-8 без BOM (`ossec.conf`). |
 | `Step` / `Fail` | Вивід кроку / помилка з виходом. |
 | `install.ps1` (нові параметри) | `-DetectOnly` (пілот), `-NoAvExclusion`, `-MacroUpload <url>`, `-CriticalRules <файл>` (правила E5Search → `critical\`, перевірка компіляції з `--file-vars`), `-NoCritical`. |
-| `DocScan-Setup.ps1` | Маленький ASCII-завантажувач для `irm … \| iex`: бере `DocScan-Install.ps1` і запускає його в окремому 64-бітному `powershell.exe`. Копії на сервері: `-Pilot` (`-DetectOnly`), `-Critical`. |
-| `DocScan-Install.ps1` | Завантажує пакет за `DocScan-latest.txt`, звіряє SHA256, запускає `install.ps1`; з `-Critical` ще й `<BaseUrl>/critical-rules.yar`. |
+| `DocScan-Install.ps1` | Єдиний скрипт для ПК: качає `DocScan-windows-x64.zip` + `.sha256` з релізу GitHub (`releases/latest/download` або `docscan-<Version>`), звіряє SHA256, запускає `install.ps1` з пакета; `-Critical <файл / UNC / URL>` — правила E5Search (не в релізі). Реліз робить `cirun --release` (`ci/cirun/deploy/release.go`). |
 | `uninstall.ps1` | Видалення (`-Purge` — разом з результатами й карантином), прибирає `<localfile>`. |
 | `manager/cleanup_manager.sh`, `manager/local_rules.docscan.xml` | Для менеджера Wazuh: прибрати старі `<command>`/`<active-response>`; еталонний блок правил. |
 

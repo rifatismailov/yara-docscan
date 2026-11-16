@@ -14,7 +14,7 @@
     {
       "label": "DocScan CI without publishing (the server is not changed)",
       "type": "shell",
-      "command": "go run -C docscan-project/ci/cirun . --no-publish",
+      "command": "go run -C docscan-project/ci/cirun .",
       "presentation": { "reveal": "always", "panel": "dedicated", "clear": true },
       "problemMatcher": []
     },

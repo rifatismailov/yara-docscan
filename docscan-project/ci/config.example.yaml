@@ -91,20 +91,11 @@ forgejo:                  # OPTIONAL extra after the push: mirror sync and commi
   report:
     commit_status: true   # commit statuses cirun/<platform> in Forgejo
 
-# The program (yara64.exe, yarac64.exe, VC++ runtime) is distributed ONLY as GitHub releases:
-# cirun --release (green + pushed run) -> release docscan-<version> with DocScan-bin-<version>.zip.
+# DocScan is distributed ONLY as GitHub releases (no deployment servers): cirun --release (green + pushed
+# run) -> release docscan-<version> with DocScan-windows-x64.zip (+ .sha256) and DocScan-Install.ps1.
 # Needs the gh CLI logged in on this Mac (gh auth login).
 release:
   repo: ""              # owner/repo; empty - from the push remote URL
-
-deploy:
-  publish: false        # true - with --release: upload the deployment set (package WITHOUT the program) to the server
-  host: <server-ip>
-  user_ref: "keepassxc:CI/Deploy/fs#UserName"
-  password_ref: "keepassxc:CI/Deploy/fs"
-  dir: scripts/docscan
-  url: http://<server-ip>:8080/docscan
-  critical_rules: ""      # local E5Search rules file to include; empty - none
 
 # File server of the test platform (SMB): the combat test (--combat) takes the test files, the malware and the
 # customer's samples (password-protected zips) from \\<server>\share\yara

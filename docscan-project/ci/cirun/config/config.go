@@ -134,18 +134,6 @@ type Forgejo struct {
 	} `yaml:"report"`
 }
 
-// Deploy — набір для розгортання і сервер, куди його викладати.
-type Deploy struct {
-	Publish       bool   `yaml:"publish"`        // викладати після зеленого прогону
-	Host          string `yaml:"host"`           // сервер розгортання (ssh)
-	User          string `yaml:"user"`           // користувач ssh
-	UserRef       string `yaml:"user_ref"`       // або посилання на нього
-	PasswordRef   string `yaml:"password_ref"`   // посилання на пароль ssh
-	Dir           string `yaml:"dir"`            // тека на сервері (відносно домашньої)
-	URL           string `yaml:"url"`            // HTTP-адреса цієї теки
-	CriticalRules string `yaml:"critical_rules"` // локальний файл правил E5Search (у набір), порожньо — без нього
-}
-
 // Config — увесь конфіг.
 // FileServer — файловий сервер тестової платформи (SMB): звідти бойовий тест (--combat) бере тестові файли,
 // шкідливе ПЗ і реальні зразки (лише запаролені zip).
@@ -169,7 +157,6 @@ type Config struct {
 	Tests      Tests                `yaml:"tests"`
 	Push       Push                 `yaml:"push"`
 	Forgejo    Forgejo              `yaml:"forgejo"`
-	Deploy     Deploy               `yaml:"deploy"`
 	FileServer FileServer           `yaml:"fileserver"`
 	Release    Release              `yaml:"release"`
 
@@ -261,9 +248,6 @@ func (c *Config) defaults() {
 	}
 	if c.Forgejo.Check.Timeout == 0 {
 		c.Forgejo.Check.Timeout = 5 * time.Second
-	}
-	if c.Deploy.Dir == "" {
-		c.Deploy.Dir = "scripts/docscan"
 	}
 }
 

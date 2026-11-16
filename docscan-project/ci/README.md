@@ -18,7 +18,7 @@
 git push на GitHub (push.remote) — ЗАВЖДИ, від Forgejo не залежить
         │                (Forgejo, якщо увімкнено й доступний: mirror-sync і статуси cirun/<ОС>)
         ▼
-набір для розгортання → ci-out/<прогін>/deploy/ (на сервер — лише з deploy.publish: true; зараз вимкнено) → RESULT
+з --release: реліз на GitHub (пакет + DocScan-Install.ps1) → RESULT
 ```
 
 Отже, на GitHub потрапляє **лише протестований** коміт, а слухач на іншому сервері сам бачить його там і
@@ -35,7 +35,7 @@ git push на GitHub (push.remote) — ЗАВЖДИ, від Forgejo не зал�
 | `cirun/platform/` | інтерфейс `Platform` (Prepare → SyncSource → Build → Test → FetchArtifacts); `unix.go` — macOS і Linux, `windows.go` |
 | `cirun/orchestrator/` | хвилі з `requires`, хід і відсоток у терміналі, підсумок, push коміту на GitHub |
 | `cirun/forgejo/` | необов'язково: доступність, mirror-sync / push у Forgejo, статуси коміту |
-| `cirun/gitops/`, `cirun/deploy/` | коміт з перевіркою безпеки, `git archive`; набір для розгортання і публікація на сервер |
+| `cirun/gitops/`, `cirun/deploy/` | коміт з перевіркою безпеки, `git archive`; реліз на GitHub (`release.go`) |
 | `docscan-project/ci/build-test-unix.sh [all\|build\|test]` | збірка і тести на macOS / Linux (cirun кличе `build`, потім `test`) |
 | `docscan-project/ci/check_verdicts.ps1` / `.py` | перевірка документів (Windows без Python / інші ОС) |
 | `docscan-project/ci/expected-verdicts.tsv` | еталон для 42 зразків `test-samples/generated` (оновлювати свідомо: `check_verdicts.py --write`) |
@@ -55,7 +55,7 @@ go run -C docscan-project/ci/cirun .                     # повний прог
 go run -C docscan-project/ci/cirun . --plan              # перевірити конфіг, секрети, машини, GitHub — без збірки
 go run -C docscan-project/ci/cirun . --only macos        # лише ці платформи (через кому)
 go run -C docscan-project/ci/cirun . --fuzz 0            # без фазингу
-go run -C docscan-project/ci/cirun . --no-publish        # без набору на сервер
+go run -C docscan-project/ci/cirun . --release           # після зеленого прогону — реліз на GitHub
 go run -C docscan-project/ci/cirun . --no-push           # не пушити коміт на GitHub
 go run -C docscan-project/ci/cirun . --push-only         # лише git push HEAD на GitHub (після зеленого прогону)
 go run -C docscan-project/ci/cirun . -h                  # усі прапорці
@@ -196,48 +196,31 @@ DocScan (вердикт і знахідки) на тих самих файлах
 Windows 10/11, WinRM (5985), VS Build Tools 2022 (C++), Git, Python 3 (справжній, не з Microsoft Store),
 виняток Defender для `C:\ci`; для фазингу — LLVM (`choco install llvm`). Без LLVM крок fuzz — SKIP.
 
-## Реліз програми на GitHub і набір для розгортання
+## Реліз на GitHub (розгортання)
 
-**Програма** (`bin\`: yara64.exe, yarac64.exe, рантайм VC++) поширюється **лише релізами GitHub** цього
-репозиторію, з версією. Внутрішній сервер тримає решту: правила, watcher, скрипти, критичні правила.
+DocScan поширюється **лише релізами GitHub** цього репозиторію; файлових серверів для розгортання немає.
 
 ```bash
-go run -C docscan-project/ci/cirun . --release             # прогін; зелений і запушений -> реліз
+go run -C docscan-project/ci/cirun . --release                       # прогін; зелений і запушений -> реліз
 go run -C docscan-project/ci/cirun . --release-run ci-out/<прогін>   # реліз з уже зеленого запушеного прогону
 ```
 
-- Повний пакет з Windows ділиться (`ci-out/<прогін>/release/`): `DocScan-bin-<версія>.zip` (лише `bin/`) — актив
-  релізу `docscan-<версія>` (тег на протестований коміт); `DocScan-<версія>.zip` — пакет **без** `bin/`, з
-  `BIN-URL.txt` (адреса активу). `SHA256SUMS.txt` у ньому повний — з хешами `bin\*`.
-- `gh release create` (gh на Маку, авторизований), потім актив качається за публічною адресою і звіряється SHA256.
-  Наявний реліз не перезаписується. Репозиторій — `release.repo` у `config.yaml`, порожньо — з адреси `push.remote`.
-- На ПК `DocScan-Install.ps1` качає пакет з внутрішнього сервера, потім програму з GitHub за `BIN-URL.txt`;
-  `install.ps1` звіряє **всі** файли з `SHA256SUMS.txt` внутрішнього пакета — підмінений на GitHub exe не
-  встановиться. Довіра — внутрішньому серверу, GitHub — лише сховище програми. ПК потрібен доступ до
-  `github.com` і `objects.githubusercontent.com` (TLS 1.2).
-- Без `--release` набір на сервер не викладається (у ньому немає програми). Повний пакет з `bin\` лишається в
-  `ci-out/<прогін>/windows/` — для тестів і ручного встановлення.
-
-Набір для внутрішнього сервера (`ci-out/<прогін>/deploy/`, з `--release`):
+Реліз `docscan-<версія>` (тег на протестований коміт), активи в `ci-out/<прогін>/release/`:
 
 ```
-DocScan-<дата>-<коміт>.zip + .sha256     пакет без програми (+ BIN-URL.txt усередині)
-DocScan-bin-<дата>-<коміт>.zip.sha256    для перевірки активу релізу перед викладанням
-DocScan-latest.txt                       ім'я поточного пакета
-DocScan-Install.ps1                      інсталятор з сервера
-DocScan-Setup.ps1 / -Pilot / -Critical   завантажувачі для irm | iex (адреса сервера вже підставлена)
-critical-rules.yar                       правила E5Search (якщо задано deploy.critical_rules у config.yaml)
+DocScan-windows-x64.zip + .sha256   повний пакет: bin\ (yara64, yarac64, рантайм VC++), rules\, watcher\, install.ps1 ...
+DocScan-Install.ps1                 єдиний скрипт для ПК
 ```
 
-**Публікація зараз вимкнена** (`deploy.publish: false` у `config.yaml`): набір лише лежить у `ci-out/<прогін>/deploy/`.
-З `publish: true` (і `--release`) cirun спершу перевіряє актив релізу на GitHub, тоді набір іде на сервер розгортання по ssh, SHA256 звіряється на сервері і лише тоді перемикається
-`DocScan-latest.txt` — з цього моменту `irm http://<сервер>:8080/docscan/DocScan-Setup.ps1 | iex` ставить новий пакет.
-Не зелений прогін — не публікується ніколи. Разово без публікації: `--no-publish`. Викласти готовий набір без
-збірки: `go run -C docscan-project/ci/cirun . --publish-dir ci-out/<прогін>/deploy`.
-
-Сервер розгортання — розділ `deploy` у `config.yaml` (`host`, `user_ref`, `password_ref`, `dir`, `url`,
-`critical_rules`). Для нічної Дії у Forgejo (завдання windows → `cirun windows`) потрібні секрети Forgejo
-`WIN11_*` / `WIN216_*` (`HOST`, `USER`, `PASS`) і `CI_GIT_TOKEN`.
+- Імена активів однакові в усіх релізах — `releases/latest/download/<ім'я>` завжди дає найновіший (без GitHub API
+  і його ліміту 60 запитів/год з однієї адреси).
+- `gh release create` (gh на Маку, авторизований), потім пакет качається за публічною адресою і звіряється SHA256.
+  Наявний реліз не перезаписується (якщо його пакет — саме ця збірка, це не помилка). Репозиторій —
+  `release.repo` у `config.yaml`, порожньо — з адреси `push.remote`.
+- На ПК: `DocScan-Install.ps1` качає пакет з релізу, звіряє SHA256, запускає `install.ps1` з пакета (той ще раз
+  звіряє кожен файл з `SHA256SUMS.txt`). Правила E5Search у реліз не входять: `-Critical <файл / UNC / URL>`.
+- Довіра — обліковому запису GitHub (увімкнена 2FA обов'язкова): хто може створити реліз, той ставить програму на ПК.
+- Не зелений або не запушений прогін релізу не робить ніколи.
 
 ## Налаштування з нуля (покроково)
 
@@ -300,7 +283,7 @@ forgejo-runner register --no-interactive --instance http://<forgejo>:3000 --toke
 
 ### 5. VS Code
 `.vscode/tasks.json` уже в репозиторії:
-- **Cmd+Shift+B** → «DocScan CI»: коміт → усі системи + фазинг 300 с → push (і набір на сервер, якщо `publish: true`), лише якщо зелене;
+- **Cmd+Shift+B** → «DocScan CI»: коміт → усі системи + фазинг 300 с → push, лише якщо зелене (реліз — лише з `--release`);
 - *Terminal → Run Task…* → «DocScan CI (no fuzzing)», «DocScan local: build + tests on this Mac (no push)».
 
 Адресу Forgejo і токени `cirun` бере з `config.yaml` (розділ `forgejo`, посилання на KeePassXC). Кнопка в рядку стану — розширення *Task Buttons*

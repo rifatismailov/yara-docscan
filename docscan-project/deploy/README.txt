@@ -5,32 +5,27 @@ DocScan стежить за новими файлами, перевіряє до
 і vendor-правилами, лікує заражені документи, зберігає код макросів і пише результат для агента Wazuh.
 На вибраних ПК (юрист, бухгалтер, кадровик) — ще й ставить документи з критичною інформацією в чергу E5Search.
 
-1. З HTTP-сервера одним рядком (PowerShell від адміністратора)
---------------------------------------------------------------
-     irm http://<сервер>:8080/docscan/DocScan-Setup.ps1 | iex            # звичайний ПК (детект + лікування)
-     irm http://<сервер>:8080/docscan/DocScan-Setup-Pilot.ps1 | iex      # пілот: лише детект і алерти
-     irm http://<сервер>:8080/docscan/DocScan-Setup-Critical.ps1 | iex   # ПК юриста / бухгалтера / кадровика
+1. З релізу GitHub (PowerShell від адміністратора)
+--------------------------------------------------
+     $f = "$env:TEMP\DocScan-Install.ps1"
+     irm https://github.com/rifatismailov/yara-docscan/releases/latest/download/DocScan-Install.ps1 -OutFile $f
+     powershell -ExecutionPolicy Bypass -File $f                          # звичайний ПК (детект + лікування)
+     powershell -ExecutionPolicy Bypass -File $f -DetectOnly              # пілот: лише детект і алерти
+     powershell -ExecutionPolicy Bypass -File $f -Critical <файл|URL>     # ПК юриста / бухгалтера / кадровика
                                                                           # (+ третій прохід, черга E5Search)
-   Той самий рядок і оновлює: береться пакет, назва якого в DocScan-latest.txt.
-   Успіх — рядок "Done." у кінці.
+   Ті самі команди й оновлюють: береться останній реліз (конкретний - -Version 20261116-7b6f6764).
+   Успіх - рядок "Done." у кінці.
 
-   Що лежить на сервері (тека scripts/docscan/, URL http://<сервер>:8080/docscan/):
-     DocScan-Setup.ps1, DocScan-Setup-Pilot.ps1, DocScan-Setup-Critical.ps1   маленькі ASCII-завантажувачі
-                                       ($BaseUrl = адреса сервера; $InstallArg = @() / @('-DetectOnly') / @('-Critical'))
-     DocScan-Install.ps1               завантажує пакет, звіряє SHA256, качає програму з GitHub, запускає install.ps1
-     DocScan-<версія>.zip + .sha256    пакет БЕЗ програми (bin\); BIN-URL.txt усередині - адреса релізу GitHub
-     DocScan-latest.txt                один рядок — ім'я поточного пакета
-     critical-rules.yar                правила E5Search для третього проходу (беруться лише з -Critical)
-   Програма (yara64.exe, yarac64.exe, рантайм VC++) - лише в релізах GitHub (docscan-<версія>,
-   DocScan-bin-<версія>.zip); install.ps1 звіряє її з SHA256SUMS.txt пакета з цього сервера. ПК потрібен
-   доступ до github.com і objects.githubusercontent.com.
-   Нова версія: cirun --release (реліз + набір); вручну - реліз на GitHub, потім zip + .sha256 сюди і
-   змінити DocScan-latest.txt; скрипти не міняються.
-
-   Напряму, без irm:
-     powershell -ExecutionPolicy Bypass -File .\DocScan-Install.ps1 -BaseUrl http://<сервер>:8080/docscan [-DetectOnly] [-Critical]
-   Інші параметри DocScan-Install.ps1: -NoCritical (вимкнути третій прохід), -NoMacroUpload (код макросів —
-   лише на ПК), -WatchPath, -NoAvExclusion, -QuarantineGeneral.
+   У релізі GitHub (docscan-<версія>) - усе, файлових серверів немає:
+     DocScan-windows-x64.zip + .sha256   пакет: bin\ (yara64.exe, yarac64.exe, рантайм VC++), rules\, watcher\,
+                                         install.ps1, uninstall.ps1, SHA256SUMS.txt, VERSION.txt
+     DocScan-Install.ps1                 качає пакет, звіряє SHA256, запускає install.ps1 з пакета
+   Правила E5Search (critical-rules.yar) у реліз НЕ входять (чутливі): -Critical бере їх з локального файлу,
+   UNC-шляху або URL (приватний URL - -CriticalToken або змінна DOCSCAN_CRITICAL_TOKEN).
+   ПК потрібен доступ до github.com і objects.githubusercontent.com (TLS 1.2).
+   Інші параметри DocScan-Install.ps1: -NoCritical (вимкнути третій прохід), -MacroUpload <url> (копії коду
+   макросів на колектор; без нього код лишається на ПК), -WatchPath, -NoAvExclusion, -QuarantineGeneral.
+   Нова версія: cirun --release (після зеленого прогону).
 
 2. Вручну з розпакованого пакета
 --------------------------------

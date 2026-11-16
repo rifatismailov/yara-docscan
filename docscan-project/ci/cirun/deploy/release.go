@@ -1,15 +1,17 @@
+// Package deploy — реліз DocScan на GitHub (cirun --release / --release-run). Файлових серверів для
+// розгортання немає: ПК бере ВСЕ з релізу GitHub цього репозиторію.
+//
+// Активи релізу docscan-<версія> (тег на протестований і запушений коміт):
+//
+//	DocScan-windows-x64.zip (+ .sha256)  повний пакет: bin\ (yara64, yarac64, рантайм VC++), rules\,
+//	                                     watcher\, install.ps1, uninstall.ps1, SHA256SUMS.txt, VERSION.txt
+//	DocScan-Install.ps1                  єдиний скрипт для ПК: качає пакет з релізу, звіряє SHA256,
+//	                                     запускає install.ps1 з пакета
+//
+// Імена активів однакові в усіх релізах, тож .../releases/latest/download/<ім'я> - завжди найновіший
+// (без GitHub API і його ліміту 60 запитів на годину з однієї адреси). Правила E5Search (critical) у
+// реліз НЕ потрапляють: їх дають інсталятору окремо (-Critical <файл або URL>).
 package deploy
-
-// Реліз на GitHub (cirun --release): програма (bin\ - yara64.exe, yarac64.exe, рантайм VC++) лежить
-// ЛИШЕ в релізах GitHub, з версією; внутрішній сервер тримає решту пакета (правила, watcher, скрипти)
-// без bin\. Пакет з Windows (DocScan-<версія>.zip, повний - ним користуються тести) ділиться на два:
-//
-//   DocScan-bin-<версія>.zip   bin\* - актив релізу docscan-<версія> на GitHub (+ .sha256);
-//   DocScan-<версія>.zip       усе, крім bin\, + BIN-URL.txt (адреса активу) - внутрішній сервер.
-//
-// SHA256SUMS.txt лишається повним: у ньому і хеші bin\*. DocScan-Install.ps1 качає bin з GitHub, а
-// install.ps1 звіряє ВСІ файли з SHA256SUMS.txt внутрішнього пакета - підмінений на GitHub exe не
-// встановиться (довіра - внутрішньому серверу, GitHub - лише сховище).
 
 import (
 	"archive/zip"
@@ -27,20 +29,23 @@ import (
 	"time"
 )
 
-// Release — актив релізу: тег, локальний файл, його sha256 і адреса завантаження.
+// PkgAsset — ім'я пакета серед активів релізу (однакове в усіх релізах).
+const PkgAsset = "DocScan-windows-x64.zip"
+
+// Release — реліз: репозиторій, тег, версія, теки з активами, sha256 пакета.
 type Release struct {
-	Repo, Tag, BinZip, BinSHA, URL string
+	Repo, Tag, Version, Dir, PkgSHA string
+	Assets                          []string
 }
 
 var verRe = regexp.MustCompile(`^DocScan-(\d{8}-[0-9a-f]+)\.zip$`)
 
-// FullPackage — найновіший повний пакет прогону: <runDir>/<платформа>/DocScan-<версія>.zip.
+// FullPackage — найновіший пакет прогону: <runDir>/<платформа>/DocScan-<версія>.zip.
 func FullPackage(runDir string) (path, version string, err error) {
 	zips, _ := filepath.Glob(filepath.Join(runDir, "*", "DocScan-*.zip"))
 	var full []string
 	for _, z := range zips {
-		d := filepath.Base(filepath.Dir(z))
-		if d != "deploy" && d != "release" && verRe.MatchString(filepath.Base(z)) {
+		if filepath.Base(filepath.Dir(z)) != "release" && verRe.MatchString(filepath.Base(z)) {
 			full = append(full, z)
 		}
 	}
@@ -52,147 +57,142 @@ func FullPackage(runDir string) (path, version string, err error) {
 	return path, verRe.FindStringSubmatch(filepath.Base(path))[1], nil
 }
 
-// AssetURL — адреса активу релізу на GitHub.
-func AssetURL(repo, version string) string {
-	return fmt.Sprintf("https://github.com/%s/releases/download/docscan-%s/DocScan-bin-%s.zip", repo, version, version)
+// DownloadURL — адреса активу релізу.
+func DownloadURL(repo, tag, asset string) string {
+	return fmt.Sprintf("https://github.com/%s/releases/download/%s/%s", repo, tag, asset)
 }
 
-// Split ділить повний пакет: DocScan-bin-<v>.zip (лише bin/) і DocScan-<v>.zip (без bin/, + BIN-URL.txt)
-// у теці dir. Імена в zip - з прямими скісними (Compress-Archive пише "\"). Повертає шляхи обох.
-func Split(full, version, binURL, dir string) (binZip, pkgZip string, err error) {
-	zr, err := zip.OpenReader(full)
+// Prepare складає активи в <runDir>/release: пакет (імена в zip - з прямими скісними: Compress-Archive
+// пише "\"), його .sha256, DocScan-Install.ps1.
+func Prepare(runDir, repo string) (*Release, error) {
+	full, ver, err := FullPackage(runDir)
 	if err != nil {
-		return "", "", err
+		return nil, err
+	}
+	r := &Release{Repo: repo, Tag: "docscan-" + ver, Version: ver, Dir: filepath.Join(runDir, "release")}
+	os.RemoveAll(r.Dir)
+	if err := os.MkdirAll(r.Dir, 0o755); err != nil {
+		return nil, err
+	}
+	pkg := filepath.Join(r.Dir, PkgAsset)
+	if err := repack(full, pkg); err != nil {
+		return nil, err
+	}
+	if r.PkgSHA, err = fileSHA(pkg); err != nil {
+		return nil, err
+	}
+	if err := os.WriteFile(pkg+".sha256", []byte(r.PkgSHA+"  "+PkgAsset+"\n"), 0o644); err != nil {
+		return nil, err
+	}
+	inst, err := os.ReadFile(filepath.Join("docscan-project", "deploy", "DocScan-Install.ps1"))
+	if err != nil {
+		return nil, err
+	}
+	if err := os.WriteFile(filepath.Join(r.Dir, "DocScan-Install.ps1"), inst, 0o644); err != nil {
+		return nil, err
+	}
+	r.Assets = []string{pkg, pkg + ".sha256", filepath.Join(r.Dir, "DocScan-Install.ps1")}
+	return r, nil
+}
+
+// repack переписує zip з прямими скісними в іменах; перевіряє, що це пакет DocScan.
+func repack(src, dst string) error {
+	zr, err := zip.OpenReader(src)
+	if err != nil {
+		return err
 	}
 	defer zr.Close()
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return "", "", err
-	}
-	binZip = filepath.Join(dir, "DocScan-bin-"+version+".zip")
-	pkgZip = filepath.Join(dir, "DocScan-"+version+".zip")
-	bf, err := os.Create(binZip)
+	f, err := os.Create(dst)
 	if err != nil {
-		return "", "", err
+		return err
 	}
-	defer bf.Close()
-	pf, err := os.Create(pkgZip)
-	if err != nil {
-		return "", "", err
-	}
-	defer pf.Close()
-	bw, pw := zip.NewWriter(bf), zip.NewWriter(pf)
-	nbin, hasSums := 0, false
-	for _, f := range zr.File {
-		name := strings.ReplaceAll(f.Name, `\`, "/")
+	defer f.Close()
+	w := zip.NewWriter(f)
+	need := map[string]bool{"bin/yara64.exe": false, "install.ps1": false, "SHA256SUMS.txt": false, "watcher/docscan-watcher.ps1": false}
+	for _, e := range zr.File {
+		name := strings.ReplaceAll(e.Name, `\`, "/")
 		if strings.HasSuffix(name, "/") {
 			continue
 		}
-		w := pw
-		if strings.HasPrefix(strings.ToLower(name), "bin/") {
-			w = bw
-			nbin++
+		if _, ok := need[name]; ok {
+			need[name] = true
 		}
-		if name == "SHA256SUMS.txt" {
-			hasSums = true
-		}
-		if err := copyEntry(w, f, name); err != nil {
-			return "", "", err
-		}
-	}
-	if nbin == 0 || !hasSums {
-		return "", "", fmt.Errorf("%s: no bin/ or no SHA256SUMS.txt - not a DocScan package", full)
-	}
-	hw, err := pw.CreateHeader(&zip.FileHeader{Name: "BIN-URL.txt", Method: zip.Deflate, Modified: time.Now()})
-	if err != nil {
-		return "", "", err
-	}
-	io.WriteString(hw, binURL+"\r\n")
-	if err := bw.Close(); err != nil {
-		return "", "", err
-	}
-	if err := pw.Close(); err != nil {
-		return "", "", err
-	}
-	for _, z := range []string{binZip, pkgZip} {
-		s, err := fileSHA(z)
+		r, err := e.Open()
 		if err != nil {
-			return "", "", err
+			return err
 		}
-		os.WriteFile(z+".sha256", []byte(s+"  "+filepath.Base(z)+"\n"), 0o644)
+		out, err := w.CreateHeader(&zip.FileHeader{Name: name, Method: zip.Deflate, Modified: e.Modified})
+		if err == nil {
+			_, err = io.Copy(out, r)
+		}
+		r.Close()
+		if err != nil {
+			return err
+		}
 	}
-	return binZip, pkgZip, nil
+	for n, ok := range need {
+		if !ok {
+			return fmt.Errorf("%s: no %s - not a DocScan package", src, n)
+		}
+	}
+	return w.Close()
 }
 
-func copyEntry(w *zip.Writer, f *zip.File, name string) error {
-	r, err := f.Open()
-	if err != nil {
-		return err
-	}
-	defer r.Close()
-	h := &zip.FileHeader{Name: name, Method: zip.Deflate, Modified: f.Modified}
-	out, err := w.CreateHeader(h)
-	if err != nil {
-		return err
-	}
-	_, err = io.Copy(out, r)
-	return err
-}
-
-// Publish на GitHub: gh release create docscan-<v> (тег на протестований і запушений коміт) з активом
-// DocScan-bin-<v>.zip і .sha256; наявний реліз не перезаписується. Потім актив качається за публічною
-// адресою і звіряється sha256 - так його отримає ПК.
+// Publish: gh release create docscan-<v> з усіма активами (наявний реліз не перезаписується: якщо його
+// пакет - саме ця збірка, це не помилка). Потім пакет качається за публічною адресою і звіряється sha256.
 func (r *Release) Publish(sha string, say func(string, ...any)) error {
+	url := DownloadURL(r.Repo, r.Tag, PkgAsset)
 	if out, err := exec.Command("gh", "release", "view", r.Tag, "--repo", r.Repo).CombinedOutput(); err == nil {
-		return fmt.Errorf("release %s already exists on %s - not overwritten", r.Tag, r.Repo)
+		if err := AssetOK(url, r.PkgSHA); err != nil {
+			return fmt.Errorf("release %s already exists on %s with a different package - not overwritten: %w", r.Tag, r.Repo, err)
+		}
+		say("\nGitHub release %s already exists, its package is this build\n    %s", r.Tag, url)
+		return nil
 	} else if !strings.Contains(string(out), "not found") {
 		return fmt.Errorf("gh release view: %s (is gh installed and logged in?)", strings.TrimSpace(string(out)))
 	}
-	notes := fmt.Sprintf("DocScan %s - yara64.exe / yarac64.exe (Windows x64) built and tested by cirun at commit %s.\n\n"+
-		"Installed by DocScan-Install.ps1 from the internal deployment server: the files are verified against the "+
-		"SHA256SUMS.txt of the internal package, not only against the .sha256 here.", strings.TrimPrefix(r.Tag, "docscan-"), sha)
+	base := "https://github.com/" + r.Repo + "/releases/latest/download"
+	notes := fmt.Sprintf("DocScan %s for Windows 10/11 x64 - built and tested by cirun at commit %s.\n\n"+
+		"Install or update (PowerShell as Administrator):\n\n"+
+		"    $f = \"$env:TEMP\\DocScan-Install.ps1\"\n"+
+		"    irm %s/DocScan-Install.ps1 -OutFile $f\n"+
+		"    powershell -ExecutionPolicy Bypass -File $f                 # standard PC\n"+
+		"    powershell -ExecutionPolicy Bypass -File $f -DetectOnly     # pilot: detection and alerts only\n"+
+		"    powershell -ExecutionPolicy Bypass -File $f -Critical <file or URL of critical-rules.yar>\n\n"+
+		"%s: yara64.exe, yarac64.exe, VC++ runtime, rules, watcher, install.ps1 / uninstall.ps1. "+
+		"The critical-information rules (E5Search) are not part of the release.", r.Version, sha, base, PkgAsset)
 	say("\nGitHub release %s on %s", r.Tag, r.Repo)
-	c := exec.Command("gh", "release", "create", r.Tag, r.BinZip, r.BinZip+".sha256", "--repo", r.Repo,
-		"--target", sha, "--title", "DocScan "+strings.TrimPrefix(r.Tag, "docscan-"), "--notes", notes)
-	if out, err := c.CombinedOutput(); err != nil {
+	args := append([]string{"release", "create", r.Tag}, r.Assets...)
+	args = append(args, "--repo", r.Repo, "--target", sha, "--title", "DocScan "+r.Version, "--notes", notes)
+	if out, err := exec.Command("gh", args...).CombinedOutput(); err != nil {
 		return fmt.Errorf("gh release create: %s", strings.TrimSpace(string(out)))
 	}
-	got, err := urlSHA(r.URL)
-	if err != nil {
-		return fmt.Errorf("release created, but the asset does not download: %w", err)
+	if err := AssetOK(url, r.PkgSHA); err != nil {
+		return fmt.Errorf("release created, but the package does not download correctly: %w", err)
 	}
-	if got != r.BinSHA {
-		return fmt.Errorf("release asset sha256 %s, expected %s", got, r.BinSHA)
-	}
-	say("    %s\n    sha256 %s   OK", r.URL, got)
+	say("    %s\n    sha256 %s   OK", url, r.PkgSHA)
+	say("    install on a PC:  irm %s/DocScan-Install.ps1 -OutFile $f; powershell -ExecutionPolicy Bypass -File $f", base)
 	return nil
 }
 
-// AssetOK — актив релізу доступний і має очікуваний sha256 (перед викладанням на внутрішній сервер).
+// AssetOK — актив доступний за адресою і має очікуваний sha256.
 func AssetOK(url, want string) error {
-	got, err := urlSHA(url)
+	resp, err := (&http.Client{Timeout: 10 * time.Minute}).Get(url)
 	if err != nil {
 		return err
 	}
-	if got != want {
-		return fmt.Errorf("%s: sha256 %s, expected %s", url, got, want)
-	}
-	return nil
-}
-
-func urlSHA(u string) (string, error) {
-	resp, err := (&http.Client{Timeout: 5 * time.Minute}).Get(u)
-	if err != nil {
-		return "", err
-	}
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
-		return "", fmt.Errorf("%s: %s", u, resp.Status)
+		return fmt.Errorf("%s: %s", url, resp.Status)
 	}
 	h := sha256.New()
 	if _, err := io.Copy(h, resp.Body); err != nil {
-		return "", err
+		return err
 	}
-	return hex.EncodeToString(h.Sum(nil)), nil
+	if got := hex.EncodeToString(h.Sum(nil)); got != want {
+		return fmt.Errorf("%s: sha256 %s, expected %s", url, got, want)
+	}
+	return nil
 }
 
 func fileSHA(p string) (string, error) {
@@ -206,24 +206,6 @@ func fileSHA(p string) (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil
-}
-
-// Prepare ділить пакет прогону в <runDir>/release і повертає опис релізу (ще не опублікованого).
-func Prepare(runDir, repo string) (*Release, string, error) {
-	full, ver, err := FullPackage(runDir)
-	if err != nil {
-		return nil, "", err
-	}
-	url := AssetURL(repo, ver)
-	binZip, pkgZip, err := Split(full, ver, url, filepath.Join(runDir, "release"))
-	if err != nil {
-		return nil, "", err
-	}
-	s, err := fileSHA(binZip)
-	if err != nil {
-		return nil, "", err
-	}
-	return &Release{Repo: repo, Tag: "docscan-" + ver, BinZip: binZip, BinSHA: s, URL: url}, pkgZip, nil
 }
 
 // RepoFromRemote — "owner/repo" з адреси git remote GitHub (https://github.com/o/r.git, git@github.com:o/r.git).

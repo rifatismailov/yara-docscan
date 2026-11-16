@@ -95,12 +95,16 @@ held open by Word, and appends one JSON line per file (with a human-readable `su
 `C:\ProgramData\DocScan\results\docscan-results.json` for the Wazuh agent. With pass 3 on, matching
 documents go to `C:\ProgramData\DocScan\critical\critical.json`; another program sends them to E5Search.
 
-Install on a workstation (PowerShell as administrator), from an HTTP server holding the package:
+Install or update on a workstation (PowerShell as administrator) from the
+[GitHub release](https://github.com/rifatismailov/yara-docscan/releases/latest) - it holds everything (yara64,
+rules, watcher, scripts):
 
 ```powershell
-irm http://<server>:8080/docscan/DocScan-Setup.ps1 | iex            # normal PC
-irm http://<server>:8080/docscan/DocScan-Setup-Pilot.ps1 | iex      # pilot: detection and alerts only
-irm http://<server>:8080/docscan/DocScan-Setup-Critical.ps1 | iex   # + pass 3 (critical information)
+$f = "$env:TEMP\DocScan-Install.ps1"
+irm https://github.com/rifatismailov/yara-docscan/releases/latest/download/DocScan-Install.ps1 -OutFile $f
+powershell -ExecutionPolicy Bypass -File $f                                 # normal PC
+powershell -ExecutionPolicy Bypass -File $f -DetectOnly                     # pilot: detection and alerts only
+powershell -ExecutionPolicy Bypass -File $f -Critical <file or URL>         # + pass 3 (critical-information rules, not in the release)
 ```
 
 The installer verifies the package, adds Defender exclusions, configures the Wazuh agent and registers the
