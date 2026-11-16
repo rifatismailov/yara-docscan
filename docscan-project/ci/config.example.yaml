@@ -91,8 +91,14 @@ forgejo:                  # OPTIONAL extra after the push: mirror sync and commi
   report:
     commit_status: true   # commit statuses cirun/<platform> in Forgejo
 
+# The program (yara64.exe, yarac64.exe, VC++ runtime) is distributed ONLY as GitHub releases:
+# cirun --release (green + pushed run) -> release docscan-<version> with DocScan-bin-<version>.zip.
+# Needs the gh CLI logged in on this Mac (gh auth login).
+release:
+  repo: ""              # owner/repo; empty - from the push remote URL
+
 deploy:
-  publish: false        # true - upload the deployment set to the server after a green run
+  publish: false        # true - with --release: upload the deployment set (package WITHOUT the program) to the server
   host: <server-ip>
   user_ref: "keepassxc:CI/Deploy/fs#UserName"
   password_ref: "keepassxc:CI/Deploy/fs"

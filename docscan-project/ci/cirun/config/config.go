@@ -101,6 +101,11 @@ type Secrets struct {
 	KeePassXC KeePassXC `yaml:"keepassxc"`  // посилання keepassxc:<група/запис>[#атрибут]
 }
 
+// Release — реліз програми на GitHub (cirun --release; gh має бути встановлений і авторизований).
+type Release struct {
+	Repo string `yaml:"repo"` // "owner/repo"; порожньо — з адреси push.remote
+}
+
 // Push — головна публікація: git push коміту на GitHub після зеленого прогону. Від Forgejo не
 // залежить: слухач на іншому сервері сам стежить за GitHub і запускає свої тести.
 type Push struct {
@@ -166,6 +171,7 @@ type Config struct {
 	Forgejo    Forgejo              `yaml:"forgejo"`
 	Deploy     Deploy               `yaml:"deploy"`
 	FileServer FileServer           `yaml:"fileserver"`
+	Release    Release              `yaml:"release"`
 
 	Path string `yaml:"-"` // звідки завантажено
 }

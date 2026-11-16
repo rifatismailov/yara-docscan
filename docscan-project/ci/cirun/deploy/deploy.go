@@ -3,6 +3,7 @@
 package deploy
 
 import (
+	"archive/zip"
 	"fmt"
 	"io"
 	"net/http"
@@ -33,17 +34,27 @@ func Base(d config.Deploy) string {
 	return "http://" + h + ":8080/docscan"
 }
 
-// Build складає набір у <runDir>/deploy з найновішого <runDir>/*/DocScan-*.zip (nil — пакета немає):
-// пакет + .sha256, DocScan-latest.txt, DocScan-Install.ps1, три завантажувачі DocScan-Setup*.ps1 з
-// адресою сервера (шаблон — лише ASCII, бо його виконує «irm | iex»; рядки — CRLF), critical-rules.yar.
+// Build складає набір у <runDir>/deploy з пакета БЕЗ програми <runDir>/release/DocScan-<v>.zip (його
+// робить Prepare; програма - лише в релізі GitHub, nil - пакета немає): пакет + .sha256, BIN-URL.txt і
+// DocScan-bin-<v>.zip.sha256 (для перевірки релізу перед викладанням), DocScan-latest.txt,
+// DocScan-Install.ps1, три завантажувачі DocScan-Setup*.ps1 з адресою сервера (шаблон — лише ASCII, бо
+// його виконує «irm | iex»; рядки — CRLF), critical-rules.yar.
 func Build(runDir string, d config.Deploy, say func(string, ...any)) (*Set, error) {
-	zips, _ := filepath.Glob(filepath.Join(runDir, "*", "DocScan-*.zip"))
-	if len(zips) == 0 {
+	_, ver, err := FullPackage(runDir)
+	if err != nil {
 		say("\n(no Windows package in this run - no deployment set)")
 		return nil, nil
 	}
-	sort.Strings(zips)
-	zipPath := zips[len(zips)-1]
+	rel := filepath.Join(runDir, "release")
+	zipPath := filepath.Join(rel, "DocScan-"+ver+".zip")
+	binSum := filepath.Join(rel, "DocScan-bin-"+ver+".zip.sha256")
+	if _, err := os.Stat(binSum); err != nil {
+		return nil, fmt.Errorf("no GitHub release prepared for %s - the program is distributed only from GitHub releases (run with --release)", ver)
+	}
+	url, err := pkgBinURL(zipPath)
+	if err != nil {
+		return nil, err
+	}
 	base := Base(d)
 	dir := filepath.Join(runDir, "deploy")
 	os.RemoveAll(dir)
@@ -51,7 +62,10 @@ func Build(runDir string, d config.Deploy, say func(string, ...any)) (*Set, erro
 		return nil, err
 	}
 	pkg := filepath.Base(zipPath)
-	for _, cp := range [][2]string{{zipPath, pkg}, {zipPath + ".sha256", pkg + ".sha256"},
+	if err := os.WriteFile(filepath.Join(dir, "BIN-URL.txt"), []byte(url+"\n"), 0o644); err != nil {
+		return nil, err
+	}
+	for _, cp := range [][2]string{{zipPath, pkg}, {zipPath + ".sha256", pkg + ".sha256"}, {binSum, filepath.Base(binSum)},
 		{filepath.Join("docscan-project", "deploy", "DocScan-Install.ps1"), "DocScan-Install.ps1"}} {
 		if err := copyFile(cp[0], filepath.Join(dir, cp[1])); err != nil {
 			return nil, err
@@ -120,6 +134,17 @@ func Publish(s *Set, d config.Deploy, sec *config.Resolver, say func(string, ...
 	if d.Host == "" || user == "" || pass == "" {
 		return fmt.Errorf("deploy: host, user and password_ref are required")
 	}
+	// програма - з релізу GitHub: актив має бути доступний і збігатися, інакше ПК не встановлять пакет
+	ver := strings.TrimSuffix(strings.TrimPrefix(s.Pkg, "DocScan-"), ".zip")
+	url, _ := os.ReadFile(filepath.Join(s.Dir, "BIN-URL.txt"))
+	sum, _ := os.ReadFile(filepath.Join(s.Dir, "DocScan-bin-"+ver+".zip.sha256"))
+	if len(url) == 0 || len(sum) < 64 {
+		return fmt.Errorf("the set has no BIN-URL.txt / DocScan-bin-%s.zip.sha256 (made without --release?)", ver)
+	}
+	if err := AssetOK(strings.TrimSpace(string(url)), string(sum[:64])); err != nil {
+		return fmt.Errorf("GitHub release asset: %w - DocScan-latest.txt NOT switched", err)
+	}
+	say("\nGitHub release asset OK: %s", strings.TrimSpace(string(url)))
 	target := user + "@" + d.Host
 	env := append(os.Environ(), "SSHPASS="+pass)
 	var files []string
@@ -169,10 +194,16 @@ func Publish(s *Set, d config.Deploy, sec *config.Resolver, say func(string, ...
 	return nil
 }
 
-// ExistingSet — набір з готової теки (--publish-dir): найновіший DocScan-*.zip у ній.
+// ExistingSet — набір з готової теки (--publish-dir): найновіший DocScan-<версія>.zip у ній.
 func ExistingSet(dir string) (*Set, error) {
 	dir, _ = filepath.Abs(dir)
-	zips, _ := filepath.Glob(filepath.Join(dir, "DocScan-*.zip"))
+	var zips []string
+	all, _ := filepath.Glob(filepath.Join(dir, "DocScan-*.zip"))
+	for _, z := range all {
+		if verRe.MatchString(filepath.Base(z)) {
+			zips = append(zips, z)
+		}
+	}
 	if len(zips) == 0 {
 		return nil, fmt.Errorf("no DocScan-*.zip in %s", dir)
 	}
@@ -208,4 +239,25 @@ func copyFile(src, dst string) error {
 		return err
 	}
 	return out.Close()
+}
+
+// pkgBinURL — BIN-URL.txt з пакета без програми.
+func pkgBinURL(pkg string) (string, error) {
+	zr, err := zip.OpenReader(pkg)
+	if err != nil {
+		return "", err
+	}
+	defer zr.Close()
+	for _, f := range zr.File {
+		if f.Name == "BIN-URL.txt" {
+			r, err := f.Open()
+			if err != nil {
+				return "", err
+			}
+			b, err := io.ReadAll(r)
+			r.Close()
+			return strings.TrimSpace(string(b)), err
+		}
+	}
+	return "", fmt.Errorf("%s has no BIN-URL.txt", pkg)
 }

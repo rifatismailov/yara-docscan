@@ -84,7 +84,15 @@ foreach ($l in Get-Content $sums) {
   if (-not (Test-Path -LiteralPath $f)) { $bad += "missing: $($Matches[2])"; continue }
   if ((Get-FileHash -LiteralPath $f -Algorithm SHA256).Hash.ToLower() -ne $Matches[1]) { $bad += "modified: $($Matches[2])" }
 }
-if ($bad.Count) { $bad | % { Write-Host "  $_" -ForegroundColor Red }; Fail "the package is damaged or modified" }
+if ($bad.Count) {
+  $bad | % { Write-Host "  $_" -ForegroundColor Red }
+  # a package from the deployment server has no bin\: the program comes from the GitHub release (BIN-URL.txt)
+  if (($bad -match '^missing: bin\\') -and (Test-Path (Join-Path $Pkg "BIN-URL.txt"))) {
+    Fail ("the program is not in this package - install with DocScan-Install.ps1, or unpack " +
+          ((Get-Content (Join-Path $Pkg "BIN-URL.txt") -TotalCount 1) -join "") + " here first")
+  }
+  Fail "the package is damaged or modified"
+}
 Write-Host "  ok ($((Get-Content $sums).Count) files)"
 
 # --- 2. stop the previous version ---

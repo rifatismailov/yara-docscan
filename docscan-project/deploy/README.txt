@@ -17,11 +17,15 @@ DocScan стежить за новими файлами, перевіряє до
    Що лежить на сервері (тека scripts/docscan/, URL http://<сервер>:8080/docscan/):
      DocScan-Setup.ps1, DocScan-Setup-Pilot.ps1, DocScan-Setup-Critical.ps1   маленькі ASCII-завантажувачі
                                        ($BaseUrl = адреса сервера; $InstallArg = @() / @('-DetectOnly') / @('-Critical'))
-     DocScan-Install.ps1               завантажує пакет, звіряє SHA256, запускає install.ps1
-     DocScan-<версія>.zip + .sha256    пакет
+     DocScan-Install.ps1               завантажує пакет, звіряє SHA256, качає програму з GitHub, запускає install.ps1
+     DocScan-<версія>.zip + .sha256    пакет БЕЗ програми (bin\); BIN-URL.txt усередині - адреса релізу GitHub
      DocScan-latest.txt                один рядок — ім'я поточного пакета
      critical-rules.yar                правила E5Search для третього проходу (беруться лише з -Critical)
-   Нова версія: покласти zip + .sha256 і змінити DocScan-latest.txt; скрипти не міняються.
+   Програма (yara64.exe, yarac64.exe, рантайм VC++) - лише в релізах GitHub (docscan-<версія>,
+   DocScan-bin-<версія>.zip); install.ps1 звіряє її з SHA256SUMS.txt пакета з цього сервера. ПК потрібен
+   доступ до github.com і objects.githubusercontent.com.
+   Нова версія: cirun --release (реліз + набір); вручну - реліз на GitHub, потім zip + .sha256 сюди і
+   змінити DocScan-latest.txt; скрипти не міняються.
 
    Напряму, без irm:
      powershell -ExecutionPolicy Bypass -File .\DocScan-Install.ps1 -BaseUrl http://<сервер>:8080/docscan [-DetectOnly] [-Critical]

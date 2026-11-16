@@ -8,6 +8,8 @@
 #   1) reads the current package name from <BaseUrl>/DocScan-latest.txt (or -Version);
 #   2) downloads DocScan-<version>.zip and .sha256, checks the SHA256 (stops on mismatch);
 #   3) unpacks it into a temp folder and runs install.ps1 with the given parameters
+#      (the program - bin\ - is a GitHub release asset: downloaded from the address in BIN-URL.txt;
+#      a package that still contains bin\ is installed as it is)
 #      (install.ps1 checks every file again against SHA256SUMS.txt inside the package);
 #   4) removes the temp files.
 # Update: put the new zip + .sha256 on the server and its name into DocScan-latest.txt; this script stays the same.
@@ -73,6 +75,25 @@ try {
   Expand-Archive $zip $dir -Force
   $inst = Join-Path $dir "install.ps1"
   if (-not (Test-Path $inst)) { Fail "install.ps1 is missing from the package" }
+
+  # 3a) the program (bin\: yara64.exe, yarac64.exe, VC++ runtime) is not on this server: it is a GitHub
+  # release asset, its address is in BIN-URL.txt. Trust comes from THIS server: install.ps1 checks the
+  # downloaded files against SHA256SUMS.txt of the package, so a replaced file on GitHub is refused.
+  $binUrlF = Join-Path $dir "BIN-URL.txt"
+  if (-not (Test-Path (Join-Path $dir "bin\yara64.exe")) -and (Test-Path $binUrlF)) {
+    $binUrl = ((Get-Content $binUrlF -TotalCount 1) -join "").Trim()
+    if ($binUrl -notmatch '^https://github\.com/[\w.-]+/[\w.-]+/releases/download/[\w.-]+/DocScan-bin-[\w.-]+\.zip$') {
+      Fail "unexpected program address in BIN-URL.txt: '$binUrl'"
+    }
+    Write-Host "==> program: $binUrl" -ForegroundColor Cyan
+    # GitHub accepts TLS 1.2+ only; Windows PowerShell 5.1 may offer older versions by default
+    [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+    $binZip = Join-Path $work "bin.zip"
+    try { Invoke-WebRequest -UseBasicParsing $binUrl -OutFile $binZip }
+    catch { Fail "could not download the program from GitHub - $($_.Exception.Message)" }
+    Expand-Archive $binZip $dir -Force
+    if (-not (Test-Path (Join-Path $dir "bin\yara64.exe"))) { Fail "the GitHub release asset has no bin\yara64.exe" }
+  }
 
   # same process with splatting: -File cannot pass arrays (-WatchPath 'C:\Users','D:\Shares')
   $p = @{}
