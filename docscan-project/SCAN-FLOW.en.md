@@ -877,6 +877,9 @@ No `yarac64.exe` or the compile fails — a WARN in the log and scans from the `
   together with `yara_doc_matches` and the Layer 2 matches `yara_part_matches`, `yara_matches`) — a document
   is raised to at least `MEDIUM`, a general file becomes `HIGH`. Also `SKIPPED` (> `-MaxSizeMB`) and
   `ERROR` (scan failed).
+- **An archive under another name** (a ZIP called `soy.exe`): yara64 recognises the archive by its content
+  (`ftype: zip`) and checks the files inside. A vendor rule on a file inside → `yara_file_matches` and at
+  least `MEDIUM`, no quarantine (decision 2026-11-16 after the combat test). A real `.zip` is handled as above (`HIGH`, quarantine).
 - Vendor rules see the bytes **before** disarm: yara collects the matches before `--docscan-disarm` runs.
 - **Not scanned** (`-ExcludePattern`): `results\`, `*.docscan-bak`, Office lock files `~$*`,
   `$Recycle.Bin`, browser/Packages/OneDrive/WebCache caches, `Recent` (it gets an `.lnk` on every file open).

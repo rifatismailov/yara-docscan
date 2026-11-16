@@ -343,6 +343,16 @@ function Scan-File([string]$path, [string]$evt) {
         try { Copy-Item -LiteralPath $path $dst -ErrorAction Stop; Remove-Item -LiteralPath $path -Force -ErrorAction Stop; $rec.disarm = "quarantined" }
         catch { $rec.errors += "quarantine failed: $_"; $rec.disarm = "failed:quarantine" }
       }
+      # an archive under another name (a ZIP called soy.exe): yara64 recognises it by its content
+      # (ftype "zip") and checks the files inside, but it is neither a document nor a .zip above -
+      # a vendor rule on a file inside it gives MEDIUM (reported, not quarantined)
+      if ($ds.docscan -and $ds.docscan.ftype -eq "zip" -and $cat -ne "document" -and -not $isZip) {
+        $inner = @(foreach ($pm in @($ds.docscan.yara_part_matches)) { if ($pm) { @($pm.rules) } }) | ? { $_ } | Select-Object -Unique
+        if ($inner) {
+          $rec.yara_file_matches = @(@($rec.yara_file_matches) + $inner | Select-Object -Unique)
+          $rec.verdict = Max-Verdict $rec.verdict "MEDIUM"
+        }
+      }
     }
   } catch {
     $rec.errors += "$_"

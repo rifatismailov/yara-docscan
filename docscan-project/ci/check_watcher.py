@@ -218,7 +218,12 @@ def main():
                 big.append(p)
             else:
                 rs = recs.get(("malware", p)) or []
-                if any(r.get("verdict") in ("MEDIUM", "HIGH") or r.get("yara_file_matches") for r in rs):
+                # as check_corpus.py: a vendor rule on the file or on a part of it (a file inside an archive)
+                if any(r.get("verdict") in ("MEDIUM", "HIGH") or r.get("yara_file_matches")
+                       or (r.get("docscan") or {}).get("yara_file_matches")
+                       or any(pm.get("rules") for pm in (r.get("docscan") or {}).get("yara_part_matches") or []
+                              if isinstance(pm, dict))
+                       for r in rs):
                     det += 1
                 else:
                     missed.append(p)

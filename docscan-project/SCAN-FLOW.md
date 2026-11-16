@@ -874,6 +874,9 @@ CVE-2017-11882 (signature-base, Yara-Rules), `mhtml:`/CVE-2021-40444 (signature-
 - **Verdict запису:** verdict із JSON (політика); якщо є `yara_file_matches` (для `document` — разом із
   `yara_doc_matches` і збігами Шару 2: `yara_part_matches`, `yara_matches`) — document щонайменше `MEDIUM`,
   general → `HIGH`. У `summary` для кожного правила видно, де знайдено (частина або код макросу). Також `SKIPPED` (> `-MaxSizeMB`), `ERROR` (скан не вдався).
+- **Архів під іншим ім'ям** (ZIP, названий `soy.exe`): yara64 визначає архів за вмістом (`ftype: zip`) і
+  перевіряє файли всередині. Збіг vendor-правила на файлі всередині → `yara_file_matches` і щонайменше
+  `MEDIUM`, без карантину (рішення 2026-11-16 за бойовим тестом). Справжній `.zip` — як вище (`HIGH`, карантин).
 - Vendor-правила бачать байти **до** лікування: yara збирає збіги до `--docscan-disarm`.
 - **Не скануються** (`-ExcludePattern`): `results\`, `*.docscan-bak`, lock-файли Office `~$*`,
   `$Recycle.Bin`, кеші браузерів/Packages/OneDrive/WebCache, `Recent` (там `.lnk` на кожне відкриття).
