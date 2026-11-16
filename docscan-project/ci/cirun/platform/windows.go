@@ -153,8 +153,9 @@ if ((git rev-parse HEAD) -ne '{{SHA}}') { exit 1 }
 $keep = "$w\packages-cache"
 if (Test-Path "$repo\windows\vs2019\packages") { Remove-Item $keep -Recurse -Force -EA 0; Move-Item "$repo\windows\vs2019\packages" $keep }
 Remove-Item $repo -Recurse -Force -EA 0
-Expand-Archive "$w\src.zip" $repo -Force
+try { Expand-Archive "$w\src.zip" $repo -Force -ErrorAction Stop } catch { "ERROR: source not unpacked: $_"; exit 1 }
 Remove-Item "$w\src.zip"
+if (-not (Test-Path "$repo\windows\vs2019\yara.sln")) { "ERROR: source incomplete (no windows\vs2019\yara.sln)"; exit 1 }
 if (Test-Path $keep) { Move-Item $keep "$repo\windows\vs2019\packages" }
 "commit: {{SHA}} (zip, `+fmt.Sprint(len(data))+` bytes)"
 `, -1)

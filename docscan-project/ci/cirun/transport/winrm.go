@@ -2,7 +2,9 @@ package transport
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"strings"
@@ -81,7 +83,31 @@ func (w *WinRM) Run(ctx context.Context, script string, onLine func(string)) (Re
 // Upload: WinRM не має «копіювання файлу» і обмежує довжину команди, тому дані йдуть base64 шматками
 // по 7000 символів, кожен дописується в remote.b64 командою cmd «echo …>>» — усе в ОДНІЙ оболонці
 // (набагато швидше, ніж нова оболонка на шматок); наприкінці PowerShell декодує .b64 у файл.
+// Шматок може загубитися чи продублюватися (WinRM повторює запит) - base64 при цьому лишається
+// коректним, а файл зламаним (так зламався src.zip у run-20261116-033000). Тому після декодування
+// SHA256 файлу звіряється з даними; не збігся - вивантаження ще раз (до 3 спроб).
 func (w *WinRM) Upload(ctx context.Context, data []byte, remote string) error {
+	sum := sha256.Sum256(data)
+	want := hex.EncodeToString(sum[:])
+	var err error
+	for try := 1; try <= 3; try++ {
+		if err = w.upload(ctx, data, remote); err != nil {
+			continue
+		}
+		var got string
+		got, _, _, err = w.client.RunPSWithContext(ctx, "(Get-FileHash -LiteralPath '"+remote+"' -Algorithm SHA256).Hash.ToLower()")
+		if err != nil {
+			continue
+		}
+		if strings.TrimSpace(got) == want {
+			return nil
+		}
+		err = fmt.Errorf("upload %s: SHA256 mismatch after try %d (%d bytes)", remote, try, len(data))
+	}
+	return err
+}
+
+func (w *WinRM) upload(ctx context.Context, data []byte, remote string) error {
 	b64 := base64.StdEncoding.EncodeToString(data)
 	shell, err := w.client.CreateShell()
 	if err != nil {
