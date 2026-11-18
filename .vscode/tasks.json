@@ -1,5 +1,6 @@
 {
-  // DocScan: Cmd+Shift+B / ▷ = "DocScan CI": commit, push, build + tests, package published to the deployment server.
+  // DocScan: Cmd+Shift+B = "DocScan CI": commit, build + tests, push to GitHub if green - NO release.
+  // ▷ (Code Runner, .vscode/settings.json) = the same + GitHub release vX.Y.Z.
   // Terminal > Run Task... also has the local-only build/test.
   "version": "2.0.0",
   "tasks": [
