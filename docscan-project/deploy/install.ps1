@@ -23,7 +23,9 @@
 #      adds <localfile> (json) for results\docscan-results.json; restarts WazuhSvc, restores the old
 #      ossec.conf on a configuration error;
 #   7) registers the scheduled task "DocScan Watcher": at Windows startup, as SYSTEM,
-#      restart on failure; and starts it.
+#      restart on failure; and starts it. The task runs watcher\docscan-watcher.exe (Go: parallel scans, the
+#      pool grows with the load - see watcher-go\README.md); -WatcherEngine ps = the old PowerShell script;
+#      -Workers N = a fixed number of parallel scans.
 # Running it again = update (the previous rules are kept in rules.prev\).
 
 param(
@@ -38,6 +40,9 @@ param(
   [string]  $CriticalRules = "",  # critical-information rules (.yar from E5Search) -> <InstallDir>\critical\; empty - keep the installed ones
   [switch]  $NoCritical,          # turn the critical-information check off on this PC (removes <InstallDir>\critical\)
   [switch]  $NoStart,             # register, but do not start now
+  [ValidateSet("go", "ps")]
+  [string]  $WatcherEngine = "go", # go = docscan-watcher.exe (parallel scans); ps = the old PowerShell script (fallback)
+  [int]     $Workers = 0,         # Go watcher: FIXED number of parallel scans; 0 = automatic (2 .. number of CPUs)
   [string]  $OssecDir = "${env:ProgramFiles(x86)}\ossec-agent",
   [switch]  $KeepLegacy,          # do not remove the old DocScan (active-response)
   [switch]  $KeepLegacyYara,      # do NOT remove the old active-response YARA (yara-scan + yara\)
@@ -86,15 +91,26 @@ foreach ($l in Get-Content $sums) {
 }
 if ($bad.Count) { $bad | % { Write-Host "  $_" -ForegroundColor Red }; Fail "the package is damaged or modified" }
 Write-Host "  ok ($((Get-Content $sums).Count) files)"
+if ($WatcherEngine -eq "go" -and -not (Test-Path (Join-Path $Pkg "watcher\docscan-watcher.exe"))) {
+  Fail "this package has no watcher\docscan-watcher.exe (older package) - use -WatcherEngine ps or a newer package"
+}
 
 # --- 2. stop the previous version ---
-$old = Get-ScheduledTask -TaskName $TaskName -EA SilentlyContinue
-if ($old) {
+# "DocScan Watcher Go" = the load-test task of ci\loadtest\rds_watcher_swap.ps1 - replaced by the normal task now
+$oldTasks = @($TaskName, "DocScan Watcher Go") | ? { Get-ScheduledTask -TaskName $_ -EA SilentlyContinue }
+$oldProcs = @(Get-CimInstance Win32_Process | ? { $_.Name -eq 'docscan-watcher.exe' -or ($_.Name -eq 'powershell.exe' -and $_.CommandLine -like "*docscan-watcher.ps1*") })
+if ($oldTasks.Count -or $oldProcs.Count) {
   Step "stopping the previous version"
-  Stop-ScheduledTask -TaskName $TaskName -EA SilentlyContinue
+  foreach ($t in $oldTasks) { Stop-ScheduledTask -TaskName $t -EA SilentlyContinue }
   Start-Sleep 2
-  Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" |
-    ? { $_.CommandLine -like "*docscan-watcher.ps1*" } | % { Stop-Process -Id $_.ProcessId -Force -EA SilentlyContinue }
+  # by process name (the Go exe) / the script path (PowerShell) - the exe must be gone before it is overwritten
+  Get-CimInstance Win32_Process | ? { $_.Name -eq 'docscan-watcher.exe' -or ($_.Name -eq 'powershell.exe' -and $_.CommandLine -like "*docscan-watcher.ps1*") } |
+    % { Stop-Process -Id $_.ProcessId -Force -EA SilentlyContinue }
+  # scans still running (up to -ScanTimeout) would keep bin\yara64.exe locked
+  Get-CimInstance Win32_Process -Filter "Name='yara64.exe'" | ? { $_.ExecutablePath -like "$InstallDir\bin\*" } |
+    % { Stop-Process -Id $_.ProcessId -Force -EA SilentlyContinue }
+  if ($oldTasks -contains "DocScan Watcher Go") { Unregister-ScheduledTask -TaskName "DocScan Watcher Go" -Confirm:$false -EA SilentlyContinue }
+  Start-Sleep 1
 }
 
 # --- 2b. antivirus exclusions (BEFORE copying - the rule files contain strings from malicious samples) ---
@@ -282,14 +298,30 @@ Write-Host "  yara64 $ver; rules compile; test scan: verdict=$($j.verdict)"
 
 # --- 6. scheduled task ---
 Step "registering task '$TaskName' (starts at Windows boot, SYSTEM)"
-$wp = ($WatchPath | % { "'" + ($_ -replace "'", "''") + "'" }) -join ","
-$taskArgs = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command `"& '$InstallDir\watcher\docscan-watcher.ps1'" +
-        " -WatchPath $wp -Yara '$yara' -Rules '$rules' -OutDir '$DataDir\results' -BackupDir '$DataDir\quarantine'" +
-        ($(if ($QuarantineGeneral) { " -QuarantineGeneral" } else { "" })) +
-        ($(if ($DetectOnly) { " -NoDisarm" } else { "" })) +
-        ($(if ($MacroUpload) { " -MacroUpload '" + ($MacroUpload -replace "'", "''") + "'" } else { "" })) +
-        ($(if (Test-Path -LiteralPath $critRules) { " -CriticalRules '$critRules' -CriticalOut '$DataDir\critical\critical.json'" } else { "" })) + "`""
-$action    = New-ScheduledTaskAction -Execute "powershell.exe" -Argument $taskArgs
+if ($WatcherEngine -eq "go") {
+  # docscan-watcher.exe: same option names as the script. One -WatchPath per folder (its list option splits on
+  # commas). Quoting for the C runtime command-line parser: a trailing backslash before the closing quote is
+  # doubled ("D:\\" -> D:\), otherwise it would escape the quote.
+  function Q([string]$s) { '"' + ($s -replace '(\\+)$', '$1$1') + '"' }
+  $goArgs = @()
+  foreach ($p in $WatchPath) { $goArgs += "-WatchPath", (Q $p) }
+  $goArgs += "-Yara", (Q $yara), "-Rules", (Q $rules), "-OutDir", (Q "$DataDir\results"), "-BackupDir", (Q "$DataDir\quarantine")
+  if ($QuarantineGeneral) { $goArgs += "-QuarantineGeneral" }
+  if ($DetectOnly) { $goArgs += "-NoDisarm" }
+  if ($MacroUpload) { $goArgs += "-MacroUpload", (Q $MacroUpload) }
+  if (Test-Path -LiteralPath $critRules) { $goArgs += "-CriticalRules", (Q $critRules), "-CriticalOut", (Q "$DataDir\critical\critical.json") }
+  if ($Workers -gt 0) { $goArgs += "-Workers", $Workers }
+  $action = New-ScheduledTaskAction -Execute "$InstallDir\watcher\docscan-watcher.exe" -Argument ($goArgs -join " ")
+} else {
+  $wp = ($WatchPath | % { "'" + ($_ -replace "'", "''") + "'" }) -join ","
+  $taskArgs = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command `"& '$InstallDir\watcher\docscan-watcher.ps1'" +
+          " -WatchPath $wp -Yara '$yara' -Rules '$rules' -OutDir '$DataDir\results' -BackupDir '$DataDir\quarantine'" +
+          ($(if ($QuarantineGeneral) { " -QuarantineGeneral" } else { "" })) +
+          ($(if ($DetectOnly) { " -NoDisarm" } else { "" })) +
+          ($(if ($MacroUpload) { " -MacroUpload '" + ($MacroUpload -replace "'", "''") + "'" } else { "" })) +
+          ($(if (Test-Path -LiteralPath $critRules) { " -CriticalRules '$critRules' -CriticalOut '$DataDir\critical\critical.json'" } else { "" })) + "`""
+  $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument $taskArgs
+}
 $trigger   = New-ScheduledTaskTrigger -AtStartup
 $principal = New-ScheduledTaskPrincipal -UserId "S-1-5-18" -LogonType ServiceAccount -RunLevel Highest
 $settings  = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -StartWhenAvailable `
@@ -329,6 +361,7 @@ if (-not $NoStart) {
 Write-Host ""
 Write-Host "DocScan installed." -ForegroundColor Green
 Write-Host "  program:    $InstallDir"
+Write-Host ("  watcher:    " + $(if ($WatcherEngine -eq "go") { "docscan-watcher.exe (Go), " + $(if ($Workers -gt 0) { "$Workers parallel scans" } else { "parallel scans: automatic" }) } else { "docscan-watcher.ps1 (PowerShell, one scan at a time)" }))
 Write-Host ("  watching:   $($WatchPath -join ', ')   " + $(if ($DetectOnly) { "(DETECT ONLY: files are not changed)" } else { "(disarm enabled)" }))
 Write-Host "  results:    $DataDir\results\docscan-results.json  (log: watcher.log)"
 Write-Host "  quarantine: $DataDir\quarantine"

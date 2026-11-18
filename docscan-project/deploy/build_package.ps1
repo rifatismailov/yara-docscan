@@ -37,6 +37,15 @@ Copy-Item $crt.FullName, (Join-Path $crt.DirectoryName "vcruntime140_1.dll") "$s
 
 # rules: policy + indexes + vendor subsets
 Copy-Item "$Repo\docscan-project\rules" "$stage\rules" -Recurse
+# watcher: the Go build (default engine) + the PowerShell script (fallback: install.ps1 -WatcherEngine ps).
+# docscan-watcher.exe is put into watcher-go\ by cirun (cross-built on the Mac); a manual build here needs Go.
+$goExe = "$Repo\docscan-project\watcher-go\docscan-watcher.exe"
+if (-not (Test-Path $goExe)) {
+  if (-not (Get-Command go -EA SilentlyContinue)) { throw "$goExe is missing and Go is not installed - build it: cd watcher-go; `$env:GOOS='windows'; go build -trimpath -o docscan-watcher.exe ." }
+  Push-Location "$Repo\docscan-project\watcher-go"
+  try { $env:CGO_ENABLED = "0"; & go build -trimpath "-ldflags=-s -w" -o docscan-watcher.exe .; if ($LASTEXITCODE) { throw "go build failed" } } finally { Pop-Location }
+}
+Copy-Item $goExe "$stage\watcher\"
 Copy-Item "$Repo\docscan-project\watcher\docscan-watcher.ps1" "$stage\watcher\"
 foreach ($f in "install.ps1", "uninstall.ps1", "README.txt") { Copy-Item "$Repo\docscan-project\deploy\$f" $stage }
 # for the Wazuh administrator: manager cleanup script + rule block (not used on workstations)

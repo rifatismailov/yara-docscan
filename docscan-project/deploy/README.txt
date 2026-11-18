@@ -40,6 +40,9 @@ DocScan стежить за новими файлами, перевіряє до
      -CriticalRules <файл.yar>           третій прохід: правила E5Search -> C:\Program Files\DocScan\critical\
      -NoCritical                         вимкнути третій прохід і видалити його правила
      -NoAvExclusion                      не додавати винятки Microsoft Defender
+     -Workers 8                          фіксована кількість паралельних сканів (за замовчуванням — автоматично
+                                         від 2 до кількості CPU, за чергою і навантаженням CPU)
+     -WatcherEngine ps                   старий PowerShell-watcher (один скан за раз) замість docscan-watcher.exe
    Без -CriticalRules уже встановлені правила E5Search лишаються (звичайне оновлення їх не прибирає).
 
 3. Антивірус

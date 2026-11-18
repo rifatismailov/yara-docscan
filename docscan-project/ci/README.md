@@ -7,7 +7,7 @@
         │
         ▼
 хвиля 1 (паралельно):  macOS — цей Мак (local)          Windows — ВМ, інакше ПК 216 (WinRM)
-                       build → documents → critical →    checkout (git або zip) → build (MSBuild) →
+                       build → documents → critical →    checkout (git або zip) → build (Go-watcher + MSBuild) →
                        hostile → corpus → malware →       documents → confine → critical → assets →
                        fuzz → yara-*.tar.gz               hostile → corpus → malware → fuzz → DocScan-<версія>.zip
         │  обидві зелені?
@@ -35,6 +35,7 @@ git push на GitHub (push.remote) — ЗАВЖДИ, від Forgejo не зал�
 | `cirun/platform/` | інтерфейс `Platform` (Prepare → SyncSource → Build → Test → FetchArtifacts); `unix.go` — macOS і Linux, `windows.go` |
 | `cirun/orchestrator/` | хвилі з `requires`, хід і відсоток у терміналі, підсумок, push коміту на GitHub |
 | `cirun/forgejo/` | необов'язково: доступність, mirror-sync / push у Forgejo, статуси коміту |
+| `cirun/platform/gowatcher.go` | Go-watcher для пакета: `git archive` теки `watcher-go` точного коміту → `go vet` + `go test` → крос-збірка `docscan-watcher.exe` (windows/amd64) на Маку → у репозиторій на Windows-машині (крок build); на Windows Go не потрібен |
 | `cirun/gitops/`, `cirun/deploy/` | коміт з перевіркою безпеки, `git archive`; реліз на GitHub (`release.go`) |
 | `docscan-project/ci/build-test-unix.sh [all\|build\|test]` | збірка і тести на macOS / Linux (cirun кличе `build`, потім `test`) |
 | `docscan-project/ci/check_verdicts.ps1` / `.py` | перевірка документів (Windows без Python / інші ОС) |
@@ -169,6 +170,16 @@ DocScan (вердикт і знахідки) на тих самих файлах
 Це документи замовника — лише в цій теці й у запароленому `malware.zip` у приватному сховку, ніколи в git.
 Зараз: 8 PDF, хибний `PDF_JS` 2026-11-16 (`/JS` як байти всередині стисненої картинки).
 Додати новий випадок: файли в `benign/<назва>/`, шляхи в `clean.txt`.
+
+### Навантажувальний тест (термінальний сервер, вручну)
+
+Не входить у ▷: окремий тестовий сервер Windows Server з роллю RD Session Host, N справжніх RDP-сесій
+з іншої Windows-машини і генератор дій користувачів — `loadtest/` (опис файлів і результати —
+[../watcher-go/README.md](../watcher-go/README.md) §2, §7, §9). Порядок: `rds_setup.ps1` (роль, користувачі) →
+`rds_connect.ps1` на клієнті (сесії) → `rds_docs.ps1` (тестові набори) → `rds_reset.ps1 -DefenderOff` (DocScan
+з нуля, Defender вимкнено, опційно Go-watcher) → `rds_load.ps1` (прогін; від SYSTEM через завдання планувальника, не з WinRM-сеансу)
+→ `loadtest_report.py <тека прогону>`. Режими генератора: звичайний темп, `-Burst N`, `-All` (увесь набір
+кожному користувачу), `-ProbeUsers` (поодинокі файли під час напливу — затримка, яку відчуває людина).
 
 ### Звідки беруться тестові файли поза git
 

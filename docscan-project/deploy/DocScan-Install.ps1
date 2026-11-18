@@ -30,7 +30,10 @@ param(
   [string[]]$WatchPath,             # -> install.ps1 -WatchPath
   [switch]  $NoAvExclusion,         # -> install.ps1 -NoAvExclusion
   [switch]  $QuarantineGeneral,     # -> install.ps1 -QuarantineGeneral
-  [string]  $MacroUpload = ""       # -> install.ps1 -MacroUpload (collector URL); empty - macro code stays on the PC
+  [string]  $MacroUpload = "",      # -> install.ps1 -MacroUpload (collector URL); empty - macro code stays on the PC
+  [ValidateSet("", "go", "ps")]
+  [string]  $WatcherEngine = "",    # -> install.ps1 -WatcherEngine (default there: go; ps = the old PowerShell watcher)
+  [int]     $Workers = 0            # -> install.ps1 -Workers (fixed number of parallel scans; 0 = automatic)
 )
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"   # without it Invoke-WebRequest in PS 5.1 is very slow
@@ -83,6 +86,8 @@ try {
   if ($WatchPath)         { $p.WatchPath = $WatchPath }
   if ($MacroUpload)       { $p.MacroUpload = $MacroUpload }
   if ($NoCritical)        { $p.NoCritical = $true }
+  if ($WatcherEngine)     { $p.WatcherEngine = $WatcherEngine }
+  if ($Workers -gt 0)     { $p.Workers = $Workers }
   # without -Critical / -NoCritical the rules a PC already has stay as they are
   if ($Critical) {
     $crit = Join-Path $work "critical-rules.yar"

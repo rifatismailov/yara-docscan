@@ -166,10 +166,22 @@ if (Test-Path $keep) { Move-Item $keep "$repo\windows\vs2019\packages" }
 	return nil
 }
 
-// Build: пакети NuGet (nuget, кеш з попередньої збірки або завантажений nuget.exe), потім MSBuild
-// Release x64 (v143) проєктів yara і yarac; у лог — помилки, попередження компілятора і «->».
+// Build: Go-watcher (docscan-watcher.exe, крос-збірка на Маку з цього коміту -> у репозиторій на машині, звідти
+// його бере build_package.ps1), пакети NuGet (nuget, кеш з попередньої збірки або завантажений nuget.exe), потім
+// MSBuild Release x64 (v143) проєктів yara і yarac; у лог — помилки, попередження компілятора і «->».
 func (w *Windows) Build(ctx context.Context) (StepResult, error) {
-	return w.step(ctx, "build", `
+	exe, glog, err := buildGoWatcher(ctx, w.sha)
+	if err == nil {
+		err = w.t.Upload(ctx, exe, w.repo+`\docscan-project\watcher-go\docscan-watcher.exe`)
+	}
+	if err != nil {
+		res := StepResult{Name: "build", Status: "FAIL", Log: "Go watcher: " + err.Error() + "\n" + glog}
+		w.logs["build"] = res.Log
+		w.report(Event{Platform: "windows", Kind: "start", Step: "build"})
+		w.report(Event{Platform: "windows", Kind: "done", Step: "build", Result: &res})
+		return res, nil
+	}
+	res := w.step(ctx, "build", fmt.Sprintf("\n\"Go watcher: docscan-watcher.exe %d bytes (cross-built, go vet + go test passed)\"", len(exe))+`
 Set-Location $repo
 $pk = "windows\vs2019\packages"
 if (Get-Command nuget -EA 0) { nuget restore windows\vs2019\yara.sln 2>&1 | Select-Object -Last 2 }
@@ -188,7 +200,8 @@ $mb = Get-ChildItem "C:\Program Files*\Microsoft Visual Studio\*\*\MSBuild\Curre
 $rc = $LASTEXITCODE
 & .\windows\vs2019\Release\yara64.exe --version
 exit $rc
-`, -1), nil
+`, -1)
+	return res, nil
 }
 
 // Test: перевірка документів (check_verdicts.ps1, Python не потрібен) — на будь-якій машині. На машині з
@@ -458,7 +471,7 @@ $snap = Get-Content '`+work+`\snap.json' -Raw | ConvertFrom-Json
 $res = "$env:ProgramData\DocScan\results"
 $cv = @(); if (Test-Path "$w\corpus-verdicts.tsv") { $cv = @("--corpus-verdicts", "$w\corpus-verdicts.tsv") }
 $co = @(); if ($snap.critical_on) { $co = @("--critical-on") }
-& $py docscan-project\ci\check_watcher.py --results "$res\docscan-results.json" --results-offset $snap.results --log "$res\watcher.log" --log-offset $snap.log --inbox '`+inbox+`' --src '`+work+`\src' --watcher "$env:ProgramW6432\DocScan\watcher\docscan-watcher.ps1" --expected docscan-project\ci\expected-verdicts.tsv @cv @co --records "$w\combat-records.json" --report "$w\combat-report.txt"
+& $py docscan-project\ci\check_watcher.py --results "$res\docscan-results.json" --results-offset $snap.results --log "$res\watcher.log" --log-offset $snap.log --inbox '`+inbox+`' --src '`+work+`\src' --watcher docscan-project\watcher-go\config.go --expected docscan-project\ci\expected-verdicts.tsv @cv @co --records "$w\combat-records.json" --report "$w\combat-report.txt"
 $rc = $LASTEXITCODE
 # the watcher log of the test (from the snapshot on)
 $in = [IO.File]::Open("$res\watcher.log", 'Open', 'Read', 'ReadWrite'); $o = [long]$snap.log; if ($o -gt $in.Length) { $o = 0 }

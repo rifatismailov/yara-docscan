@@ -11,10 +11,12 @@ $admin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdenti
   [Security.Principal.WindowsBuiltInRole]::Administrator)
 if (-not $admin) { Write-Host "Run as Administrator" -ForegroundColor Red; exit 1 }
 
-Stop-ScheduledTask -TaskName $TaskName -EA SilentlyContinue
-Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" |
-  ? { $_.CommandLine -like "*docscan-watcher.ps1*" } | % { Stop-Process -Id $_.ProcessId -Force -EA SilentlyContinue }
-Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -EA SilentlyContinue
+# "DocScan Watcher Go" = the load-test task of ci\loadtest\rds_watcher_swap.ps1 (before install.ps1 ran the Go watcher)
+foreach ($t in $TaskName, "DocScan Watcher Go") { Stop-ScheduledTask -TaskName $t -EA SilentlyContinue }
+# the watcher processes: the Go build or the PowerShell script (matched by process name, not by any command line)
+Get-CimInstance Win32_Process | ? { $_.Name -eq 'docscan-watcher.exe' -or ($_.Name -eq 'powershell.exe' -and $_.CommandLine -like "*docscan-watcher.ps1*") } |
+  % { Stop-Process -Id $_.ProcessId -Force -EA SilentlyContinue }
+foreach ($t in $TaskName, "DocScan Watcher Go") { Unregister-ScheduledTask -TaskName $t -Confirm:$false -EA SilentlyContinue }
 Write-Host "task '$TaskName' removed"
 
 # remove our <localfile> from the agent's ossec.conf

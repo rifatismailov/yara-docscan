@@ -15,7 +15,7 @@ only files under --inbox) and checks them against the test files in --src/<set>/
 
 Prints a report (also written to --report) and writes the records of the test to --records.
 usage: check_watcher.py --results F --results-offset N --log F --log-offset N --inbox DIR --src DIR
-                        --watcher PS1 --expected TSV [--corpus-verdicts TSV] [--critical-on]
+                        --watcher PS1|config.go --expected TSV [--corpus-verdicts TSV] [--critical-on]
                         --records OUT --report OUT
 """
 import argparse
@@ -29,20 +29,24 @@ import sys
 SETS = ["generated", "provided", "malware", "corpus", "seeds"]
 
 
-def watched_extensions(ps1, critical_on):
-    """The default -DocExt / -GenExt / -CriticalExt of docscan-watcher.ps1 (comments may contain brackets)."""
+def watched_extensions(src, critical_on):
+    """The default -DocExt / -GenExt / -CriticalExt of the watcher: docscan-watcher.ps1 ($DocExt = @(...)) or
+    the Go watcher's config.go (var defDocExt = []string{...}); comments may contain brackets."""
+    go = src.endswith(".go")
+    start = r"var def(DocExt|GenExt|CriticalExt)\s*=\s*\[\]string\{" if go else r"\$(DocExt|GenExt|CriticalExt)\s*=\s*@\("
+    close = "}" if go else ")"
     lists = {}
     cur = None
-    for line in open(ps1, encoding="utf-8-sig"):
-        code = line.split("#", 1)[0]
-        m = re.search(r"\$(DocExt|GenExt|CriticalExt)\s*=\s*@\(", code)
+    for line in open(src, encoding="utf-8-sig"):
+        code = line.split("//" if go else "#", 1)[0]
+        m = re.search(start, code)
         if m:
             cur = m.group(1)
             lists[cur] = []
             code = code[m.end():]
         if cur:
             lists[cur] += [e.lower() for e in re.findall(r'"(\.[A-Za-z0-9]+)"', code)]
-            if ")" in code:
+            if close in code:
                 cur = None
     ext = set(lists.get("DocExt", [])) | set(lists.get("GenExt", []))
     if critical_on:
@@ -128,7 +132,7 @@ def main():
         say("records: %d   first %s   last %s   (%.0f min, %.1f files/min)" % (
             nrec, min(stamps).strftime("%H:%M:%S"), max(stamps).strftime("%H:%M:%S"), mins,
             len(recs) / mins if mins > 0 else 0))
-    ov = len(re.findall(r"FileSystemWatcher error", log))
+    ov = len(re.findall(r"FileSystemWatcher error|notification buffer overflow", log))  # PowerShell | Go watcher
     gone = len(re.findall(r"gone before scan", log))
     say("watcher log: buffer overflows %d, 'gone before scan' %d" % (ov, gone))
     say()
