@@ -174,6 +174,10 @@ func main() {
 			say("test assets %s: corpus %s", as.Version, map[bool]string{true: "local + store", false: "local only"}[as.CorpusURL != ""])
 		}
 	}
+	// конвеєр Forgejo Actions (pipeline.mode: forgejo): тут лише macOS, далі — стенди у Forgejo (forgejo_run.go)
+	if cfg.Pipeline.Mode == "forgejo" {
+		os.Exit(runForgejo(ctx, cfg, sec, o, src, sha, branch, *release, *bump, *fuzz, started))
+	}
 	say("build %s (%s) on: %s   fuzzing %ds", sha[:8], branch, strings.Join(o.Plan(), ", "), *fuzz)
 	green := o.Build(ctx, src)
 	o.Summary()

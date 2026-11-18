@@ -24,6 +24,32 @@ git push на GitHub (push.remote) — ЗАВЖДИ, від Forgejo не зал�
 Отже, на GitHub потрапляє **лише протестований** коміт, а слухач на іншому сервері сам бачить його там і
 запускає свої тести. Forgejo для цього не потрібен.
 
+## CI/CD через Forgejo Actions (`pipeline.mode: forgejo`)
+
+```
+▷ (Мак)  коміт + перевірка безпеки → macOS: збірка й тести локально → macOS tar.gz у сховок → push у Forgejo
+         → запуск .forgejo/workflows/pipeline.yml → у терміналі: стан завдань і статус кожного стенда
+Forgejo  probe: які стенди доступні (недоступний → SKIPPED (host offline), прогін не падає)
+         win11 (Windows 11):            MSBuild + Go-watcher, 42 зразки, пісочниця, пакет, установка + watcher
+         srv2019 (Windows Server 2019): пакет win11, повний набір (третій прохід, ворожі файли, корпус,
+         win10 (Windows 10)             шкідливе ПЗ — лише сканування, установка + watcher)
+         ubuntu (Ubuntu Server):        власна збірка, повний набір, фазинг
+         report: [CI/CD] <стенд> -> OK | ERROR | SKIPPED, [RESULT] Verified on: ...
+         лише без жодного ERROR: перевірка безпеки комітів → git push на GitHub → (з ▷) реліз vX.Y.Z:
+         пакет Windows + DocScan-Install.ps1, yara-docscan-linux-x64.tar.gz, yara-docscan-macos-arm64.tar.gz,
+         у описі — таблиця «Verified on»
+```
+
+- ▷ = з релізом; Cmd+Shift+B = без релізу (push на GitHub після зеленого прогону — так само).
+- Раннер `lan` — у контейнері поруч з Forgejo; усі завдання прогону ділять теку `~/ci-art/<прогін>` на ньому,
+  тож пакет win11 доходить до інших стендів без сторонніх сховищ.
+- Адреси й облікові дані стендів — у секретах Forgejo: `CIRUN_CONFIG` (конфіг стендів з `env:`-посиланнями),
+  `CI_WIN11_PASS`, `CI_SRV2019_PASS`, `CI_WIN10_PASS`, `CI_SSH_KEY`, `CI_KNOWN_HOSTS`, `CI_STORE_TOKEN`,
+  `CI_GITHUB_TOKEN`, `CI_FORGEJO_TOKEN`. У публічному workflow нічого внутрішнього немає.
+- Підкоманди для завдань workflow (`cirun/pipeline.go`): `probe`, `stand`, `report`, `publish`; ▷-частина —
+  `cirun/forgejo_run.go`. Повернутися до старого режиму (усе з Мака): `pipeline.mode: local`.
+- Стенди без Microsoft Defender (на тестових машинах він вимкнений політикою: забирав би тестові зразки).
+
 ## Що де лежить
 
 | Файл | Що робить |

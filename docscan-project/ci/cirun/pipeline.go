@@ -8,16 +8,25 @@ package main
 //	             [--fuzz S] [--assets VER] [--malware]   у DIR/<N>/ (status.json, логи кроків, пакет / tar.gz)
 //	cirun report --art DIR [--mac "OK|деталі"] [--md FILE]   зведення у форматі [CI/CD] ..., таблиця «Verified on»
 //	                                                для релізу; код 1 — є ERROR (або жоден стенд не пройшов)
+//	cirun publish --art DIR --sha SHA [--release] [--bump patch|minor|major] [--notes FILE]
+//	                                                перевірка безпеки комітів, що йдуть на GitHub -> git push -> реліз
+//
+// Статуси коміту у Forgejo (якщо задано CIRUN_FORGEJO_URL / _REPO / _TOKEN): cirun/<стенд> з описом
+// "<назва>|<OK|ERROR|SKIPPED>|<деталі>", cirun/result, cirun/publish — їх читає ▷ на Маку.
 //
 // DIR — спільна тека прогону на хості раннера (усі завдання одного прогону бачать її): так збірка стенда role
 // build дістається стендам role test без сторонніх сховищ.
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strings"
@@ -25,6 +34,8 @@ import (
 
 	"docscan/cirun/assets"
 	"docscan/cirun/config"
+	"docscan/cirun/deploy"
+	"docscan/cirun/forgejo"
 	"docscan/cirun/gitops"
 	"docscan/cirun/platform"
 	"docscan/cirun/transport"
@@ -54,6 +65,8 @@ type StepStatus struct {
 
 func pipelineCommand(args []string) int {
 	switch args[0] {
+	case "publish":
+		return cmdPublish(args[1:])
 	case "probe":
 		return cmdProbe(args[1:])
 	case "stand":
@@ -96,6 +109,22 @@ func readStatus(dir, name string) *StandStatus {
 	return &st
 }
 
+// postStatus — статус коміту у Forgejo для ▷ (тихо нічого, якщо змінних середовища немає).
+func postStatus(sha, name, title, state, detail string) {
+	u, repo, tok := os.Getenv("CIRUN_FORGEJO_URL"), os.Getenv("CIRUN_FORGEJO_REPO"), os.Getenv("CIRUN_FORGEJO_TOKEN")
+	if u == "" || repo == "" || tok == "" || sha == "" {
+		return
+	}
+	st := map[string]string{"OK": "success", "ERROR": "failure", "SKIPPED": "warning", "RUNNING": "pending"}[state]
+	if st == "" {
+		st = "error"
+	}
+	c := forgejo.NewClient(u, repo, tok)
+	if err := c.SetStatus(context.Background(), sha, "cirun/"+name, st, title+"|"+state+"|"+detail, os.Getenv("CIRUN_RUN_URL")); err != nil {
+		fmt.Printf("! commit status cirun/%s: %v\n", name, err)
+	}
+}
+
 func standStatus(s *config.Stand) *StandStatus {
 	return &StandStatus{Name: s.Name, Title: s.Title, OS: s.OS, Role: s.Role, Suite: s.Suite,
 		Where: fmt.Sprintf("%s (%s)", s.Connection.Host, s.Name)}
@@ -108,6 +137,7 @@ func cmdProbe(args []string) int {
 	cfgPath := fs.String("config", "docscan-project/ci/config.yaml", "configuration file")
 	art := fs.String("art", "", "run folder shared by the jobs of this run")
 	output := fs.String("output", os.Getenv("GITHUB_OUTPUT"), "file for <stand>=online|offline lines (job outputs)")
+	sha := fs.String("sha", "", "commit (for the Forgejo commit statuses)")
 	fs.Parse(args)
 	cfg, _ := loadPipelineConfig(*cfgPath)
 	if *art == "" {
@@ -125,6 +155,7 @@ func cmdProbe(args []string) int {
 			if err := writeStatus(*art, st); err != nil {
 				die("%v", err)
 			}
+			postStatus(*sha, s.Name, s.Title, st.Status, st.Detail)
 		}
 		fmt.Printf("[probe] %-28s %-20s %s\n", s.Title, s.Connection.Host, state)
 		lines = append(lines, s.Name+"="+state)
@@ -170,6 +201,7 @@ func cmdStand(args []string) int {
 	}
 	st := standStatus(s)
 	t0 := time.Now()
+	postStatus(full, s.Name, s.Title, "RUNNING", s.Suite+" suite on "+s.Connection.Host)
 	finish := func() int {
 		st.Seconds = int(time.Since(t0).Seconds())
 		if st.Status == "OK" {
@@ -184,6 +216,7 @@ func cmdStand(args []string) int {
 		if err := writeStatus(*art, st); err != nil {
 			fmt.Println("! status:", err)
 		}
+		postStatus(full, s.Name, s.Title, st.Status, st.Detail)
 		fmt.Printf("[%s] %s -> %s (%s)\n", s.Name, s.Title, st.Status, st.Detail)
 		if st.Status == "ERROR" {
 			return 1
@@ -318,6 +351,7 @@ func cmdReport(args []string) int {
 	art := fs.String("art", "", "run folder shared by the jobs of this run")
 	mac := fs.String("mac", "", `result of the local Mac check from ▷: "OK|<details>" (empty - not reported)`)
 	md := fs.String("md", "", "write the Verified-on table (Markdown) here, for the release notes")
+	sha := fs.String("sha", "", "commit (for the Forgejo commit statuses)")
 	fs.Parse(args)
 	cfg, _ := loadPipelineConfig(*cfgPath)
 	var all []*StandStatus
@@ -371,8 +405,192 @@ func cmdReport(args []string) int {
 		}
 		os.WriteFile(*md, []byte(b.String()), 0o644)
 	}
+	switch {
+	case green:
+		postStatus(*sha, "result", "Result", "OK", "Verified on: "+strings.Join(ok, ", "))
+	case len(bad) > 0:
+		postStatus(*sha, "result", "Result", "ERROR", "ERROR on: "+strings.Join(bad, ", "))
+	default:
+		postStatus(*sha, "result", "Result", "ERROR", "no stand passed (all skipped)")
+	}
 	if !green {
 		return 1
 	}
 	return 0
+}
+
+// ---------------------------------------------------------------- publish --
+
+// cmdPublish — після зеленого звіту: перевірка безпеки того, що додадуть коміти до публічної гілки GitHub
+// (внутрішні адреси, паролі / токени, test-samples/provided, файли > 5 МБ) -> git push <sha>:<гілка> (лише
+// fast-forward) -> з --release реліз vX.Y.Z з пакетом Windows, tar.gz Linux / macOS і таблицею «Verified on».
+// Токен GitHub — у змінних середовища процесів git / gh, не в командному рядку.
+func cmdPublish(args []string) int {
+	fs := flag.NewFlagSet("publish", flag.ExitOnError)
+	cfgPath := fs.String("config", "docscan-project/ci/config.yaml", "configuration file")
+	art := fs.String("art", "", "run folder shared by the jobs of this run")
+	sha := fs.String("sha", "", "the tested commit")
+	branch := fs.String("branch", "", "GitHub branch (default: pipeline.branch)")
+	release := fs.Bool("release", false, "also make the GitHub release vX.Y.Z")
+	bump := fs.String("bump", "patch", "release number part: patch | minor | major")
+	notes := fs.String("notes", "", "Markdown file appended to the release notes (the Verified-on table of cirun report)")
+	macAsset := fs.String("mac-asset", "", "macOS tar.gz; empty - taken from the package store (docscan-builds/<commit>), where ▷ put it")
+	fs.Parse(args)
+	cfg, sec := loadPipelineConfig(*cfgPath)
+	full, err := gitops.Git("rev-parse", "--verify", *sha+"^{commit}")
+	if err != nil || *art == "" {
+		die("publish: --sha (in this checkout) and --art are required")
+	}
+	repo, br := cfg.Pipeline.GitHubRepo, *branch
+	if br == "" {
+		br = cfg.Pipeline.Branch
+	}
+	if repo == "" || br == "" {
+		die("publish: pipeline.github_repo and pipeline.branch (or --branch) are required")
+	}
+	tok, err := sec.Get(cfg.Pipeline.GitHubTokenRef)
+	if err != nil || tok == "" {
+		die("publish: GitHub token (pipeline.github_token_ref): %v", err)
+	}
+	fail := func(f string, a ...any) int {
+		msg := fmt.Sprintf(f, a...)
+		fmt.Println("[GIT]    NOT pushed: " + msg)
+		postStatus(full, "publish", "GitHub", "ERROR", msg)
+		return 1
+	}
+	ghURL := "https://github.com/" + repo + ".git"
+	// git з токеном лише через змінні середовища (http.extraHeader), без токена в URL / аргументах
+	env := append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "GIT_CONFIG_COUNT=1",
+		"GIT_CONFIG_KEY_0=http.https://github.com/.extraheader",
+		"GIT_CONFIG_VALUE_0=AUTHORIZATION: basic "+base64.StdEncoding.EncodeToString([]byte("x-access-token:"+tok)))
+	git := func(a ...string) (string, error) {
+		c := exec.Command("git", a...)
+		c.Env = env
+		out, err := c.CombinedOutput()
+		return strings.TrimSpace(string(out)), err
+	}
+
+	// 1. що вже на GitHub: базовий коміт (і його історія тут — для diff)
+	base := ""
+	if out, err := git("ls-remote", ghURL, "refs/heads/"+br); err == nil && out != "" {
+		base = strings.Fields(out)[0]
+		if _, err := gitops.Git("cat-file", "-e", base+"^{commit}"); err != nil {
+			if out, err := git("fetch", "--quiet", ghURL, br); err != nil {
+				return fail("fetch %s from GitHub: %s", br, out)
+			}
+		}
+		if base == full {
+			fmt.Printf("[GIT]    %s is already on GitHub (%s)\n", full[:8], br)
+		} else if _, err := gitops.Git("merge-base", "--is-ancestor", base, full); err != nil {
+			return fail("GitHub %s (%s) is not an ancestor of %s - no force push", br, base[:8], full[:8])
+		}
+	}
+	// 2. перевірка безпеки
+	if problems := gitops.SafetyCheckRange(base, full); len(problems) > 0 {
+		fmt.Println("[GATE]   the public repository must not get:")
+		for _, p := range problems {
+			fmt.Println("    " + p)
+		}
+		return fail("security gate: %d finding(s)", len(problems))
+	}
+	fmt.Println("[GATE]   OK: no internal addresses, credentials, customer samples, large files")
+	// 3. push
+	if base != full {
+		if out, err := git("push", ghURL, full+":refs/heads/"+br); err != nil {
+			return fail("git push: %s", out)
+		}
+		fmt.Printf("[GIT]    Pushed to GitHub (%s -> %s) %s\n", repo, br, full[:8])
+	}
+	done := "pushed " + full[:8] + " to " + br
+	// 4. реліз
+	if *release {
+		os.Setenv("GH_TOKEN", tok)
+		tag, existing, err := deploy.ReleaseTag(repo, full, *bump)
+		if err != nil {
+			return fail("release: %v", err)
+		}
+		if existing {
+			fmt.Printf("[REL]    commit %s is already released as %s\n", full[:8], tag)
+		}
+		r, err := deploy.Prepare(*art, repo, tag)
+		if err != nil {
+			return fail("release: %v", err)
+		}
+		// tar.gz Linux / macOS під сталими іменами (releases/latest/download/<ім'я>)
+		extra := map[string]string{}
+		if l, _ := filepath.Glob(filepath.Join(*art, "*", "yara-linux-*.tar.gz")); len(l) > 0 {
+			extra["yara-docscan-linux-x64.tar.gz"] = l[0]
+		}
+		if *macAsset == "" {
+			*macAsset = fetchMacAsset(cfg, sec, full, *art)
+		}
+		if *macAsset != "" {
+			extra["yara-docscan-macos-arm64.tar.gz"] = *macAsset
+		}
+		for n, src := range extra {
+			if err := copyFile(src, filepath.Join(r.Dir, n)); err != nil {
+				return fail("release asset %s: %v", n, err)
+			}
+			r.Assets = append(r.Assets, filepath.Join(r.Dir, n))
+		}
+		if *notes != "" {
+			b, _ := os.ReadFile(*notes)
+			r.Extra = string(b)
+		}
+		if err := r.Publish(full, func(f string, a ...any) { fmt.Printf("[REL]   "+f+"\n", a...) }); err != nil {
+			return fail("release: %v", err)
+		}
+		done += ", released " + tag
+	}
+	postStatus(full, "publish", "GitHub", "OK", done)
+	return 0
+}
+
+func copyFile(src, dst string) error {
+	b, err := os.ReadFile(src)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(dst, b, 0o644)
+}
+
+// BuildsPackage — generic-пакет сховку Forgejo, куди ▷ кладе macOS tar.gz коміту (версія = 12 символів хешу).
+const BuildsPackage = "docscan-builds"
+
+// MacAsset — ім'я macOS tar.gz у сховку.
+const MacAsset = "yara-darwin-arm64.tar.gz"
+
+// buildsURL — адреса файлу name збірки коміту sha у сховку (tests.store).
+func buildsURL(cfg *config.Config, sha, name string) string {
+	return fmt.Sprintf("%s/api/packages/%s/generic/%s/%s/%s", strings.TrimRight(cfg.Tests.Store.URL, "/"),
+		cfg.Tests.Store.Owner, BuildsPackage, sha[:12], name)
+}
+
+// fetchMacAsset — macOS tar.gz коміту зі сховку в <art>/macos.tar.gz; "" — немає (реліз без macOS).
+func fetchMacAsset(cfg *config.Config, sec *config.Resolver, sha, art string) string {
+	if cfg.Tests.Store.URL == "" {
+		return ""
+	}
+	tok, _ := sec.Get(cfg.Tests.Store.TokenRef)
+	req, _ := http.NewRequest("GET", buildsURL(cfg, sha, MacAsset), nil)
+	req.Header.Set("Authorization", "token "+tok)
+	r, err := (&http.Client{Timeout: 5 * time.Minute}).Do(req)
+	if err != nil || r.StatusCode != 200 {
+		fmt.Println("[REL]    no macOS tar.gz from ▷ in the store - the release has no macOS asset")
+		if r != nil {
+			r.Body.Close()
+		}
+		return ""
+	}
+	defer r.Body.Close()
+	dst := filepath.Join(art, "macos.tar.gz")
+	f, err := os.Create(dst)
+	if err == nil {
+		_, err = io.Copy(f, r.Body)
+		f.Close()
+	}
+	if err != nil {
+		return ""
+	}
+	return dst
 }

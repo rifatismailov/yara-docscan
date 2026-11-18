@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -107,8 +108,47 @@ func SafetyCheck() []string {
 			problems = append(problems, f+": file larger than 5 MB")
 		}
 	}
+	return append(problems, checkDiff(MustGit("diff", "--cached", "-U0", "--no-color"))...)
+}
+
+// SafetyCheckRange — та сама перевірка для комітів base..sha (конвеєр Forgejo перед push на GitHub: що
+// додадуть ці коміти до публічної гілки). base порожній / невідомий — перевіряється весь коміт sha.
+func SafetyCheckRange(base, sha string) []string {
+	var problems []string
+	rng := []string{base, sha}
+	if base == "" || run("cat-file", "-e", base+"^{commit}") != 0 {
+		empty, err := Git("hash-object", "-t", "tree", "/dev/null") // порожнє дерево git
+		if err != nil {
+			return []string{"git hash-object: " + err.Error()}
+		}
+		rng = []string{strings.TrimSpace(empty), sha}
+	}
+	names, err := Git(append([]string{"diff", "--name-only", "--diff-filter=AM"}, rng...)...)
+	if err != nil {
+		return []string{"git diff: " + err.Error()}
+	}
+	for _, f := range strings.Split(names, "\n") {
+		if strings.HasPrefix(f, "docscan-project/test-samples/provided/") {
+			problems = append(problems, f+": customer sample (test-samples/provided) must not be published")
+		}
+		if sz, err := Git("cat-file", "-s", sha+":"+f); f != "" && err == nil {
+			if n, _ := strconv.Atoi(strings.TrimSpace(sz)); n > MaxFile {
+				problems = append(problems, f+": file larger than 5 MB")
+			}
+		}
+	}
+	d, err := Git(append([]string{"diff", "-U0", "--no-color"}, rng...)...)
+	if err != nil {
+		return append(problems, "git diff: "+err.Error())
+	}
+	return append(problems, checkDiff(d)...)
+}
+
+// checkDiff — заборонене в доданих рядках diff-а (-U0).
+func checkDiff(diff string) []string {
+	var problems []string
 	cur := "?"
-	for _, line := range strings.Split(MustGit("diff", "--cached", "-U0", "--no-color"), "\n") {
+	for _, line := range strings.Split(diff, "\n") {
 		switch {
 		case strings.HasPrefix(line, "+++ "):
 			cur = strings.TrimPrefix(strings.TrimPrefix(line, "+++ "), "b/")

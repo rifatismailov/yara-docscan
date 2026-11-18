@@ -125,8 +125,8 @@ else
   echo "fuzz           SKIP  (FUZZ_SECONDS=0)" | tee -a "$SUMMARY"
 fi
 
-# artifacts: the binaries + logs
-tar -czf "$OUT/artifacts/yara-$(echo "$OS" | tr 'A-Z' 'a-z')-$(uname -m).tar.gz" yara yarac 2>/dev/null
+# artifacts: the binaries + the rules (release asset for the command line: yara -C / yara docscan-index.yar) + logs
+tar -czf "$OUT/artifacts/yara-$(echo "$OS" | tr 'A-Z' 'a-z')-$(uname -m).tar.gz" yara yarac docscan-project/rules 2>/dev/null
 cp "$OUT"/*.log "$SUMMARY" "$OUT/artifacts/" 2>/dev/null
 echo; echo "===== $OS summary"; cat "$SUMMARY"
 exit $FAILED

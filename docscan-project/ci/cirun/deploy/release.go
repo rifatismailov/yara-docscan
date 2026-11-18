@@ -37,6 +37,7 @@ const PkgAsset = "DocScan-windows-x64.zip"
 type Release struct {
 	Repo, Tag, Version, Dir, PkgSHA string // Version = Tag (vX.Y.Z)
 	Build                           string // збірка пакета: <дата>-<коміт>
+	Extra                           string // додатково в опис релізу (таблиця «Verified on» конвеєра)
 	Assets                          []string
 }
 
@@ -197,6 +198,9 @@ func (r *Release) Publish(sha string, say func(string, ...any)) error {
 		"Do not run it with irm | iex: the script ends with exit and would close the window.\n\n"+
 		"%s: yara64.exe, yarac64.exe, VC++ runtime, rules, watcher, install.ps1 / uninstall.ps1. "+
 		"The critical-information rules (E5Search) are not part of the release.", r.Version, r.Build, sha, base, PkgAsset)
+	if r.Extra != "" {
+		notes += "\n\n## Verified on\n\n" + r.Extra
+	}
 	say("\nGitHub release %s on %s", r.Tag, r.Repo)
 	args := append([]string{"release", "create", r.Tag}, r.Assets...)
 	args = append(args, "--repo", r.Repo, "--target", sha, "--title", "DocScan "+r.Version, "--notes", notes)

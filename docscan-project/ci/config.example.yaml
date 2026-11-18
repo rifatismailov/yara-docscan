@@ -103,3 +103,28 @@ fileserver:
   unc: \\<server-ip>\share
   user_ref: "keepassxc:Infra/fileserver#UserName"
   password_ref: "keepassxc:Infra/fileserver"
+
+# CI/CD through Forgejo Actions (.forgejo/workflows/pipeline.yml). mode: local = everything from this Mac
+# (platforms: above); forgejo = ▷ runs macOS here, pushes the commit to Forgejo and starts the workflow there.
+pipeline:
+  mode: local
+  workflow: pipeline.yml
+  github_repo: <owner>/<repo>
+  github_token_ref: "keepassxc:CI/Git/<entry>"   # fine-grained token: Contents + Releases, read and write
+  branch: <branch>
+
+# The stands of the Forgejo pipeline. This section lives in the Forgejo secret CIRUN_CONFIG (the runner's copy
+# of the config, with password_ref: "env:CI_..." filled from the other secrets), not on the Mac.
+# role: build - compiles (Windows: MSBuild + package) and hands the package to the stands with role: test;
+#       test  - tests the package of stand "from" (no compiler needed); self - builds and tests itself (Linux).
+# suite: smoke - build, 42 samples, sandbox, install + watcher; full - also third pass, hostile files, corpus,
+#        malware (scan only), fuzzing on Linux.
+# stands:
+#   - {name: win11,   title: Windows 11,          os: windows, role: build, suite: smoke,
+#      connection: {type: winrm, host: <ip>, user: <user>, password_ref: "env:CI_WIN11_PASS"}}
+#   - {name: srv2019, title: Windows Server 2019, os: windows, role: test, from: win11, suite: full,
+#      connection: {type: winrm, host: <ip>, user: <user>, password_ref: "env:CI_SRV2019_PASS"}}
+#   - {name: win10,   title: Windows 10,          os: windows, role: test, from: win11, suite: full,
+#      connection: {type: winrm, host: <ip>, user: <user>, password_ref: "env:CI_WIN10_PASS"}}
+#   - {name: ubuntu,  title: Ubuntu Server,       os: linux, role: self, suite: full,
+#      connection: {type: ssh, host: <ip>, user: <user>, key_file: ~/.ssh/docscan_ci}}

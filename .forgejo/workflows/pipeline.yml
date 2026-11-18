@@ -1,0 +1,126 @@
+# DocScan CI/CD: started by ▷ in VS Code (cirun on the Mac) after the local macOS check, never by hand-written
+# pushes. Flow: probe (which stands are reachable) -> win11 (MSBuild + smoke suite + package) -> srv2019 / win10
+# (full suite on the win11 package) and ubuntu (own build, full suite, fuzzing) in parallel -> report
+# ([CI/CD] lines, Verified on) -> only if no stand has ERROR: security gate -> git push to GitHub -> release.
+# An unreachable stand is SKIPPED and does not stop the run. All jobs run on the runner "lan" (LXC next to
+# Forgejo) and share one run folder on it, so the win11 package reaches the other stands without artifact
+# uploads. Addresses and credentials are Forgejo secrets (CIRUN_CONFIG = the stands config, CI_* = passwords,
+# keys, tokens) - nothing internal is in this public file.
+name: pipeline
+
+on:
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: "Commit to build and test (pushed to this repository by ▷)"
+        required: true
+      release:
+        description: "After a green run: GitHub release vX.Y.Z"
+        default: "false"
+      bump:
+        description: "Release number part: patch | minor | major"
+        default: "patch"
+      assets:
+        description: "Version of the test files in the package store (corpus, malware); empty - none"
+        default: ""
+      mac:
+        description: "Result of the local macOS check: OK|details"
+        default: ""
+      fuzz:
+        description: "Fuzzing seconds on the Linux stand"
+        default: "300"
+
+env:
+  ART: /home/runner/ci-art/${{ github.run_id }}
+  SHA: ${{ inputs.sha }}
+  CIRUN_FORGEJO_URL: ${{ github.server_url }}
+  CIRUN_FORGEJO_REPO: ${{ github.repository }}
+  CIRUN_FORGEJO_TOKEN: ${{ secrets.CI_FORGEJO_TOKEN }}
+  CIRUN_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_number }}
+  CI_WIN11_PASS: ${{ secrets.CI_WIN11_PASS }}
+  CI_SRV2019_PASS: ${{ secrets.CI_SRV2019_PASS }}
+  CI_WIN10_PASS: ${{ secrets.CI_WIN10_PASS }}
+  CI_STORE_TOKEN: ${{ secrets.CI_STORE_TOKEN }}
+
+jobs:
+  probe:
+    runs-on: lan
+    outputs:
+      win11: ${{ steps.probe.outputs.win11 }}
+      srv2019: ${{ steps.probe.outputs.srv2019 }}
+      win10: ${{ steps.probe.outputs.win10 }}
+      ubuntu: ${{ steps.probe.outputs.ubuntu }}
+    steps:
+      - name: checkout, cirun, config
+        env:
+          CIRUN_CONFIG: ${{ secrets.CIRUN_CONFIG }}
+          CI_SSH_KEY: ${{ secrets.CI_SSH_KEY }}
+          CI_KNOWN_HOSTS: ${{ secrets.CI_KNOWN_HOSTS }}
+        run: |
+          set -eu
+          find /home/runner/ci-art -mindepth 1 -maxdepth 1 -type d -mtime +3 -exec rm -rf {} + 2>/dev/null || true
+          rm -rf "$ART" && mkdir -p "$ART" && chmod 700 "$ART"
+          # the token goes to git through the environment, not the command line
+          export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.extraHeader GIT_CONFIG_VALUE_0="Authorization: token $CIRUN_FORGEJO_TOKEN"
+          git clone --quiet --no-checkout "$CIRUN_FORGEJO_URL/$CIRUN_FORGEJO_REPO.git" "$ART/src"
+          git -C "$ART/src" checkout --quiet "$SHA"
+          echo "commit: $(git -C "$ART/src" log -1 --format='%h %s')"
+          go build -C "$ART/src/docscan-project/ci/cirun" -o "$ART/cirun" .
+          umask 077
+          printf '%s\n' "$CIRUN_CONFIG" > "$ART/config.yaml"
+          mkdir -p ~/.ssh && printf '%s\n' "$CI_SSH_KEY" > ~/.ssh/docscan_ci && printf '%s\n' "$CI_KNOWN_HOSTS" > ~/.ssh/known_hosts
+      - id: probe
+        name: which stands are reachable
+        run: cd "$ART/src" && "$ART/cirun" probe --config "$ART/config.yaml" --art "$ART" --sha "$SHA"
+
+  win11:
+    needs: probe
+    if: needs.probe.outputs.win11 == 'online'
+    runs-on: lan
+    timeout-minutes: 120
+    steps:
+      - name: Windows 11 - MSBuild, smoke suite, package
+        run: cd "$ART/src" && "$ART/cirun" stand --config "$ART/config.yaml" --art "$ART" --sha "$SHA" --name win11
+
+  srv2019:
+    needs: [probe, win11]
+    if: always() && needs.probe.outputs.srv2019 == 'online'
+    runs-on: lan
+    timeout-minutes: 180
+    steps:
+      - name: Windows Server 2019 - full suite on the win11 package
+        run: cd "$ART/src" && "$ART/cirun" stand --config "$ART/config.yaml" --art "$ART" --sha "$SHA" --name srv2019 --assets "${{ inputs.assets }}"
+
+  win10:
+    needs: [probe, win11]
+    if: always() && needs.probe.outputs.win10 == 'online'
+    runs-on: lan
+    timeout-minutes: 180
+    steps:
+      - name: Windows 10 - full suite on the win11 package
+        run: cd "$ART/src" && "$ART/cirun" stand --config "$ART/config.yaml" --art "$ART" --sha "$SHA" --name win10 --assets "${{ inputs.assets }}"
+
+  ubuntu:
+    needs: probe
+    if: needs.probe.outputs.ubuntu == 'online'
+    runs-on: lan
+    timeout-minutes: 180
+    steps:
+      - name: Ubuntu - build, full suite, fuzzing
+        run: cd "$ART/src" && "$ART/cirun" stand --config "$ART/config.yaml" --art "$ART" --sha "$SHA" --name ubuntu --assets "${{ inputs.assets }}" --fuzz "${{ inputs.fuzz }}"
+
+  report:
+    needs: [probe, win11, srv2019, win10, ubuntu]
+    if: always()
+    runs-on: lan
+    steps:
+      - name: report, security gate, push to GitHub, release
+        env:
+          CI_GITHUB_TOKEN: ${{ secrets.CI_GITHUB_TOKEN }}
+        run: |
+          set -eu
+          cd "$ART/src"
+          "$ART/cirun" report --config "$ART/config.yaml" --art "$ART" --sha "$SHA" --mac "${{ inputs.mac }}" --md "$ART/report.md"
+          rel=""
+          if [ "${{ inputs.release }}" = "true" ]; then rel="--release --bump ${{ inputs.bump }}"; fi
+          "$ART/cirun" publish --config "$ART/config.yaml" --art "$ART" --sha "$SHA" --notes "$ART/report.md" $rel

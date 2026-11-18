@@ -155,6 +155,10 @@ type Pipeline struct {
 	GitHubRepo     string `yaml:"github_repo"`      // owner/repo
 	GitHubTokenRef string `yaml:"github_token_ref"` // fine-grained токен: Contents + Releases (push і реліз)
 	Branch         string `yaml:"branch"`           // гілка, яку пушити (за замовчуванням — та, що в прогоні)
+	// Mode: local — ▷ збирає і тестує все сам (platforms:), як раніше; forgejo — ▷ проганяє лише macOS, пушить
+	// коміт у Forgejo (forgejo.url / repo / token_ref) і запускає там Workflow на стендах (stands:)
+	Mode     string `yaml:"mode"`
+	Workflow string `yaml:"workflow"` // файл workflow у .forgejo/workflows (за замовчуванням pipeline.yml)
 }
 
 // Config — увесь конфіг.
@@ -252,6 +256,12 @@ func (c *Config) defaults() {
 		for i := range p.Candidates {
 			fix(&p.Candidates[i].Connection)
 		}
+	}
+	if c.Pipeline.Mode == "" {
+		c.Pipeline.Mode = "local"
+	}
+	if c.Pipeline.Workflow == "" {
+		c.Pipeline.Workflow = "pipeline.yml"
 	}
 	for i := range c.Stands {
 		st := &c.Stands[i]
@@ -354,6 +364,12 @@ func (c *Config) validate() error {
 		if err := visit(n); err != nil {
 			return err
 		}
+	}
+	if c.Pipeline.Mode != "local" && c.Pipeline.Mode != "forgejo" {
+		return fmt.Errorf("pipeline.mode %q (local | forgejo)", c.Pipeline.Mode)
+	}
+	if c.Pipeline.Mode == "forgejo" && (c.Forgejo.URL == "" || c.Forgejo.Repo == "" || c.Forgejo.TokenRef == "") {
+		return fmt.Errorf("pipeline.mode forgejo needs forgejo.url, forgejo.repo and forgejo.token_ref")
 	}
 	names := map[string]*Stand{}
 	for i := range c.Stands {
