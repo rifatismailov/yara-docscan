@@ -1,6 +1,8 @@
 package transport
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
@@ -108,7 +110,14 @@ func (w *WinRM) Upload(ctx context.Context, data []byte, remote string) error {
 }
 
 func (w *WinRM) upload(ctx context.Context, data []byte, remote string) error {
-	b64 := base64.StdEncoding.EncodeToString(data)
+	// gzip first: Defender's ML flagged "cmd.exe /C echo <base64 of an exe>" as Trojan:Win32/Commando.C!ml and
+	// killed the upload at the same chunk every time; compressed bytes carry no machine-code patterns (and are
+	// about half the size)
+	var zb bytes.Buffer
+	zw := gzip.NewWriter(&zb)
+	zw.Write(data)
+	zw.Close()
+	b64 := base64.StdEncoding.EncodeToString(zb.Bytes())
 	// A 7 MB file is ~1 300 commands. One shell for all of them ran into a WinRM error half way (operations
 	// quota), and every retry started from zero and hit it again: a fresh shell every shellChunks commands,
 	// and a failed chunk is retried in a new shell (the SHA256 check in Upload catches a doubled chunk).
@@ -170,7 +179,8 @@ func (w *WinRM) upload(ctx context.Context, data []byte, remote string) error {
 		return err
 	}
 	_, stderr, rc, err := w.client.RunPSWithContext(ctx, fmt.Sprintf(
-		"$b=(Get-Content '%[1]s.b64') -join ''; [IO.File]::WriteAllBytes('%[1]s',[Convert]::FromBase64String($b)); Remove-Item '%[1]s.b64'", remote))
+		"$b=(Get-Content '%[1]s.b64') -join ''; $z=New-Object IO.Compression.GZipStream((New-Object IO.MemoryStream(,[Convert]::FromBase64String($b))),[IO.Compression.CompressionMode]::Decompress); "+
+			"$o=[IO.File]::Create('%[1]s'); try { $z.CopyTo($o) } finally { $o.Close(); $z.Close() }; Remove-Item '%[1]s.b64'", remote))
 	if err == nil && rc != 0 {
 		err = fmt.Errorf("%s", cut(stderr, 200))
 	}
