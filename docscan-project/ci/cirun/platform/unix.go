@@ -35,6 +35,7 @@ type Unix struct {
 	local   bool   // машина — цей комп'ютер
 	repoDir string // де лежить код на машині
 	outDir  string // CI_OUT скрипта на машині
+	workdir string // робоча тека на машині, абсолютний шлях
 }
 
 // NewMacOS — macOS: локально (цей Мак) або через SSH.
@@ -82,8 +83,23 @@ func (u *Unix) Prepare(ctx context.Context) error {
 		u.repoDir, _ = os.Getwd() // сам репозиторій (cirun уже перейшов у його корінь)
 		u.outDir = filepath.Join(u.runDir, u.name+"-work")
 	} else {
-		u.repoDir = strings.TrimRight(u.cfg.Workdir, "/") + "/src"
-		u.outDir = strings.TrimRight(u.cfg.Workdir, "/") + "/out"
+		// відносний workdir (напр. docscan-ci) — від домашньої теки; далі лише абсолютний шлях, бо скрипт
+		// розв'язує відносний CI_OUT від репозиторію, а не від домашньої теки
+		wd := strings.TrimRight(u.cfg.Workdir, "/")
+		r, err := u.t.Run(ctx, fmt.Sprintf("mkdir -p %s && cd %s && pwd", shq(wd), shq(wd)), nil)
+		if err == nil && r.ExitCode != 0 {
+			err = fmt.Errorf("%s", strings.TrimSpace(r.Output))
+		}
+		if err != nil {
+			return fmt.Errorf("workdir %s: %w", wd, err)
+		}
+		lines := strings.Split(strings.TrimSpace(r.Output), "\n")
+		u.workdir = strings.TrimSpace(lines[len(lines)-1])
+		if !strings.HasPrefix(u.workdir, "/") {
+			return fmt.Errorf("workdir %s: unexpected pwd output %q", wd, u.workdir)
+		}
+		u.repoDir = u.workdir + "/src"
+		u.outDir = u.workdir + "/out"
 	}
 	var missing []string
 	for _, c := range u.checks {
@@ -107,7 +123,7 @@ func (u *Unix) SyncSource(ctx context.Context, src Source) error {
 	if err != nil {
 		return err
 	}
-	arch := strings.TrimRight(u.cfg.Workdir, "/") + "/src.tar.gz"
+	arch := u.workdir + "/src.tar.gz"
 	if err := u.t.Upload(ctx, data, arch); err != nil {
 		return err
 	}
@@ -201,7 +217,7 @@ func (u *Unix) fetchAssets(ctx context.Context) (func(), error) {
 	if u.assets.CorpusURL == "" {
 		return none, nil
 	}
-	dir := strings.TrimRight(u.cfg.Workdir, "/") + "/tests"
+	dir := u.workdir + "/tests"
 	cleanup := func() { // шкідливе ПЗ і корпуси на машині не лишаються
 		u.t.Run(context.Background(), "rm -rf "+shq(dir), nil)
 	}
