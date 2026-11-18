@@ -19,6 +19,20 @@
       "problemMatcher": []
     },
     {
+      "label": "DocScan CI + GitHub release (vX.Y.Z, last number +1)",
+      "type": "shell",
+      "command": "go run -C docscan-project/ci/cirun . --release",
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true },
+      "problemMatcher": []
+    },
+    {
+      "label": "DocScan CI + GitHub release, minor (v1.0.x -> v1.1.0)",
+      "type": "shell",
+      "command": "go run -C docscan-project/ci/cirun . --release --bump minor",
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true },
+      "problemMatcher": []
+    },
+    {
       "label": "DocScan CI (no fuzzing)",
       "type": "shell",
       "command": "go run -C docscan-project/ci/cirun . --fuzz 0",

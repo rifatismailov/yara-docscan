@@ -13,7 +13,7 @@
 //	        [-m "повідомлення"] [--no-commit] [--no-push] [--plan] [--push-only] [--combat]
 //	        [--release] [--release-run DIR]
 //
-// --release: після зеленого прогону і push - реліз docscan-<версія> на GitHub: увесь пакет (програма,
+// --release: після зеленого прогону і push - реліз vX.Y.Z (--bump patch/minor/major) на GitHub: увесь пакет (програма,
 // правила, watcher, скрипти) + DocScan-Install.ps1 + DocScan-Setup.ps1 (deploy/release.go).
 // --release-run DIR: той самий реліз з уже зеленого запушеного прогону.
 //
@@ -70,7 +70,8 @@ func main() {
 	plan := flag.Bool("plan", false, "check config, secrets and machines; build nothing")
 	combat := flag.Bool("combat", false, "Windows combat test: install the package and let the watcher scan every test file (~2 h)")
 	pushOnly := flag.Bool("push-only", false, "only git push HEAD to GitHub (after an earlier green run)")
-	release := flag.Bool("release", false, "after a green, pushed run: GitHub release docscan-<version> (package + installer scripts)")
+	release := flag.Bool("release", false, "after a green, pushed run: GitHub release vX.Y.Z (package + installer scripts)")
+	bump := flag.String("bump", "patch", "release number part to increase: patch (v1.0.1), minor (v1.1.0) or major (v2.0.0)")
 	releaseRun := flag.String("release-run", "", "only make the GitHub release from an earlier green, pushed run (ci-out/<run>)")
 	flag.Parse()
 
@@ -96,7 +97,7 @@ func main() {
 		}
 		tail := []string{}
 		if err == nil {
-			tail = doRelease(cfg, *releaseRun, sha)
+			tail = doRelease(cfg, *releaseRun, sha, *bump)
 		} else {
 			say("! release: %v", err)
 			tail = append(tail, "NOT released")
@@ -193,7 +194,7 @@ func main() {
 	// ---- реліз на GitHub: звідти ПК ставлять DocScan
 	if green && *release {
 		if contains(tail, "PUSHED") {
-			tail = append(tail, doRelease(cfg, o.RunDir, sha)...)
+			tail = append(tail, doRelease(cfg, o.RunDir, sha, *bump)...)
 		} else {
 			say("! --release: the commit is not pushed to GitHub - no release")
 			tail = append(tail, "NOT released")
@@ -396,7 +397,7 @@ func contains(list []string, s string) bool {
 }
 
 // doRelease: пакет прогону -> активи релізу -> gh release create -> перевірка завантаження.
-func doRelease(cfg *config.Config, runDir, sha string) []string {
+func doRelease(cfg *config.Config, runDir, sha, bump string) []string {
 	repo := cfg.Release.Repo
 	if repo == "" {
 		u, _ := gitops.Git("remote", "get-url", cfg.Push.Remote)
@@ -406,7 +407,15 @@ func doRelease(cfg *config.Config, runDir, sha string) []string {
 		say("! release: no GitHub repository (release.repo or a github.com push remote)")
 		return []string{"NOT released"}
 	}
-	r, err := deploy.Prepare(runDir, repo)
+	tag, existing, err := deploy.ReleaseTag(repo, sha, bump)
+	if err != nil {
+		say("! release: %v", err)
+		return []string{"NOT released"}
+	}
+	if existing {
+		say("commit %s is already released as %s", sha[:8], tag)
+	}
+	r, err := deploy.Prepare(runDir, repo, tag)
 	if err == nil {
 		err = r.Publish(sha, say)
 	}

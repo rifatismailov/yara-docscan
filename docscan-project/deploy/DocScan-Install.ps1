@@ -11,7 +11,7 @@
 #
 # What it does:
 #   1) downloads DocScan-windows-x64.zip and its .sha256 from the GitHub release (the latest one, or
-#      docscan-<Version> with -Version) and checks the SHA256 (stops on mismatch);
+#      the one tagged -Version, e.g. v1.0.0) and checks the SHA256 (stops on mismatch);
 #   2) the package holds everything: bin\ (yara64.exe, yarac64.exe, VC++ runtime), rules\, watcher\,
 #      install.ps1, uninstall.ps1; it is unpacked into a temp folder;
 #   3) -Critical: the E5Search rules are NOT in the release (sensitive) - they come from the given local
@@ -21,7 +21,7 @@
 # Update: the same command; a new release on GitHub = a new version for every PC that runs it.
 
 param(
-  [string]  $Version = "",          # e.g. 20261116-7b6f6764; empty - the latest release
+  [string]  $Version = "",          # e.g. v1.0.0 (or an old release 20261116-7b6f6764); empty - the latest release
   [string]  $Repo = "rifatismailov/yara-docscan",   # GitHub owner/repo with the releases
   [switch]  $DetectOnly,            # -> install.ps1 -DetectOnly (no disarm, alerts only)
   [string]  $Critical = "",         # critical-rules.yar: local / UNC path or http(s) URL -> install.ps1 -CriticalRules
@@ -46,12 +46,14 @@ $admin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdenti
   [Security.Principal.WindowsBuiltInRole]::Administrator)
 if (-not $admin) { Fail "run PowerShell as Administrator" }
 if ($Repo -notmatch '^[\w.-]+/[\w.-]+$') { Fail "-Repo must be owner/repo" }
-if ($Version -and $Version -notmatch '^\d{8}-[0-9a-f]+$') { Fail "-Version must look like 20261116-7b6f6764" }
+if ($Version -and $Version -notmatch '^(v\d+\.\d+\.\d+|\d{8}-[0-9a-f]+)$') { Fail "-Version must look like v1.0.0 (or 20261116-7b6f6764 for an old release)" }
+# release tags: vX.Y.Z; the releases before v1.0.0 were tagged docscan-<date>-<commit>
+$tag = if ($Version -match '^v') { $Version } else { "docscan-$Version" }
 if ($Critical -and $NoCritical) { Fail "-Critical and -NoCritical together" }
 
 $asset = "DocScan-windows-x64.zip"
-$base = if ($Version) { "https://github.com/$Repo/releases/download/docscan-$Version" } else { "https://github.com/$Repo/releases/latest/download" }
-Write-Host "==> release: $(if ($Version) { "docscan-$Version" } else { 'latest' })  (github.com/$Repo)" -ForegroundColor Cyan
+$base = if ($Version) { "https://github.com/$Repo/releases/download/$tag" } else { "https://github.com/$Repo/releases/latest/download" }
+Write-Host "==> release: $(if ($Version) { $tag } else { 'latest' })  (github.com/$Repo)" -ForegroundColor Cyan
 
 $work = Join-Path $env:TEMP ("DocScan-setup-" + [guid]::NewGuid().ToString("N").Substring(0, 8))
 New-Item -ItemType Directory -Force $work | Out-Null

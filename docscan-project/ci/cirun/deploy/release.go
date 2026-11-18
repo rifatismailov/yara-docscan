@@ -1,10 +1,11 @@
 // Package deploy — реліз DocScan на GitHub (cirun --release / --release-run). Файлових серверів для
 // розгортання немає: ПК бере ВСЕ з релізу GitHub цього репозиторію.
 //
-// Активи релізу docscan-<версія> (тег на протестований і запушений коміт):
+// Активи релізу vX.Y.Z (тег на протестований і запушений коміт, номер — version.go):
 //
 //	DocScan-windows-x64.zip (+ .sha256)  повний пакет: bin\ (yara64, yarac64, рантайм VC++), rules\,
 //	                                     watcher\, install.ps1, uninstall.ps1, SHA256SUMS.txt, VERSION.txt
+//	                                     (перший рядок: "DocScan vX.Y.Z (build <дата>-<коміт>)")
 //	DocScan-Install.ps1                  єдиний скрипт для ПК: качає пакет з релізу, звіряє SHA256,
 //	                                     запускає install.ps1 з пакета
 //
@@ -34,9 +35,12 @@ const PkgAsset = "DocScan-windows-x64.zip"
 
 // Release — реліз: репозиторій, тег, версія, теки з активами, sha256 пакета.
 type Release struct {
-	Repo, Tag, Version, Dir, PkgSHA string
+	Repo, Tag, Version, Dir, PkgSHA string // Version = Tag (vX.Y.Z)
+	Build                           string // збірка пакета: <дата>-<коміт>
 	Assets                          []string
 }
+
+var sumLineRe = regexp.MustCompile(`(?m)^[0-9a-f]{64}  VERSION\.txt`)
 
 var verRe = regexp.MustCompile(`^DocScan-(\d{8}-[0-9a-f]+)\.zip$`)
 
@@ -64,18 +68,18 @@ func DownloadURL(repo, tag, asset string) string {
 
 // Prepare складає активи в <runDir>/release: пакет (імена в zip - з прямими скісними: Compress-Archive
 // пише "\"), його .sha256, DocScan-Install.ps1.
-func Prepare(runDir, repo string) (*Release, error) {
+func Prepare(runDir, repo, tag string) (*Release, error) {
 	full, ver, err := FullPackage(runDir)
 	if err != nil {
 		return nil, err
 	}
-	r := &Release{Repo: repo, Tag: "docscan-" + ver, Version: ver, Dir: filepath.Join(runDir, "release")}
+	r := &Release{Repo: repo, Tag: tag, Version: tag, Build: ver, Dir: filepath.Join(runDir, "release")}
 	os.RemoveAll(r.Dir)
 	if err := os.MkdirAll(r.Dir, 0o755); err != nil {
 		return nil, err
 	}
 	pkg := filepath.Join(r.Dir, PkgAsset)
-	if err := repack(full, pkg); err != nil {
+	if err := repack(full, pkg, "DocScan "+tag+" (build "+ver+")"); err != nil {
 		return nil, err
 	}
 	if r.PkgSHA, err = fileSHA(pkg); err != nil {
@@ -95,8 +99,10 @@ func Prepare(runDir, repo string) (*Release, error) {
 	return r, nil
 }
 
-// repack переписує zip з прямими скісними в іменах; перевіряє, що це пакет DocScan.
-func repack(src, dst string) error {
+// repack переписує zip з прямими скісними в іменах; перевіряє, що це пакет DocScan. Перший рядок VERSION.txt
+// замінюється на title (номер релізу + збірка), рядок VERSION.txt у SHA256SUMS.txt — на новий sha256
+// (install.ps1 звіряє кожен файл).
+func repack(src, dst, title string) error {
 	zr, err := zip.OpenReader(src)
 	if err != nil {
 		return err
@@ -108,7 +114,30 @@ func repack(src, dst string) error {
 	}
 	defer f.Close()
 	w := zip.NewWriter(f)
-	need := map[string]bool{"bin/yara64.exe": false, "install.ps1": false, "SHA256SUMS.txt": false, "watcher/docscan-watcher.ps1": false}
+	need := map[string]bool{"bin/yara64.exe": false, "install.ps1": false, "SHA256SUMS.txt": false, "VERSION.txt": false,
+		"watcher/docscan-watcher.exe": false, "watcher/docscan-watcher.ps1": false}
+	read := func(e *zip.File) ([]byte, error) {
+		r, err := e.Open()
+		if err != nil {
+			return nil, err
+		}
+		defer r.Close()
+		return io.ReadAll(r)
+	}
+	// VERSION.txt: новий перший рядок; його sha256 - для SHA256SUMS.txt
+	var version []byte
+	for _, e := range zr.File {
+		if strings.ReplaceAll(e.Name, `\`, "/") == "VERSION.txt" {
+			b, err := read(e)
+			if err != nil {
+				return err
+			}
+			lines := strings.SplitN(string(b), "\n", 2)
+			lines[0] = title + "\r"
+			version = []byte(strings.Join(lines, "\n"))
+		}
+	}
+	vsum := sha256.Sum256(version)
 	for _, e := range zr.File {
 		name := strings.ReplaceAll(e.Name, `\`, "/")
 		if strings.HasSuffix(name, "/") {
@@ -117,15 +146,20 @@ func repack(src, dst string) error {
 		if _, ok := need[name]; ok {
 			need[name] = true
 		}
-		r, err := e.Open()
+		b, err := read(e)
 		if err != nil {
 			return err
 		}
+		switch name {
+		case "VERSION.txt":
+			b = version
+		case "SHA256SUMS.txt":
+			b = sumLineRe.ReplaceAll(b, []byte(hex.EncodeToString(vsum[:])+"  VERSION.txt"))
+		}
 		out, err := w.CreateHeader(&zip.FileHeader{Name: name, Method: zip.Deflate, Modified: e.Modified})
 		if err == nil {
-			_, err = io.Copy(out, r)
+			_, err = out.Write(b)
 		}
-		r.Close()
 		if err != nil {
 			return err
 		}
@@ -138,7 +172,7 @@ func repack(src, dst string) error {
 	return w.Close()
 }
 
-// Publish: gh release create docscan-<v> з усіма активами (наявний реліз не перезаписується: якщо його
+// Publish: gh release create vX.Y.Z з усіма активами (наявний реліз не перезаписується: якщо його
 // пакет - саме ця збірка, це не помилка). Потім пакет качається за публічною адресою і звіряється sha256.
 func (r *Release) Publish(sha string, say func(string, ...any)) error {
 	url := DownloadURL(r.Repo, r.Tag, PkgAsset)
@@ -152,7 +186,7 @@ func (r *Release) Publish(sha string, say func(string, ...any)) error {
 		return fmt.Errorf("gh release view: %s (is gh installed and logged in?)", strings.TrimSpace(string(out)))
 	}
 	base := "https://github.com/" + r.Repo + "/releases/latest/download"
-	notes := fmt.Sprintf("DocScan %s for Windows 10/11 x64 - built and tested by cirun at commit %s.\n\n"+
+	notes := fmt.Sprintf("DocScan %s for Windows 10/11 x64 (build %s) - built and tested by cirun at commit %s.\n\n"+
 		"Install or update (PowerShell as Administrator):\n\n"+
 		"    [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12\n"+
 		"    $f = \"$env:TEMP\\DocScan-Install.ps1\"\n"+
@@ -162,7 +196,7 @@ func (r *Release) Publish(sha string, say func(string, ...any)) error {
 		"    powershell -ExecutionPolicy Bypass -File $f -Critical <file or URL of critical-rules.yar>\n\n"+
 		"Do not run it with irm | iex: the script ends with exit and would close the window.\n\n"+
 		"%s: yara64.exe, yarac64.exe, VC++ runtime, rules, watcher, install.ps1 / uninstall.ps1. "+
-		"The critical-information rules (E5Search) are not part of the release.", r.Version, sha, base, PkgAsset)
+		"The critical-information rules (E5Search) are not part of the release.", r.Version, r.Build, sha, base, PkgAsset)
 	say("\nGitHub release %s on %s", r.Tag, r.Repo)
 	args := append([]string{"release", "create", r.Tag}, r.Assets...)
 	args = append(args, "--repo", r.Repo, "--target", sha, "--title", "DocScan "+r.Version, "--notes", notes)

@@ -17,7 +17,7 @@ DocScan стежить за новими файлами, перевіряє до
    Ті самі команди й оновлюють: береться останній реліз (конкретний - -Version 20261116-7b6f6764).
    Успіх - рядок "Done." у кінці.
 
-   У релізі GitHub (docscan-<версія>) - усе, файлових серверів немає:
+   У релізі GitHub (vX.Y.Z, напр. v1.0.0) - усе, файлових серверів немає:
      DocScan-windows-x64.zip + .sha256   пакет: bin\ (yara64.exe, yarac64.exe, рантайм VC++), rules\, watcher\,
                                          install.ps1, uninstall.ps1, SHA256SUMS.txt, VERSION.txt
      DocScan-Install.ps1                 качає пакет, звіряє SHA256, запускає install.ps1 з пакета
@@ -26,7 +26,8 @@ DocScan стежить за новими файлами, перевіряє до
    ПК потрібен доступ до github.com і objects.githubusercontent.com (TLS 1.2).
    Інші параметри DocScan-Install.ps1: -NoCritical (вимкнути третій прохід), -MacroUpload <url> (копії коду
    макросів на колектор; без нього код лишається на ПК), -WatchPath, -NoAvExclusion, -QuarantineGeneral.
-   Нова версія: cirun --release (після зеленого прогону).
+   Нова версія: cirun --release (після зеленого прогону; номер +1: v1.0.1, --bump minor -> v1.1.0).
+   Конкретна версія на ПК: DocScan-Install.ps1 -Version v1.0.0.
 
 2. Вручну з розпакованого пакета
 --------------------------------

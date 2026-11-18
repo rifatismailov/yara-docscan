@@ -221,10 +221,19 @@ DocScan поширюється **лише релізами GitHub** цього �
 
 ```bash
 go run -C docscan-project/ci/cirun . --release                       # прогін; зелений і запушений -> реліз
+go run -C docscan-project/ci/cirun . --release --bump minor         # те саме, номер v1.1.0 замість v1.0.1
 go run -C docscan-project/ci/cirun . --release-run ci-out/<прогін>   # реліз з уже зеленого запушеного прогону
 ```
 
-Реліз `docscan-<версія>` (тег на протестований коміт), активи в `ci-out/<прогін>/release/`:
+**Номер релізу — `vX.Y.Z`** (SemVer; тег на протестований коміт, назва «DocScan vX.Y.Z»). GitHub сортує такі теги
+за номером, тож найновіший реліз завжди вгорі (старі теги `docscan-<дата>-<коміт>` сортувалися за випадковим
+хешем). cirun бере найбільший `v`-тег на GitHub і збільшує: `--bump patch` (за замовчуванням, v1.0.0 → v1.0.1),
+`minor` (→ v1.1.0, помітні нові можливості), `major` (→ v2.0.0, несумісні зміни). Перший — **v1.0.0** (Go-watcher);
+v0.x — колишні релізи `docscan-2026…` з PowerShell-watcher-ом. Якщо цей коміт уже випущено, береться його тег
+(номер не плодиться). Збірка (`<дата>-<коміт>`) лишається в описі релізу і в першому рядку `VERSION.txt` пакета:
+`DocScan v1.0.0 (build 20261118-1a2b3c4d)` (`SHA256SUMS.txt` перераховується).
+
+Активи в `ci-out/<прогін>/release/`:
 
 ```
 DocScan-windows-x64.zip + .sha256   повний пакет: bin\ (yara64, yarac64, рантайм VC++), rules\, watcher\, install.ps1 ...
