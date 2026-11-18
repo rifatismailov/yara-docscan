@@ -25,6 +25,9 @@ type Windows struct {
 	full   bool               // вибрана машина проганяє всі тести (Candidate.full_tests)
 	extra  map[string][]byte  // corpus-verdicts.tsv, malware-verdicts.tsv — у артефакти
 	combat *config.FileServer // бойовий тест (--combat): звідки брати тестові файли; nil — вимкнено
+	// стенд конвеєра Forgejo (cirun stand): role build — MSBuild + пакет; test — готовий пакет prebuilt замість
+	// збірки; suite smoke | full. role "" — звичайний прогін cirun (усе як раніше).
+	role, suite, prebuilt string
 
 	t    transport.Transport
 	wdir string // робоча тека на Windows (C:\ci)
@@ -45,6 +48,12 @@ func NewWindows(cfg *config.Platform, sec *config.Resolver, fuzz int, as *assets
 }
 
 func (w *Windows) Name() string { return "windows" }
+
+// SetStand робить з платформи стенд конвеєра: role build | test, suite smoke | full, prebuilt — пакет
+// DocScan-<версія>.zip стенда-збирача (для role test).
+func (w *Windows) SetStand(role, suite, prebuilt string) {
+	w.role, w.suite, w.prebuilt = role, suite, prebuilt
+}
 
 // EnableCombat вмикає бойовий тест (--combat) з тестовими файлами з файлового сервера fs.
 func (w *Windows) EnableCombat(fs config.FileServer) { w.combat = &fs }
@@ -69,6 +78,9 @@ func (w *Windows) Prepare(ctx context.Context) error {
 		}
 		w.t = t
 		w.full = m.Full()
+		if w.role != "" {
+			w.full = w.suite == "full"
+		}
 		// залишки обірваного прогону (напр. машину вимкнули посеред тесту): скрипти кроків (у одному з них
 		// токен до сховку), розпаковані тестові файли і шкідливе ПЗ — геть, перш ніж робити щось інше
 		t.Run(ctx, fmt.Sprintf(`Remove-Item '%[1]s\step-*.ps1','%[1]s\*.b64' -Force -EA 0; Remove-Item '%[1]s\tests' -Recurse -Force -EA 0`, w.wdir), nil)
@@ -170,6 +182,9 @@ if (Test-Path $keep) { Move-Item $keep "$repo\windows\vs2019\packages" }
 // його бере build_package.ps1), пакети NuGet (nuget, кеш з попередньої збірки або завантажений nuget.exe), потім
 // MSBuild Release x64 (v143) проєктів yara і yarac; у лог — помилки, попередження компілятора і «->».
 func (w *Windows) Build(ctx context.Context) (StepResult, error) {
+	if w.role == "test" {
+		return w.deployPrebuilt(ctx), nil
+	}
 	exe, glog, err := buildGoWatcher(ctx, w.sha)
 	if err == nil {
 		err = w.t.Upload(ctx, exe, w.repo+`\docscan-project\watcher-go\docscan-watcher.exe`)
@@ -202,6 +217,70 @@ $rc = $LASTEXITCODE
 exit $rc
 `, -1)
 	return res, nil
+}
+
+// deployPrebuilt — стенд role test: замість збірки — бінарники з пакета стенда-збирача (bin\ пакета: yara64,
+// yarac64, рантайм VC++) у ту саму теку, де їх шукають тести (windows\vs2019\Release); сам пакет лишається
+// в <wdir>\build.zip для кроку install.
+func (w *Windows) deployPrebuilt(ctx context.Context) StepResult {
+	fail := func(msg string) StepResult {
+		res := StepResult{Name: "build", Status: "FAIL", Log: msg}
+		w.logs["build"] = msg
+		w.report(Event{Platform: "windows", Kind: "start", Step: "build"})
+		w.report(Event{Platform: "windows", Kind: "done", Step: "build", Result: &res})
+		return res
+	}
+	data, err := os.ReadFile(w.prebuilt)
+	if err != nil {
+		return fail("prebuilt package: " + err.Error())
+	}
+	if err := w.t.Upload(ctx, data, w.wdir+`\build.zip`); err != nil {
+		return fail("prebuilt package upload: " + err.Error())
+	}
+	return w.step(ctx, "build", fmt.Sprintf("\n\"prebuilt package %s (%d bytes) - no compiler on this stand\"", filepath.Base(w.prebuilt), len(data))+`
+$x = "$w\build-x"; Remove-Item $x -Recurse -Force -EA 0
+Expand-Archive "$w\build.zip" $x -Force
+$rel = "$repo\windows\vs2019\Release"; New-Item -ItemType Directory -Force $rel | Out-Null
+Copy-Item "$x\bin\*" $rel -Force
+Get-Content "$x\VERSION.txt" -TotalCount 1
+Remove-Item $x -Recurse -Force
+& '{{Y}}' --version
+exit $LASTEXITCODE
+`, -1)
+}
+
+// install — стенд конвеєра: пакет цього коміту встановлюється як на ПК (install_smoke.ps1: install.ps1, Go-watcher
+// від SYSTEM, 4 зразки -> записи з очікуваним вердиктом, uninstall -Purge). Пакет: role build — щойно зібраний
+// (крок package), role test — пакет стенда-збирача.
+func (w *Windows) install(ctx context.Context) []StepResult {
+	var steps []StepResult
+	pkg := w.wdir + `\build.zip`
+	if w.role == "build" {
+		p := w.packageStep(ctx)
+		steps = append(steps, p)
+		if p.Status != "PASS" {
+			return steps
+		}
+		pkg = w.wdir + `\dist\DocScan-` + w.fill("{{V}}") + ".zip"
+	}
+	return append(steps, w.step(ctx, "install", `
+Set-Location $repo
+powershell -NoProfile -ExecutionPolicy Bypass -File docscan-project\ci\install_smoke.ps1 -Package '`+pkg+`' -Repo $repo -Work "$w\smoke"
+exit $LASTEXITCODE
+`, -1))
+}
+
+// packageStep — build_package.ps1 -> <wdir>\dist\DocScan-<версія>.zip (якщо його ще немає в цьому прогоні).
+func (w *Windows) packageStep(ctx context.Context) StepResult {
+	return w.step(ctx, "package", `
+Set-Location $repo
+if (-not (Test-Path "$w\dist\DocScan-{{V}}.zip")) {
+  Remove-Item "$w\dist" -Recurse -Force -EA 0
+  powershell -ExecutionPolicy Bypass -File docscan-project\deploy\build_package.ps1 -Repo $repo -Out "$w\dist" -Version {{V}} 2>&1 | % { "$_" }
+}
+if (-not (Test-Path "$w\dist\DocScan-{{V}}.zip")) { exit 1 }
+(Get-FileHash "$w\dist\DocScan-{{V}}.zip").Hash.ToLower() + "  DocScan-{{V}}.zip"
+`, -1)
 }
 
 // Test: перевірка документів (check_verdicts.ps1, Python не потрібен) — на будь-якій машині. На машині з
@@ -245,7 +324,13 @@ if ($rc -ne 0) {
 }
 exit $rc
 `, -1))
+	if w.role != "" {
+		steps = append(steps, w.install(ctx)...)
+	}
 	if !w.full {
+		if w.role != "" { // стенд з набором smoke: так і задумано, не «неповний прогін»
+			return steps, nil
+		}
 		// машина лише для збірки і 35 зразків (напр. робоча станція): прогін на Windows НЕПОВНИЙ
 		w.report(Event{Platform: "windows", Kind: "note", Step: "partial: full_tests is off on this machine - no critical, hostile, corpus, malware, fuzz"})
 		return steps, nil
@@ -498,13 +583,13 @@ func (w *Windows) FetchArtifacts(ctx context.Context, dst string) ([]string, err
 	}
 	var files []string
 	defer w.SaveLogs(dst) // логи кроків — навіть якщо пакет не вийшов
-	pkg := w.step(ctx, "package", `
-Set-Location $repo
-Remove-Item "$w\dist" -Recurse -Force -EA 0
-powershell -ExecutionPolicy Bypass -File docscan-project\deploy\build_package.ps1 -Repo $repo -Out "$w\dist" -Version {{V}} 2>&1 | % { "$_" }
-if (-not (Test-Path "$w\dist\DocScan-{{V}}.zip")) { exit 1 }
-(Get-FileHash "$w\dist\DocScan-{{V}}.zip").Hash.ToLower() + "  DocScan-{{V}}.zip"
-`, -1)
+	if w.role == "test" { // пакет зібрав стенд-збирач
+		return files, nil
+	}
+	if w.role == "" { // звичайний прогін: пакет завжди свіжий
+		w.t.Run(ctx, w.fill(`Remove-Item '{{W}}\dist' -Recurse -Force -EA 0`), nil)
+	}
+	pkg := w.packageStep(ctx)
 	if pkg.Status != "PASS" {
 		return files, fmt.Errorf("package step failed")
 	}

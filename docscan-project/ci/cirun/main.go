@@ -59,6 +59,11 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == "windows" {
 		os.Exit(legacyWindows())
 	}
+	if len(os.Args) > 1 { // конвеєр Forgejo Actions (pipeline.go)
+		if rc := pipelineCommand(os.Args[1:]); rc >= 0 {
+			os.Exit(rc)
+		}
+	}
 
 	cfgPath := flag.String("config", "docscan-project/ci/config.yaml", "configuration file")
 	only := flag.String("only", "", "only these platforms, comma-separated (macos,windows,linux)")

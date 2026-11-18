@@ -134,6 +134,29 @@ type Forgejo struct {
 	} `yaml:"report"`
 }
 
+// Stand — тестовий стенд конвеєра Forgejo (cirun probe / stand / report). Стенди перевіряються на
+// доступність перед прогоном: недоступний — SKIPPED (прогін не падає), помилка на доступному — ERROR (push на
+// GitHub блокується).
+type Stand struct {
+	Name  string `yaml:"name"`  // коротке ім'я: win11, srv2019, win10, ubuntu (ім'я завдання у workflow)
+	Title string `yaml:"title"` // для звіту: "Windows 11", "Windows Server 2019"
+	OS    string `yaml:"os"`    // windows | linux
+	Role  string `yaml:"role"`  // build — збирає (Windows: MSBuild + пакет) і віддає збірку іншим;
+	// test — тестує збірку стенда From; self — збирає і тестує сам (Linux)
+	From  string `yaml:"from"`  // role: test — ім'я стенда, чию збірку тестувати
+	Suite string `yaml:"suite"` // smoke — збірка, 42 зразки, пісочниця, установка + watcher;
+	// full — ще третій прохід, ворожі файли, корпус, шкідливе ПЗ (+ фазинг на Linux)
+	Connection Connection `yaml:"connection"`
+	Workdir    string     `yaml:"workdir"` // C:\ci (Windows), ~/docscan-ci (Linux)
+}
+
+// Pipeline — конвеєр Forgejo Actions: куди після зеленого прогону пушити і де випускати реліз.
+type Pipeline struct {
+	GitHubRepo     string `yaml:"github_repo"`      // owner/repo
+	GitHubTokenRef string `yaml:"github_token_ref"` // fine-grained токен: Contents + Releases (push і реліз)
+	Branch         string `yaml:"branch"`           // гілка, яку пушити (за замовчуванням — та, що в прогоні)
+}
+
 // Config — увесь конфіг.
 // FileServer — файловий сервер тестової платформи (SMB): звідти бойовий тест (--combat) бере тестові файли,
 // шкідливе ПЗ і реальні зразки (лише запаролені zip).
@@ -159,6 +182,8 @@ type Config struct {
 	Forgejo    Forgejo              `yaml:"forgejo"`
 	FileServer FileServer           `yaml:"fileserver"`
 	Release    Release              `yaml:"release"`
+	Stands     []Stand              `yaml:"stands"`
+	Pipeline   Pipeline             `yaml:"pipeline"`
 
 	Path string `yaml:"-"` // звідки завантажено
 }
@@ -226,6 +251,27 @@ func (c *Config) defaults() {
 		}
 		for i := range p.Candidates {
 			fix(&p.Candidates[i].Connection)
+		}
+	}
+	for i := range c.Stands {
+		st := &c.Stands[i]
+		if st.Connection.Port == 0 {
+			st.Connection.Port = map[string]int{"ssh": 22, "winrm": 5985}[st.Connection.Type]
+		}
+		if st.Connection.Type == "winrm" && st.Connection.Auth == "" {
+			st.Connection.Auth = "ntlm"
+		}
+		if st.Connection.Type == "ssh" && st.Connection.KnownHosts == "" {
+			st.Connection.KnownHosts = "~/.ssh/known_hosts"
+		}
+		if st.Workdir == "" {
+			st.Workdir = map[string]string{"windows": `C:\ci`, "linux": "docscan-ci"}[st.OS]
+		}
+		if st.Title == "" {
+			st.Title = st.Name
+		}
+		if st.Suite == "" {
+			st.Suite = "full"
 		}
 	}
 	if c.Tests.LocalDir == "" {
@@ -309,6 +355,40 @@ func (c *Config) validate() error {
 			return err
 		}
 	}
+	names := map[string]*Stand{}
+	for i := range c.Stands {
+		st := &c.Stands[i]
+		if st.Name == "" || names[st.Name] != nil {
+			return fmt.Errorf("stands[%d]: empty or repeated name %q", i, st.Name)
+		}
+		names[st.Name] = st
+		switch {
+		case st.OS != "windows" && st.OS != "linux":
+			return fmt.Errorf("stands.%s.os %q (windows | linux)", st.Name, st.OS)
+		case st.Suite != "smoke" && st.Suite != "full":
+			return fmt.Errorf("stands.%s.suite %q (smoke | full)", st.Name, st.Suite)
+		case st.Connection.Host == "":
+			return fmt.Errorf("stands.%s: connection.host is empty", st.Name)
+		case st.OS == "windows" && st.Connection.Type != "winrm", st.OS == "linux" && st.Connection.Type != "ssh":
+			return fmt.Errorf("stands.%s: %s goes over %s", st.Name, st.OS, map[string]string{"windows": "winrm", "linux": "ssh"}[st.OS])
+		}
+		switch st.Role {
+		case "build", "self":
+		case "test":
+			if st.OS != "windows" {
+				return fmt.Errorf("stands.%s: role test is for Windows stands (Linux builds itself: role self)", st.Name)
+			}
+		default:
+			return fmt.Errorf("stands.%s.role %q (build | test | self)", st.Name, st.Role)
+		}
+	}
+	for _, st := range c.Stands {
+		if st.Role == "test" {
+			if b := names[st.From]; b == nil || b.Role != "build" || b.OS != st.OS {
+				return fmt.Errorf("stands.%s.from %q: not a %s stand with role build", st.Name, st.From, st.OS)
+			}
+		}
+	}
 	switch c.Forgejo.Mode {
 	case "mirror", "push":
 	default:
@@ -331,6 +411,16 @@ func (c *Config) Enabled() []string {
 		}
 	}
 	return out
+}
+
+// Stand — стенд за іменем (nil — немає такого).
+func (c *Config) Stand(name string) *Stand {
+	for i := range c.Stands {
+		if c.Stands[i].Name == name {
+			return &c.Stands[i]
+		}
+	}
+	return nil
 }
 
 // ExpandHome розгортає «~/…» у повний шлях від домашньої теки.

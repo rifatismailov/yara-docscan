@@ -316,3 +316,21 @@ func cleanOld(local, keep string) {
 		}
 	}
 }
+
+// Remote — тестові файли версії version, які ▷ на Маку вже виклав у сховок Forgejo (Prepare): для стендів
+// конвеєра Forgejo, що не мають локальної копії. withMalware — чи є у версії malware.zip.
+func Remote(t config.Tests, sec *config.Resolver, version string, withMalware bool) (*Assets, error) {
+	if version == "" || t.Store.URL == "" {
+		return nil, nil
+	}
+	tok, err := sec.Get(t.Store.TokenRef)
+	if err != nil {
+		return nil, err
+	}
+	base := fmt.Sprintf("%s/api/packages/%s/generic/%s/%s/", strings.TrimRight(t.Store.URL, "/"), t.Store.Owner, t.Store.Package, version)
+	a := &Assets{Version: version, Token: tok, CorpusURL: base + "corpus.tar.gz"}
+	if withMalware {
+		a.MalwareURL = base + "malware.zip"
+	}
+	return a, nil
+}
