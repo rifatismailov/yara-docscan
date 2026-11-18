@@ -72,6 +72,7 @@ func (c *Client) RunState(ctx context.Context, id int64) (status string, jobs []
 
 // CommitStatus — статус коміту (context — cirun/<стенд>).
 type CommitStatus struct {
+	ID          int64  `json:"id"`
 	Context     string `json:"context"`
 	State       string `json:"status"`
 	Description string `json:"description"`
@@ -83,13 +84,20 @@ func (c *Client) Statuses(ctx context.Context, sha string) ([]CommitStatus, erro
 	if err != nil {
 		return nil, err
 	}
-	seen := map[string]bool{}
-	var out []CommitStatus
-	for _, s := range listOf[CommitStatus](data, "statuses") { // найновіші — першими
-		if !seen[s.Context] {
-			seen[s.Context] = true
-			out = append(out, s)
+	// найновіший статус кожного context — за id (статуси однієї секунди API віддає в довільному порядку)
+	latest := map[string]CommitStatus{}
+	var order []string
+	for _, s := range listOf[CommitStatus](data, "statuses") {
+		if cur, ok := latest[s.Context]; !ok {
+			order = append(order, s.Context)
+			latest[s.Context] = s
+		} else if s.ID > cur.ID {
+			latest[s.Context] = s
 		}
+	}
+	out := make([]CommitStatus, 0, len(order))
+	for _, c := range order {
+		out = append(out, latest[c])
 	}
 	return out, nil
 }
