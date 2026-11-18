@@ -109,8 +109,21 @@ func (w *WinRM) Upload(ctx context.Context, data []byte, remote string) error {
 
 func (w *WinRM) upload(ctx context.Context, data []byte, remote string) error {
 	b64 := base64.StdEncoding.EncodeToString(data)
+	// A 7 MB file is ~1 300 commands. One shell for all of them ran into a WinRM error half way (operations
+	// quota), and every retry started from zero and hit it again: a fresh shell every shellChunks commands,
+	// and a failed chunk is retried in a new shell (the SHA256 check in Upload catches a doubled chunk).
+	const shellChunks = 200
 	shell, err := w.client.CreateShell()
 	if err != nil {
+		return err
+	}
+	defer func() { shell.Close() }()
+	renew := func() error {
+		shell.Close()
+		s, err := w.client.CreateShell()
+		if err == nil {
+			shell = s
+		}
 		return err
 	}
 	cmd := func(c string) error {
@@ -136,10 +149,23 @@ func (w *WinRM) upload(ctx context.Context, data []byte, remote string) error {
 	if err == nil {
 		err = cmd(fmt.Sprintf(`del /q "%s.b64" 2>nul & ver >nul`, remote))
 	}
-	for i := 0; err == nil && i < len(b64); i += 7000 {
-		err = cmd(fmt.Sprintf(`echo %s>>"%s.b64"`, b64[i:min(i+7000, len(b64))], remote))
+	for i, n := 0, 0; err == nil && i < len(b64); i, n = i+7000, n+1 {
+		if n > 0 && n%shellChunks == 0 {
+			if err = renew(); err != nil {
+				break
+			}
+		}
+		line := fmt.Sprintf(`echo %s>>"%s.b64"`, b64[i:min(i+7000, len(b64))], remote)
+		for try := 1; try <= 3; try++ {
+			if err = cmd(line); err == nil || ctx.Err() != nil {
+				break
+			}
+			time.Sleep(time.Duration(try) * 2 * time.Second)
+			if rerr := renew(); rerr != nil {
+				err = rerr
+			}
+		}
 	}
-	shell.Close()
 	if err != nil {
 		return err
 	}
