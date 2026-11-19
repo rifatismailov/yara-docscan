@@ -30,6 +30,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"docscan/cirun/assets"
@@ -278,13 +279,15 @@ func cmdStand(args []string) int {
 		pc.Script = ""
 		w := platform.NewWindows(pc, sec, 0, as, rep)
 		w.SetStand(s.Role, s.Suite, prebuilt)
+		w.SetLoad(s.Load)
 		p = w
 	case "linux":
 		pc.Script = "docscan-project/ci/build-test-unix.sh"
 		abs, _ := filepath.Abs(dst)
 		p = platform.NewLinux(pc, sec, *fuzz, abs, as, rep)
 	}
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+	// SIGTERM: Forgejo скасовує завдання — кроки прибирання (тестові файли, навантажувальний тест) ще встигають
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	defer p.Close()
 	st.Status = "ERROR"

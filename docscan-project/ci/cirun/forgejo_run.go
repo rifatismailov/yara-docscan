@@ -6,7 +6,8 @@ package main
 //	2. macOS tar.gz -> сховок Forgejo (docscan-builds/<коміт>) — для релізу;
 //	3. git push коміту в Forgejo (гілка прогону; токен — через змінні середовища git);
 //	4. запуск workflow pipeline.yml (sha, release, bump, версія тестових файлів, результат macOS, фазинг);
-//	5. стеження: зміни стану завдань і статуси коміту cirun/<стенд> одразу в термінал; у кінці — зведення
+//	5. без --watch — кінець: далі Forgejo працює сам (результат — у прогоні й статусах коміту);
+//	   з --watch — стеження: зміни стану завдань і статуси коміту cirun/<стенд> одразу в термінал; у кінці — зведення
 //	   [CI/CD] ... / [RESULT] ... / [GIT] ... і код виходу (0 — зелено й запушено, 1 — ні).
 
 import (
@@ -27,7 +28,7 @@ import (
 )
 
 func runForgejo(ctx context.Context, cfg *config.Config, sec *config.Resolver, o *orchestrator.Orchestrator,
-	src platform.Source, sha, branch string, release bool, bump string, fuzz int, started time.Time) int {
+	src platform.Source, sha, branch string, release bool, bump string, fuzz int, watch bool, started time.Time) int {
 	finish := func(ok bool, text string) int {
 		abs, _ := filepath.Abs(o.RunDir)
 		say("\nRESULT: %s   (%d min)   artifacts: %s   %s", map[bool]string{true: "SUCCESS", false: "FAILURE"}[ok],
@@ -85,6 +86,14 @@ func runForgejo(ctx context.Context, cfg *config.Config, sec *config.Resolver, o
 		return finish(false, "start the Forgejo workflow: "+err.Error())
 	}
 	say("[CI/CD] Forgejo run: %s   jobs: %s", fj.RunURL(run), strings.Join(run.Jobs, ", "))
+	if !watch {
+		// далі Forgejo працює сам: стенди, звіт, push на GitHub і реліз (якщо зелено); результат — у прогоні
+		// і в статусах коміту (cirun/<стенд>, cirun/result, cirun/publish); стежити: cirun --watch
+		say("[CI/CD] the stands, the report and the GitHub push / release go on in Forgejo without this Mac")
+		abs, _ := filepath.Abs(o.RunDir)
+		say("\nRESULT: STARTED   (%d min)   macOS OK, Forgejo run: %s   artifacts: %s", int(time.Since(started).Minutes()), fj.RunURL(run), abs)
+		return 0
+	}
 
 	// 5. стеження
 	lastJob := map[string]string{}

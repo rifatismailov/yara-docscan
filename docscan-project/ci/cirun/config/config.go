@@ -148,6 +148,22 @@ type Stand struct {
 	// full — ще третій прохід, ворожі файли, корпус, шкідливе ПЗ (+ фазинг на Linux)
 	Connection Connection `yaml:"connection"`
 	Workdir    string     `yaml:"workdir"` // C:\ci (Windows), ~/docscan-ci (Linux)
+	Load       *LoadTest  `yaml:"load"`    // навантажувальний тест термінального сервера після набору (лише Windows)
+}
+
+// LoadTest — навантажувальний тест на стенді-термінальному сервері (ci/loadtest): пакет цього коміту ставиться
+// як на сервер (-DetectOnly, стежить за C:\Users), Users користувачів працюють з файлами у своїх профілях
+// (rds_load.ps1), loadtest_report.py звіряє кожну дію з записами watcher-а: пропущений файл — FAIL.
+// Сервер готується один раз вручну: rds_setup.ps1 (користувачі), rds_docs.ps1 (тестові набори в <root>\docs).
+type LoadTest struct {
+	Users        int    `yaml:"users"`         // 25
+	Minutes      int    `yaml:"minutes"`       // тривалість навантаження, 20
+	IntervalSec  int    `yaml:"interval_sec"`  // середній інтервал між діями одного користувача, 20
+	Burst        int    `yaml:"burst"`         // на старті кожен користувач кладе стільки файлів одразу, 10
+	ProbeUsers   int    `yaml:"probe_users"`   // + поодинокі файли під час напливу (затримка для людини), 5
+	DrainMinutes int    `yaml:"drain_minutes"` // скільки чекати, поки watcher дочитає, 30
+	Root         string `yaml:"root"`          // тека тесту на сервері: docs\, runs\, critical-rules.yar; C:\loadtest
+	Critical     string `yaml:"critical"`      // правила критичної інформації на сервері (не в git); "" — <root>\critical-rules.yar, якщо є
 }
 
 // Pipeline — конвеєр Forgejo Actions: куди після зеленого прогону пушити і де випускати реліз.
@@ -283,6 +299,26 @@ func (c *Config) defaults() {
 		if st.Suite == "" {
 			st.Suite = "full"
 		}
+		if l := st.Load; l != nil {
+			def := func(v *int, d int) {
+				if *v <= 0 {
+					*v = d
+				}
+			}
+			def(&l.Users, 25)
+			def(&l.Minutes, 20)
+			def(&l.IntervalSec, 20)
+			def(&l.DrainMinutes, 30)
+			if l.Burst < 0 {
+				l.Burst = 0
+			}
+			if l.ProbeUsers < 0 {
+				l.ProbeUsers = 0
+			}
+			if l.Root == "" {
+				l.Root = `C:\loadtest`
+			}
+		}
 	}
 	if c.Tests.LocalDir == "" {
 		c.Tests.LocalDir = "~/docscan-ci/assets"
@@ -396,6 +432,9 @@ func (c *Config) validate() error {
 			}
 		default:
 			return fmt.Errorf("stands.%s.role %q (build | test | self)", st.Name, st.Role)
+		}
+		if st.Load != nil && st.OS != "windows" {
+			return fmt.Errorf("stands.%s.load: the load test is for a Windows terminal server", st.Name)
 		}
 	}
 	for _, st := range c.Stands {

@@ -77,6 +77,7 @@ func main() {
 	pushOnly := flag.Bool("push-only", false, "only git push HEAD to GitHub (after an earlier green run)")
 	release := flag.Bool("release", false, "after a green, pushed run: GitHub release vX.Y.Z (package + installer scripts)")
 	bump := flag.String("bump", "patch", "release number part to increase: patch (v1.0.1), minor (v1.1.0) or major (v2.0.0)")
+	watch := flag.Bool("watch", false, "pipeline mode forgejo: wait for the Forgejo run and print its result (default: start it and exit)")
 	releaseRun := flag.String("release-run", "", "only make the GitHub release from an earlier green, pushed run (ci-out/<run>)")
 	flag.Parse()
 
@@ -176,7 +177,7 @@ func main() {
 	}
 	// конвеєр Forgejo Actions (pipeline.mode: forgejo): тут лише macOS, далі — стенди у Forgejo (forgejo_run.go)
 	if cfg.Pipeline.Mode == "forgejo" {
-		os.Exit(runForgejo(ctx, cfg, sec, o, src, sha, branch, *release, *bump, *fuzz, started))
+		os.Exit(runForgejo(ctx, cfg, sec, o, src, sha, branch, *release, *bump, *fuzz, *watch, started))
 	}
 	say("build %s (%s) on: %s   fuzzing %ds", sha[:8], branch, strings.Join(o.Plan(), ", "), *fuzz)
 	green := o.Build(ctx, src)

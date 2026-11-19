@@ -50,7 +50,7 @@ $meta | ConvertTo-Json | Set-Content (Join-Path $run "meta.json") -Encoding UTF8
 
 $procs = for ($i = 1; $i -le $Users; $i++) {
   $u = "{0}{1:D2}" -f $Prefix, $i
-  $a = "-NoProfile -ExecutionPolicy Bypass -File `"$Root\loadgen.ps1`" -User $u -Log `"$run\gen-$u.csv`"" +
+  $a = "-NoProfile -ExecutionPolicy Bypass -File `"$PSScriptRoot\loadgen.ps1`" -User $u -Log `"$run\gen-$u.csv`" -Docs `"$Root\docs`"" +
        " -Minutes $Minutes -IntervalSec $IntervalSec -Burst $Burst -Seed $i" + $(if ($All) { " -All" } else { "" })
   Start-Process powershell.exe -ArgumentList $a -WindowStyle Hidden -PassThru
 }
@@ -78,7 +78,7 @@ function Get-Scanned {
 
 $procs = @($procs) + @(for ($i = 1; $i -le $ProbeUsers; $i++) {
   $u = "{0}{1:D2}" -f $Prefix, $i
-  $a = "-NoProfile -ExecutionPolicy Bypass -File `"$Root\loadgen.ps1`" -User $u -Log `"$run\probe-$u.csv`"" +
+  $a = "-NoProfile -ExecutionPolicy Bypass -File `"$PSScriptRoot\loadgen.ps1`" -User $u -Log `"$run\probe-$u.csv`" -Docs `"$Root\docs`"" +
        " -Minutes $ProbeMinutes -IntervalSec 30 -Seed $(100 + $i) -Probe"
   Start-Process powershell.exe -ArgumentList $a -WindowStyle Hidden -PassThru
 })

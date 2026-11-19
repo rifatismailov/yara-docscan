@@ -5,12 +5,18 @@
 #                 [-GoExe C:\loadtest\docscan-watcher.exe]   # only to test an exe that is not released yet
 # -DefenderOff: Microsoft Defender off first (rds_defender.ps1 -Off) - otherwise a signature update makes it block
 # and delete samples of the test set, and it slows every scan.
+# CI (cirun, stand with "load:"):
+#   rds_reset.ps1 -Package C:\ci\build.zip -DetectOnly [-Critical ...]   # the package of the tested commit, not the release
+#   rds_reset.ps1 -RemoveOnly                                           # after the test: uninstall + profiles, no install
+# Both run fine from a WinRM shell (only rds_load.ps1 needs a scheduled task).
 
 param(
   [string]$Critical = "",
   [string]$GoExe = "",
   [int]$Workers = 0,
   [string]$Prefix = "lt",
+  [string]$Package = "",    # DocScan-<version>.zip to install instead of the latest GitHub release
+  [switch]$RemoveOnly,      # stop + uninstall + remove the load-test files, install nothing
   [switch]$DetectOnly,
   [switch]$DefenderOff
 )
@@ -49,16 +55,32 @@ foreach ($p in Get-ChildItem "C:\Users" -Directory -EA SilentlyContinue | ? { $_
   }
 }
 "  folders removed: $n"
+if ($RemoveOnly) { Step "done (remove only)"; exit 0 }
 
-Step "install the latest release"
-$f = "$env:TEMP\DocScan-Install.ps1"
-Invoke-WebRequest -UseBasicParsing https://github.com/rifatismailov/yara-docscan/releases/latest/download/DocScan-Install.ps1 -OutFile $f
-$a = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $f)
-if ($Critical) { $a += @("-Critical", $Critical) }
-if ($DetectOnly) { $a += "-DetectOnly" }
-if ($Workers -gt 0 -and -not $GoExe) { $a += @("-Workers", $Workers) }
-& powershell @a | Out-Host
-if ($LASTEXITCODE -ne 0) { throw "DocScan-Install.ps1 failed: exit $LASTEXITCODE" }
+if ($Package) {
+  Step "install the package $Package"
+  $pk = Join-Path $env:TEMP "docscan-load-pkg"
+  Remove-Item $pk -Recurse -Force -EA SilentlyContinue
+  Expand-Archive -LiteralPath $Package -DestinationPath $pk -Force
+  $a = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", (Join-Path $pk "install.ps1"), "-NoWazuhConfig")
+  if ($Critical) { $a += @("-CriticalRules", $Critical) }
+  if ($DetectOnly) { $a += "-DetectOnly" }
+  if ($Workers -gt 0 -and -not $GoExe) { $a += @("-Workers", $Workers) }
+  & powershell @a | Out-Host
+  $rc = $LASTEXITCODE
+  Remove-Item $pk -Recurse -Force -EA SilentlyContinue
+  if ($rc -ne 0) { throw "install.ps1 failed: exit $rc" }
+} else {
+  Step "install the latest release"
+  $f = "$env:TEMP\DocScan-Install.ps1"
+  Invoke-WebRequest -UseBasicParsing https://github.com/rifatismailov/yara-docscan/releases/latest/download/DocScan-Install.ps1 -OutFile $f
+  $a = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $f)
+  if ($Critical) { $a += @("-Critical", $Critical) }
+  if ($DetectOnly) { $a += "-DetectOnly" }
+  if ($Workers -gt 0 -and -not $GoExe) { $a += @("-Workers", $Workers) }
+  & powershell @a | Out-Host
+  if ($LASTEXITCODE -ne 0) { throw "DocScan-Install.ps1 failed: exit $LASTEXITCODE" }
+}
 Get-Content "$inst\VERSION.txt" -TotalCount 1
 
 if ($GoExe) {

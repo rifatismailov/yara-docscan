@@ -86,9 +86,9 @@ jobs:
     needs: [probe, win11]
     if: always() && needs.probe.outputs.srv2019 == 'online'
     runs-on: lan
-    timeout-minutes: 180
+    timeout-minutes: 300
     steps:
-      - name: Windows Server 2019 - full suite on the win11 package
+      - name: Windows Server 2019 - full suite + terminal-server load test on the win11 package
         run: cd "$ART/src" && "$ART/cirun" stand --config "$ART/config.yaml" --art "$ART" --sha "$SHA" --name srv2019 --assets "${{ inputs.assets }}"
 
   win10:

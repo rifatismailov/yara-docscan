@@ -28,6 +28,7 @@ type Windows struct {
 	// стенд конвеєра Forgejo (cirun stand): role build — MSBuild + пакет; test — готовий пакет prebuilt замість
 	// збірки; suite smoke | full. role "" — звичайний прогін cirun (усе як раніше).
 	role, suite, prebuilt string
+	load                  *config.LoadTest // навантажувальний тест після повного набору (стенд-термінальний сервер); nil — ні
 
 	t    transport.Transport
 	wdir string // робоча тека на Windows (C:\ci)
@@ -53,6 +54,17 @@ func (w *Windows) Name() string { return "windows" }
 // DocScan-<версія>.zip стенда-збирача (для role test).
 func (w *Windows) SetStand(role, suite, prebuilt string) {
 	w.role, w.suite, w.prebuilt = role, suite, prebuilt
+}
+
+// SetLoad вмикає навантажувальний тест на стенді конвеєра (після повного набору).
+func (w *Windows) SetLoad(l *config.LoadTest) { w.load = l }
+
+// pkgPath — пакет цього коміту на машині: role build — щойно зібраний, інакше — пакет стенда-збирача.
+func (w *Windows) pkgPath() string {
+	if w.role == "build" {
+		return w.wdir + `\dist\DocScan-` + w.fill("{{V}}") + ".zip"
+	}
+	return w.wdir + `\build.zip`
 }
 
 // EnableCombat вмикає бойовий тест (--combat) з тестовими файлами з файлового сервера fs.
@@ -254,15 +266,14 @@ exit $LASTEXITCODE
 // (крок package), role test — пакет стенда-збирача.
 func (w *Windows) install(ctx context.Context) []StepResult {
 	var steps []StepResult
-	pkg := w.wdir + `\build.zip`
 	if w.role == "build" {
 		p := w.packageStep(ctx)
 		steps = append(steps, p)
 		if p.Status != "PASS" {
 			return steps
 		}
-		pkg = w.wdir + `\dist\DocScan-` + w.fill("{{V}}") + ".zip"
 	}
+	pkg := w.pkgPath()
 	return append(steps, w.step(ctx, "install", `
 Set-Location $repo
 powershell -NoProfile -ExecutionPolicy Bypass -File docscan-project\ci\install_smoke.ps1 -Package '`+pkg+`' -Repo $repo -Work "$w\smoke"
@@ -448,7 +459,141 @@ if ($bad -gt 0 -or $rc -ne 0 -or $n -gt 0) { exit 1 }
 	if w.combat != nil {
 		steps = append(steps, w.runCombat(ctx, py)...)
 	}
+	if w.load != nil && w.role != "" {
+		steps = append(steps, w.runLoad(ctx, py)...)
+	}
 	return steps, nil
+}
+
+// runLoad — навантажувальний тест термінального сервера (ci/loadtest) з пакетом цього коміту:
+//
+//	load-setup    rds_reset.ps1 -Package: DocScan з нуля (-DetectOnly, стежить за C:\Users) + завдання SYSTEM з
+//	              rds_load.ps1 (Users користувачів працюють з файлами у профілях; з WinRM-сеансу не можна —
+//	              WinRM вбиває дочірні процеси, коли сеанс закривається);
+//	load-run      опитування раз на 30 с, поки rds_load.ps1 не запише done.txt (навантаження + дочитування);
+//	load          loadtest_report.py: кожна дія користувача має запис watcher-а; пропущений файл — FAIL;
+//	load-cleanup  завдання, генератори, DocScan і файли тесту в профілях — геть (завжди).
+func (w *Windows) runLoad(ctx context.Context, py string) (steps []StepResult) {
+	l := w.load
+	q := func(s string) string { return strings.ReplaceAll(s, "'", "''") }
+	name := "ci-" + time.Now().Format("20060102-150405") + "-" + w.sha[:8]
+	root := strings.TrimRight(l.Root, `\`)
+	run := root + `\runs\` + name
+	tlog := root + `\runs\` + name + "-task.log"
+	const task = "DocScan CI load"
+	head := `
+$root = '` + q(root) + `'; $run = '` + q(run) + `'; $tlog = '` + q(tlog) + `'; $lt = "$repo\docscan-project\ci\loadtest"
+`
+	defer func() {
+		steps = append(steps, w.step(context.Background(), "load-cleanup", head+`
+Stop-ScheduledTask -TaskName '`+task+`' -EA 0; Unregister-ScheduledTask -TaskName '`+task+`' -Confirm:$false -EA 0
+Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" | ? { $_.CommandLine -match 'loadgen\.ps1|rds_load\.ps1' } | % { Stop-Process -Id $_.ProcessId -Force -EA 0 }
+& powershell -NoProfile -ExecutionPolicy Bypass -File "$lt\rds_reset.ps1" -RemoveOnly 2>&1 | % { "$_" }
+# прогони CI: лишаються 5 останніх (кожен — копія результатів і журналу watcher-а)
+Get-ChildItem "$root\runs" -Directory -Filter 'ci-*' -EA 0 | Sort-Object Name -Descending | Select-Object -Skip 5 | % { Remove-Item $_.FullName -Recurse -Force -EA 0; Remove-Item ($_.FullName + '-task.log') -Force -EA 0 }
+exit 0
+`, -1))
+	}()
+
+	crit := ""
+	if l.Critical != "" {
+		crit = `$crit = '` + q(l.Critical) + `'`
+	} else {
+		crit = `$crit = "$root\critical-rules.yar"; if (-not (Test-Path $crit)) { $crit = "" }`
+	}
+	args := fmt.Sprintf(`-Users %d -Minutes %d -IntervalSec %d -Burst %d -ProbeUsers %d -ProbeMinutes %d -DrainMinutes %d -Name %s -Root "%s"`,
+		l.Users, l.Minutes, l.IntervalSec, l.Burst, l.ProbeUsers, l.Minutes, l.DrainMinutes, name, root)
+	setup := w.step(ctx, "load-setup", head+crit+`
+if (-not (Test-Path "$root\docs")) { "no test documents in $root\docs (once: rds_docs.ps1)"; exit 1 }
+$users = @(Get-ChildItem C:\Users -Directory | ? Name -match '^lt\d\d$').Count
+if ($users -lt `+fmt.Sprint(l.Users)+`) { "only $users load-test user profiles, `+fmt.Sprint(l.Users)+` needed (once: rds_setup.ps1 + one logon each)"; exit 1 }
+"users: $users, sessions: " + @(quser 2>$null | Select -Skip 1).Count + ", critical rules: " + $(if ($crit) { 'yes' } else { 'no' })
+$a = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "$lt\rds_reset.ps1", "-Package", '`+q(w.pkgPath())+`', "-DetectOnly")
+if ($crit) { $a += @("-Critical", $crit) }
+& powershell @a 2>&1 | % { "$_" }
+if ($LASTEXITCODE) { "rds_reset.ps1 failed: exit $LASTEXITCODE"; exit 1 }
+New-Item -ItemType Directory -Force "$root\runs" | Out-Null
+Unregister-ScheduledTask -TaskName '`+task+`' -Confirm:$false -EA 0
+$act = New-ScheduledTaskAction -Execute cmd.exe -Argument ('/c powershell.exe -NoProfile -ExecutionPolicy Bypass -File "' + "$lt\rds_load.ps1" + '" `+strings.ReplaceAll(args, "'", "''")+` > "' + $tlog + '" 2>&1')
+$pr = New-ScheduledTaskPrincipal -UserId S-1-5-18 -LogonType ServiceAccount -RunLevel Highest
+$st = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -AllowStartIfOnBatteries
+Register-ScheduledTask -TaskName '`+task+`' -Action $act -Principal $pr -Settings $st -Force | Out-Null
+Start-ScheduledTask -TaskName '`+task+`'
+"started: $run"
+`, -1)
+	steps = append(steps, setup)
+	if setup.Status != "PASS" {
+		return steps
+	}
+
+	// load-run: rds_load.ps1 працює завданням SYSTEM; тут — опитування раз на 30 с
+	w.report(Event{Platform: "windows", Kind: "start", Step: "load-run"})
+	t0 := time.Now()
+	limit := time.Duration(l.Minutes+l.DrainMinutes+45) * time.Minute
+	runSt := StepResult{Name: "load-run", Status: "FAIL"}
+	var lines []string
+	for time.Since(t0) < limit {
+		r, err := w.t.Run(ctx, `$run = '`+q(run)+`'
+if (Test-Path "$run\done.txt") { "done" }
+"task: " + (Get-ScheduledTask -TaskName '`+task+`' -EA 0).State
+Get-Content "$run\drain.log" -Tail 1 -EA 0`, nil)
+		if ctx.Err() != nil {
+			break
+		}
+		done, state, last := false, "", ""
+		for _, ln := range strings.Split(r.Output, "\n") {
+			ln = strings.TrimSpace(ln)
+			switch {
+			case ln == "done":
+				done = true
+			case strings.HasPrefix(ln, "task: "):
+				state = strings.TrimPrefix(ln, "task: ")
+			case ln != "":
+				last = ln
+			}
+		}
+		if last != "" && (len(lines) == 0 || lines[len(lines)-1] != last) {
+			lines = append(lines, last)
+		}
+		if done {
+			runSt.Status = "PASS"
+			break
+		}
+		if err == nil && state != "Running" && state != "Queued" && time.Since(t0) > 2*time.Minute {
+			lines = append(lines, "rds_load.ps1 is not running any more (task state: "+state+") and wrote no done.txt")
+			break
+		}
+		select {
+		case <-ctx.Done():
+		case <-time.After(30 * time.Second):
+		}
+	}
+	if runSt.Status != "PASS" && time.Since(t0) >= limit {
+		lines = append(lines, fmt.Sprintf("no done.txt after %s", limit))
+	}
+	runSt.Duration = time.Since(t0)
+	runSt.Log = strings.Join(lines, "\n")
+	w.logs["load-run"] = runSt.Log
+	w.report(Event{Platform: "windows", Kind: "done", Step: "load-run", Result: &runSt})
+	steps = append(steps, runSt)
+
+	// load: звіт по тому, що є (навіть якщо прогін не дійшов до кінця)
+	steps = append(steps, w.step(ctx, "load", py+head+`
+Copy-Item $tlog "$w\load-task.log" -Force -EA 0
+if (-not (Test-Path "$run\meta.json")) { "no run folder $run"; exit 1 }
+if (-not (Test-Path "$run\done.txt")) {  # не дочекалися: копії результатів, як rds_fetch
+  foreach ($f in @("docscan-results.json", "watcher.log") | % { $b = "$env:ProgramData\DocScan\results\$_"; $b; 1..5 | % { "$b.$_" } }) { if (Test-Path $f) { Copy-Item $f $run -Force } }
+}
+$out = & $py "$lt\loadtest_report.py" $run 2>&1 | % { "$_" }
+$rc = $LASTEXITCODE
+$out | Set-Content "$w\load-report.txt" -Encoding UTF8
+$out
+if (-not (Test-Path "$run\done.txt")) { exit 1 }
+exit $rc
+`, 3))
+	w.keep(context.Background(), "load-report.txt")
+	w.keep(context.Background(), "load-task.log")
+	return steps
 }
 
 // runCombat — бойовий тест: пакет цього коміту встановлюється install.ps1 як на робочій станції, і
