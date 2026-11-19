@@ -16,6 +16,7 @@ param(
   [int]$Workers = 0,
   [string]$Prefix = "lt",
   [string]$Package = "",    # DocScan-<version>.zip to install instead of the latest GitHub release
+  [string]$Rules = "",      # rules bundle (DocScan-rules-bundle.zip) -> install.ps1 -Rules (packages come without rules)
   [switch]$RemoveOnly,      # stop + uninstall + remove the load-test files, install nothing
   [switch]$DetectOnly,
   [switch]$DefenderOff
@@ -72,6 +73,7 @@ if ($Package) {
   # -UpdateMode off: the update service must not replace the tested build with a release during the test
   $a = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", (Join-Path $pk "install.ps1"), "-NoWazuhConfig", "-UpdateMode", "off")
   if ($Critical) { $a += @("-CriticalRules", $Critical) }
+  if ($Rules) { $a += @("-Rules", $Rules) }
   if ($DetectOnly) { $a += "-DetectOnly" }
   if ($Workers -gt 0 -and -not $GoExe) { $a += @("-Workers", $Workers) }
   & powershell @a | Out-Host

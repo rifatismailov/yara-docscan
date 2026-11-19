@@ -61,7 +61,8 @@ docscan-project/
   rules/docscan-index.yar    головний файл правил = політика + file-index.yar
   rules/file-index.yar       ГЕНЕРУЄТЬСЯ: include усіх вендорних файлів
   rules/general/, maldoc/    ГЕНЕРУЮТЬСЯ: вендорні правила
-  rules/tools/               генератор правил та інструменти (Python, PowerShell)
+  rules/                     правила — НЕ в git: реліз yara-docscan-rules, який кладе cirun (окремий репозиторій)
+  rules/tools/               (у yara-docscan-rules) генератор правил та інструменти (Python, PowerShell)
   watcher/docscan-watcher.ps1   вотчер (PowerShell 5.1)
   deploy/                    install.ps1, uninstall.ps1, build_package.ps1, manager/ (Wazuh)
   test-range/                генератори тестових зразків, run_tests.ps1
@@ -654,7 +655,7 @@ rule DS_XLM_MACROSHEET
 1. Перевірити ліцензію (без ліцензії в публічний репозиторій не беремо).
 2. `git clone` у `docscan-project/vendor-sources/<ім'я>`, записати коміт у `SOURCES`, ліцензію — у список у `build()`.
 3. Рядки в `vendor-selection.txt`: `<тека> <джерело> <шлях>` (`maldoc/<ім'я>` для документних, `general/<ім'я>` для решти).
-4. `python3 docscan-project/rules/tools/build_vendor_rules.py`, переглянути `vendor-report.md`.
+4. У репозиторії правил (yara-docscan-rules): `python3 tools/build_vendor_rules.py`, переглянути `vendor-report.md`; потім `cirun rules-release`.
 5. Перевірка на хибні: легітимні документи + `fp_scan.ps1` на чистій Windows; шумні → `DROP` з причиною.
 
 ### 11.5 Нове поле в JSON

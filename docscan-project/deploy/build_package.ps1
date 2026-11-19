@@ -35,8 +35,8 @@ $crt = Get-ChildItem "${env:ProgramFiles(x86)}\Microsoft Visual Studio\2022\Buil
 if (-not $crt) { throw "vcruntime140.dll not found in VC\Redist" }
 Copy-Item $crt.FullName, (Join-Path $crt.DirectoryName "vcruntime140_1.dll") "$stage\bin\"
 
-# rules: policy + indexes + vendor subsets
-Copy-Item "$Repo\docscan-project\rules" "$stage\rules" -Recurse
+# rules: NOT in the package - they come from the yara-docscan-rules releases (install.ps1 -Rules <bundle>,
+# then the DocScanUpdater service keeps them up to date)
 # watcher: the Go build (default engine) + the PowerShell script (fallback: install.ps1 -WatcherEngine ps).
 # docscan-watcher.exe is put into watcher-go\ by cirun (cross-built on the Mac); a manual build here needs Go.
 $goExe = "$Repo\docscan-project\watcher-go\docscan-watcher.exe"

@@ -22,8 +22,11 @@ import (
 	"strings"
 )
 
-// Product — продукт маніфесту: updater не прийме маніфест чужого продукту / платформи.
-const Product = "docscan-windows-x64"
+// Продукти маніфесту: updater не прийме маніфест чужого продукту / платформи (пакет правил — не програма).
+const (
+	Product      = "docscan-windows-x64" // програма (реліз yara-docscan): manifest.json / manifest.sig
+	ProductRules = "docscan-rules"       // пакет правил (реліз yara-docscan-rules): rules-manifest.json / rules-manifest.sig
+)
 
 // Schema — версія формату маніфесту.
 const Schema = 1
@@ -61,8 +64,8 @@ func (m *Manifest) Check() error {
 	switch {
 	case m.Schema != Schema:
 		return fmt.Errorf("manifest schema %d, expected %d", m.Schema, Schema)
-	case m.Product != Product:
-		return fmt.Errorf("manifest product %q, expected %q", m.Product, Product)
+	case m.Product != Product && m.Product != ProductRules:
+		return fmt.Errorf("manifest product %q is not a DocScan product", m.Product)
 	case !versionRe.MatchString(m.Version):
 		return fmt.Errorf("manifest version %q is not vX.Y.Z", m.Version)
 	case m.Package.Name == "" || strings.ContainsAny(m.Package.Name, `/\`) || m.Package.Size <= 0 || !hexRe.MatchString(m.Package.SHA256):
@@ -163,6 +166,18 @@ func Verify(data []byte, sig string, keys []string) (*Manifest, string, error) {
 		return nil, "", err
 	}
 	return &m, f[1], nil
+}
+
+// VerifyProduct — Verify + маніфест саме цього продукту.
+func VerifyProduct(data []byte, sig string, keys []string, product string) (*Manifest, string, error) {
+	m, id, err := Verify(data, sig, keys)
+	if err != nil {
+		return nil, "", err
+	}
+	if m.Product != product {
+		return nil, "", fmt.Errorf("manifest product %q, expected %q", m.Product, product)
+	}
+	return m, id, nil
 }
 
 // Compare — порівняння версій vX.Y.Z: -1, 0, 1. Невідома / порожня версія менша за будь-яку правильну.

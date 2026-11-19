@@ -735,6 +735,8 @@ rule ORG_HUGE_PART { meta: severity = "MEDIUM" finding = "HUGE_PART"
 
 ### 6.2 Файли правил
 
+> **Правила тепер в окремому репозиторії [yara-docscan-rules](https://github.com/rifatismailov/yara-docscan-rules)** (підписані релізи; у git цього проєкту їх немає). `rules/…` нижче — шляхи в ньому; у робочій теці проєкту cirun кладе реліз прогону в `docscan-project/rules/`.
+
 | Файл | Для чого | Вміст |
 |---|---|---|
 | `rules/docscan-policy.yar` | політика | `import "docscan"` + правила `DS_*` |

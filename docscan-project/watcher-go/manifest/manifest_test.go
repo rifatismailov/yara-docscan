@@ -77,6 +77,17 @@ func TestCheckRejects(t *testing.T) {
 	if m.Check() == nil {
 		t.Fatal("other product accepted")
 	}
+	// маніфест правил не проходить як програма
+	seed, pub := testKey(t)
+	m.Product = ProductRules
+	b, _ := json.Marshal(m)
+	sig, _ := Sign(b, seed)
+	if _, _, err := VerifyProduct(b, sig, []string{pub}, Product); err == nil {
+		t.Fatal("a rules manifest accepted as the program")
+	}
+	if _, _, err := VerifyProduct(b, sig, []string{pub}, ProductRules); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestCompare(t *testing.T) {

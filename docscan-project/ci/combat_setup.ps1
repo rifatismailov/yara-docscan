@@ -23,7 +23,8 @@ param(
   [Parameter(Mandatory)][string]$Share,       # \\<file server>\share
   [Parameter(Mandatory)][string]$ShareUser,
   [string]$DataDir = "$env:ProgramData\DocScan",
-  [string]$InstallDir = "$env:ProgramW6432\DocScan"
+  [string]$InstallDir = "$env:ProgramW6432\DocScan",
+  [string]$Rules = ""         # rules bundle of the run -> install.ps1 -Rules
 )
 
 $ErrorActionPreference = "Continue"
@@ -83,7 +84,7 @@ $snap = [ordered]@{
 
 # --- 4. install / update DocScan as on a workstation (the Wazuh agent is not needed here)
 $wp = "'C:\Users','" + $Inbox + "'"
-& powershell -NoProfile -ExecutionPolicy Bypass -Command "& '$Work\pkg\x\install.ps1' -WatchPath $wp -NoWazuhConfig -UpdateMode off" 2>&1 | % { "  $_" }
+& powershell -NoProfile -ExecutionPolicy Bypass -Command "& '$Work\pkg\x\install.ps1' -WatchPath $wp -NoWazuhConfig -UpdateMode off$(if ($Rules) { " -Rules '$Rules'" })" 2>&1 | % { "  $_" }
 if ($LASTEXITCODE) { Fail "install.ps1 failed" }
 $snap.critical_on = Test-Path "$InstallDir\critical\critical-rules.yar"
 $snap | ConvertTo-Json -Depth 3 | Set-Content "$Work\snap.json" -Encoding UTF8

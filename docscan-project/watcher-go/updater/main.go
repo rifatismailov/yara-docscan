@@ -5,6 +5,7 @@
 //
 //	docscan-updater.exe [-DataDir C:\ProgramData\DocScan] [-InstallDir <тека над updater\>] [-Config <updater.json>]
 //	docscan-updater.exe -Once      # одна перевірка зараз (і завершення оновлення, що триває) — вручну / для тесту
+//	docscan-updater.exe -InstallRules <DocScan-rules-bundle.zip | тека>   # install.ps1 -Rules: перевірити й поставити правила
 package main
 
 import (
@@ -31,6 +32,7 @@ func main() {
 	installDir := flag.String("InstallDir", filepath.Dir(filepath.Dir(exe)), "DocScan program folder (VERSION.txt)")
 	cfgPath := flag.String("Config", "", "updater.json (default <DataDir>\\update\\updater.json)")
 	once := flag.Bool("Once", false, "check once now and exit")
+	installRules := flag.String("InstallRules", "", "verify and install a rules bundle (DocScan-rules-bundle.zip or a folder) into <InstallDir>\\rules, then exit")
 	flag.Parse()
 	if *cfgPath == "" {
 		*cfgPath = filepath.Join(*dataDir, "update", "updater.json")
@@ -38,10 +40,27 @@ func main() {
 	host, _ := os.Hostname()
 	u := &Updater{dataDir: *dataDir, installDir: *installDir, host: host,
 		log: &logger{file: filepath.Join(*dataDir, "results", "updater.log")}, lastErr: map[string]time.Time{},
-		http: &http.Client{Timeout: 30 * time.Minute}}
+		http: &http.Client{Timeout: 30 * time.Minute}, svc: newServices(), poll: 3 * time.Second}
 	// install.ps1 -Reuse бере параметри з <DataDir>\install.json: теки — ті самі, що в цієї служби
 	u.launch = func(pkgDir, resultFile, logFile string) error {
 		return launchInstaller(pkgDir, resultFile, logFile, "-InstallDir", u.installDir, "-DataDir", u.dataDir)
+	}
+	if *installRules != "" { // install.ps1 -Rules: без служби, результат — код виходу і рядок для інсталятора
+		cfg, err := loadConfig(*cfgPath, u.dataDir)
+		if err != nil {
+			cfg = &Config{Mode: "off"} // конфіг ще не записаний — для встановлення правил він не потрібен
+		}
+		u.cfg = cfg
+		u.keys = append(append([]string{}, manifest.OfficialKeys...), cfg.ExtraPublicKeys...)
+		msg, err := u.installRulesFile(*installRules)
+		if err != nil {
+			u.log.Log("ERROR", "install rules %s: %v", *installRules, err)
+			fmt.Fprintln(os.Stderr, "ERROR: "+err.Error())
+			os.Exit(1)
+		}
+		u.log.Log("INFO", "installed %s", msg)
+		fmt.Println("installed " + msg)
+		os.Exit(0)
 	}
 	body := func(stop <-chan os.Signal) int { return run(u, *cfgPath, *once, stop) }
 	if ok, code := winsvc.Run(ServiceName, body); ok {
@@ -63,7 +82,8 @@ func run(u *Updater, cfgPath string, once bool, stop <-chan os.Signal) int {
 	}
 	u.cfg = cfg
 	u.keys = append(append([]string{}, manifest.OfficialKeys...), cfg.ExtraPublicKeys...)
-	u.log.Log("INFO", "start: mode %s, installed %s, every %gh, window %q", cfg.Mode, orNone(u.installed()), cfg.CheckEveryHours, cfg.Window)
+	u.log.Log("INFO", "start: mode %s, installed %s, rules %s%s, every %gh, window %q", cfg.Mode, orNone(u.installed()), orNone(u.installedRules()),
+		map[bool]string{true: " (rule updates off)", false: ""}[cfg.Rules.Off], cfg.CheckEveryHours, cfg.Window)
 	if once {
 		u.handleState(time.Now())
 		u.tick(time.Now(), true)
@@ -115,17 +135,37 @@ func (u *Updater) tick(now time.Time, once bool) time.Duration {
 	r := &Request{}
 	o := u.check(r, false, now)
 	src, _ := u.base(r)
+	wait := every + jitter
 	switch o.Status {
 	case "error":
 		u.reportError(o, r, src, now)
-		return time.Hour + jitter // джерело недоступне — частіше, ніж раз на 6 год
+		wait = time.Hour + jitter // джерело недоступне — частіше, ніж раз на 6 год
 	case "waiting":
 		u.log.Log("INFO", "%s", o.Message)
 		return 30 * time.Minute
+	case "started":
+		return 30 * time.Minute // програма оновлюється (інсталятор перезапустить службу); правила — наступного разу
 	case "current":
 		u.log.Log("INFO", "%s: %s", orNone(o.From), o.Message)
 	}
-	return every + jitter
+	if !u.cfg.Rules.Off {
+		rr := &Request{Component: "rules"}
+		ro := u.checkRules(rr, false, now)
+		rsrc, _ := u.rulesBase(rr)
+		switch ro.Status {
+		case "error":
+			u.reportError(ro, rr, rsrc, now)
+			if wait > time.Hour+jitter {
+				wait = time.Hour + jitter
+			}
+		case "waiting":
+			u.log.Log("INFO", "%s", ro.Message)
+			return 30 * time.Minute
+		case "current":
+			u.log.Log("INFO", "rules %s: %s", orNone(ro.From), ro.Message)
+		}
+	}
+	return wait
 }
 
 // marker — запит агента: прочитати, виконати, записати результат, маркер -> update.json.done.
@@ -142,14 +182,21 @@ func (u *Updater) marker(now time.Time) {
 		u.writeRecord(RecordUpdate{Status: "error", From: u.installed(), Mode: u.cfg.Mode, Message: err.Error()})
 		return
 	}
-	u.log.Log("INFO", "marker: version %q source %q request %q", r.Version, r.Source, r.RequestID)
-	o := u.check(r, true, now)
-	src, _ := u.base(r)
+	u.log.Log("INFO", "marker: component %s version %q source %q request %q", r.component(), r.Version, r.Source, r.RequestID)
+	var o Outcome
+	var src string
+	if r.component() == "rules" {
+		o = u.checkRules(r, true, now)
+		src, _ = u.rulesBase(r)
+	} else {
+		o = u.check(r, true, now)
+		src, _ = u.base(r)
+	}
 	switch o.Status {
 	case "error":
 		u.reportError(o, r, src, now)
 	case "current":
-		u.writeRecord(RecordUpdate{Status: "current", From: o.From, To: o.To, Mode: u.cfg.Mode, Source: src, RequestID: r.RequestID, Message: o.Message})
+		u.writeRecord(RecordUpdate{Status: "current", Component: r.component(), From: o.From, To: o.To, Mode: u.cfg.Mode, Source: src, RequestID: r.RequestID, Message: o.Message})
 	}
 }
 

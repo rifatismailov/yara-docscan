@@ -39,6 +39,7 @@ import (
 	"docscan/cirun/forgejo"
 	"docscan/cirun/gitops"
 	"docscan/cirun/platform"
+	"docscan/cirun/rulesrc"
 	"docscan/cirun/transport"
 )
 
@@ -72,6 +73,8 @@ func pipelineCommand(args []string) int {
 		return cmdProbe(args[1:])
 	case "prepare":
 		return cmdPrepare(args[1:])
+	case "rules-release":
+		return cmdRulesRelease(args[1:])
 	case "stand":
 		return cmdStand(args[1:])
 	case "report":
@@ -185,6 +188,7 @@ func cmdStand(args []string) int {
 	fuzz := fs.Int("fuzz", 0, "fuzzing seconds (Linux stands)")
 	assetsVer := fs.String("assets", "", "version of the test files in the Forgejo store (from ▷ on the Mac); empty - no corpus / malware")
 	malware := fs.Bool("malware", true, "the assets version has malware.zip")
+	rulesVer := fs.String("rules", "latest", "rules release of yara-docscan-rules (the version ▷ tested on macOS)")
 	fs.Parse(args)
 	if *name == "" || *sha == "" || *art == "" {
 		die("stand: --name, --sha and --art are required")
@@ -308,6 +312,14 @@ func cmdStand(args []string) int {
 		return finish()
 	}
 	src := platform.Source{SHA: full, Archive: func(f string) ([]byte, error) { return gitops.Archive(full, f) }}
+	// правила цього прогону: підписаний реліз yara-docscan-rules (кеш у теці прогону — спільний для завдань)
+	rules, err := rulesrc.Fetch(*rulesVer, filepath.Join(*art, "rules"))
+	if err != nil {
+		st.Detail = "rules: " + err.Error()
+		return finish()
+	}
+	src.RulesZip, src.RulesBundle, src.RulesVersion = rules.Zip, rules.Bundle, rules.Version
+	fmt.Printf("[%s] rules %s\n", s.Name, rules.Version)
 	if err := p.SyncSource(ctx, src); err != nil {
 		st.Detail = "source: " + err.Error()
 		collect()
@@ -432,6 +444,7 @@ func cmdReport(args []string) int {
 // Токен GitHub — у змінних середовища процесів git / gh, не в командному рядку.
 func cmdPublish(args []string) int {
 	fs := flag.NewFlagSet("publish", flag.ExitOnError)
+	rulesVer := fs.String("rules", "", "rules release the run was tested with (for the release notes)")
 	cfgPath := fs.String("config", "docscan-project/ci/config.yaml", "configuration file")
 	art := fs.String("art", "", "run folder shared by the jobs of this run")
 	sha := fs.String("sha", "", "the tested commit")
@@ -549,6 +562,9 @@ func cmdPublish(args []string) int {
 		if *notes != "" {
 			b, _ := os.ReadFile(*notes)
 			r.Extra = string(b)
+		}
+		if *rulesVer != "" {
+			r.Rules = *rulesVer
 		}
 		if err := r.Publish(full, func(f string, a ...any) { fmt.Printf("[REL]   "+f+"\n", a...) }); err != nil {
 			return fail("release: %v", err)

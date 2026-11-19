@@ -39,6 +39,7 @@ type Release struct {
 	Repo, Tag, Version, Dir, PkgSHA string // Version = Tag (vX.Y.Z)
 	Build                           string // збірка пакета: <дата>-<коміт>
 	Extra                           string // додатково в опис релізу (таблиця «Verified on» конвеєра)
+	Rules                           string // реліз правил yara-docscan-rules, з яким тестували
 	Assets                          []string
 }
 
@@ -189,16 +190,23 @@ func (r *Release) Publish(sha string, say func(string, ...any)) error {
 	}
 	base := "https://github.com/" + r.Repo + "/releases/latest/download"
 	notes := fmt.Sprintf("DocScan %s for Windows 10/11 x64 (build %s) - built and tested by cirun at commit %s.\n\n"+
+		"The rules are NOT in this package: download the rules bundle first (a release of "+
+		"https://github.com/rifatismailov/yara-docscan-rules) and give it to the installer.\n\n"+
 		"Install or update (PowerShell as Administrator):\n\n"+
 		"    [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12\n"+
 		"    $f = \"$env:TEMP\\DocScan-Install.ps1\"\n"+
 		"    irm %s/DocScan-Install.ps1 -OutFile $f\n"+
-		"    powershell -ExecutionPolicy Bypass -File $f                 # standard PC\n"+
-		"    powershell -ExecutionPolicy Bypass -File $f -DetectOnly     # pilot: detection and alerts only\n"+
-		"    powershell -ExecutionPolicy Bypass -File $f -Critical <file or URL of critical-rules.yar>\n\n"+
+		"    $r = \"<path or URL of DocScan-rules-bundle.zip>\"   # e.g. https://github.com/rifatismailov/yara-docscan-rules/releases/latest/download/DocScan-rules-bundle.zip\n"+
+		"    powershell -ExecutionPolicy Bypass -File $f -Rules $r                 # standard PC\n"+
+		"    powershell -ExecutionPolicy Bypass -File $f -Rules $r -DetectOnly     # pilot: detection and alerts only\n"+
+		"    powershell -ExecutionPolicy Bypass -File $f -Rules $r -Critical <file or URL of critical-rules.yar>\n\n"+
+		"An update of an installed PC needs no -Rules (the installed rules stay; the DocScanUpdater service updates them). "+
 		"Do not run it with irm | iex: the script ends with exit and would close the window.\n\n"+
-		"%s: yara64.exe, yarac64.exe, VC++ runtime, rules, watcher, install.ps1 / uninstall.ps1. "+
+		"%s: yara64.exe, yarac64.exe, VC++ runtime, watcher, updater, install.ps1 / uninstall.ps1. "+
 		"The critical-information rules (E5Search) are not part of the release.", r.Version, r.Build, sha, base, PkgAsset)
+	if r.Rules != "" {
+		notes += "\n\nTested with the rules " + r.Rules + " of yara-docscan-rules."
+	}
 	if r.Extra != "" {
 		notes += "\n\n## Verified on\n\n" + r.Extra
 	}

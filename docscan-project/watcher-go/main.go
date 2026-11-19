@@ -163,6 +163,21 @@ func start(c *Config, stop <-chan os.Signal) int {
 		}
 	}
 	w.loadMacroSent()
+	// правил ще немає (DocScan поставили без -Rules або їх щойно прибрали) — нічого не сканувати і чекати:
+	// їх покладе install.ps1 -Rules або служба DocScanUpdater; падати й перезапускатися по колу немає сенсу
+	if !exists(c.Rules) {
+		w.log.Log("WARN", "waiting for rules: %s is missing - nothing is scanned until the rules are installed (install.ps1 -Rules, DocScanUpdater)", c.Rules)
+		for !exists(c.Rules) {
+			select {
+			case <-stop:
+				w.log.Log("INFO", "stopped (no rules)")
+				return 0
+			case <-time.After(15 * time.Second):
+			}
+		}
+		time.Sleep(5 * time.Second) // правила щойно з'явились — дати updater-у дописати всі файли
+		w.log.Log("INFO", "rules appeared: %s", c.Rules)
+	}
 	if err := w.prepareRules(); err != nil {
 		w.log.Log("ERROR", "%v", err)
 		return 1

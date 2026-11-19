@@ -53,6 +53,15 @@ type Updater struct {
 	host       string
 	http       *http.Client
 	lastErr    map[string]time.Time
+	svc        services               // зупинка / запуск watcher-а (заміна правил)
+	compiler   func(dir string) error // тест: замість yarac64
+	poll       time.Duration          // як часто дивитися watcher.log після запуску
+}
+
+// services — служби Windows (svc_windows.go); тест підставляє свої.
+type services interface {
+	Stop(name string) error
+	Start(name string) error
 }
 
 func (u *Updater) work() string           { return filepath.Join(u.dataDir, "update") }
@@ -151,7 +160,7 @@ func (u *Updater) check(r *Request, marker bool, now time.Time) Outcome {
 			return fail("manifest sha256 differs from the one in the marker")
 		}
 	}
-	m, keyID, err := manifest.Verify(data, string(sig), u.keys)
+	m, keyID, err := manifest.VerifyProduct(data, string(sig), u.keys, manifest.Product)
 	if err != nil {
 		return fail("%v", err)
 	}
@@ -413,7 +422,8 @@ type Record struct {
 }
 
 type RecordUpdate struct {
-	Status    string `json:"status"` // success | rollback | failed | current | error
+	Status    string `json:"status"`    // success | rollback | failed | current | error
+	Component string `json:"component"` // program | rules
 	From      string `json:"from"`
 	To        string `json:"to,omitempty"`
 	Mode      string `json:"mode"`
@@ -423,10 +433,13 @@ type RecordUpdate struct {
 }
 
 func (u *Updater) record(status string, s *State, msg string) {
-	u.writeRecord(RecordUpdate{Status: status, From: s.From, To: s.To, Mode: u.cfg.Mode, Source: s.Source, RequestID: s.RequestID, Message: msg})
+	u.writeRecord(RecordUpdate{Status: status, Component: "program", From: s.From, To: s.To, Mode: u.cfg.Mode, Source: s.Source, RequestID: s.RequestID, Message: msg})
 }
 
 func (u *Updater) writeRecord(ru RecordUpdate) {
+	if ru.Component == "" {
+		ru.Component = "program"
+	}
 	lvl := map[string]string{"success": "INFO", "current": "INFO", "rollback": "WARN"}[ru.Status]
 	if lvl == "" {
 		lvl = "ERROR"
@@ -455,7 +468,7 @@ func (u *Updater) reportError(o Outcome, r *Request, src string, now time.Time) 
 		return
 	}
 	u.lastErr[o.Message] = now
-	u.writeRecord(RecordUpdate{Status: "error", From: o.From, To: o.To, Mode: u.cfg.Mode, Source: src, RequestID: r.RequestID, Message: o.Message})
+	u.writeRecord(RecordUpdate{Status: "error", Component: r.component(), From: o.From, To: o.To, Mode: u.cfg.Mode, Source: src, RequestID: r.RequestID, Message: o.Message})
 }
 
 func orNone(v string) string {

@@ -9,6 +9,7 @@ param(
   [Parameter(Mandatory = $true)][string]$Package,
   [Parameter(Mandatory = $true)][string]$Repo,
   [string]$Work = "C:\ci\smoke",
+  [string]$Rules = "",            # rules bundle of the run (DocScan-rules-bundle.zip) -> install.ps1 -Rules, as on a PC
   [int]$TimeoutSec = 240
 )
 $ErrorActionPreference = "Stop"
@@ -35,7 +36,7 @@ Expand-Archive $Package "$Work\pkg" -Force
 # install: an update if DocScan is already there; watch only the test inbox. Updates: mode marker - the update
 # service runs (checked below) but does nothing without a marker; github would "update" this CI build (no vX.Y.Z)
 # to the latest release in the middle of the test
-& powershell -NoProfile -ExecutionPolicy Bypass -Command "& '$Work\pkg\install.ps1' -WatchPath '$inbox' -NoWazuhConfig -DetectOnly -UpdateMode marker" 2>&1 | % { "  $_" }
+& powershell -NoProfile -ExecutionPolicy Bypass -Command "& '$Work\pkg\install.ps1' -WatchPath '$inbox' -NoWazuhConfig -DetectOnly -UpdateMode marker$(if ($Rules) { " -Rules '$Rules'" })" 2>&1 | % { "  $_" }
 if ($LASTEXITCODE) { "FAIL: install.ps1 exit $LASTEXITCODE"; exit 1 }
 # the watcher is the Windows service DocScanWatcher: automatic, LocalSystem, restart after a failure, the Go exe
 $sv = Get-CimInstance Win32_Service -Filter "Name='DocScanWatcher'"

@@ -77,7 +77,7 @@ func runForgejo(ctx context.Context, cfg *config.Config, sec *config.Resolver, o
 
 	// 4. workflow
 	inputs := map[string]string{"sha": sha, "release": fmt.Sprint(release), "bump": bump,
-		"mac": "OK|" + macDetail, "fuzz": fmt.Sprint(fuzz)}
+		"mac": "OK|" + macDetail, "fuzz": fmt.Sprint(fuzz), "rules": src.RulesVersion}
 	if o.Assets != nil && o.Assets.CorpusURL != "" {
 		inputs["assets"] = o.Assets.Version
 	}

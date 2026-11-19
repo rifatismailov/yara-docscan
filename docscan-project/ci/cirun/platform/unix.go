@@ -132,6 +132,24 @@ func (u *Unix) SyncSource(ctx context.Context, src Source) error {
 	if err == nil && r.ExitCode != 0 {
 		err = fmt.Errorf("unpack: %s", strings.TrimSpace(r.Output))
 	}
+	if err != nil || src.RulesZip == "" {
+		return err
+	}
+	// правила цього прогону (rulesrc) -> <repo>/docscan-project/rules
+	b, err := os.ReadFile(src.RulesZip)
+	if err != nil {
+		return err
+	}
+	rz := u.workdir + "/rules.zip"
+	if err := u.t.Upload(ctx, b, rz); err != nil {
+		return err
+	}
+	d := u.repoDir + "/docscan-project/rules"
+	r, err = u.t.Run(ctx, fmt.Sprintf(`rm -rf %[1]s && python3 -c "import zipfile,sys; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])" %[2]s %[1]s && rm -f %[2]s && test -f %[1]s/docscan-index.yar`,
+		shq(d), shq(rz)), nil)
+	if err == nil && r.ExitCode != 0 {
+		err = fmt.Errorf("rules unpack: %s", strings.TrimSpace(r.Output))
+	}
 	return err
 }
 

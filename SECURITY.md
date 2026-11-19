@@ -28,7 +28,7 @@ What to include
 Third-party rules
 -----------------
 
-The vendor YARA rules under `docscan-project/rules/general/` and `rules/maldoc/` come from public
+The vendor YARA rules (`general/`, `maldoc/` of [yara-docscan-rules](https://github.com/rifatismailov/yara-docscan-rules)) come from public
 sources (signature-base, Elastic, Yara-Rules, bartblaze, InQuest, ditekSHen). A false positive or a
 broken rule there is not a vulnerability: open a normal issue, and for problems in a rule itself
 consider reporting it to its source as well.

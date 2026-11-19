@@ -15,6 +15,9 @@ type Source struct {
 	Archive  func(format string) ([]byte, error) // git archive --format=<zip|tar.gz> <SHA>
 	GitURL   string                              // звідки машина може взяти код сама (якщо бачить Forgejo)
 	GitToken string                              // токен лише на читання для GitURL
+	// правила (у git проєкту їх немає, rulesrc): DocScan-rules.zip -> <репозиторій>/docscan-project/rules на
+	// машині (тести), DocScan-rules-bundle.zip -> робоча тека (install.ps1 -Rules). Порожньо — без правил.
+	RulesZip, RulesBundle, RulesVersion string
 }
 
 // StepResult — результат одного кроку (build, documents, critical, hostile, fuzz, package …).

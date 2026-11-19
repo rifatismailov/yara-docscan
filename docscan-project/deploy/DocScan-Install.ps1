@@ -39,7 +39,8 @@ param(
   [string]  $UpdateMirror = "",     # mode mirror: folder with the release files (https://... or \\server\share)
   [string]  $UpdateMarker = "",     # mode marker: the file an agent writes
   [double]  $UpdateEveryHours = 0,  # github / mirror: check interval (default 6)
-  [string]  $UpdateWindow = ""      # e.g. 22:00-06:00
+  [string]  $UpdateWindow = "",     # e.g. 22:00-06:00
+  [string]  $Rules = ""             # rules bundle (DocScan-rules-bundle.zip of a yara-docscan-rules release): file, UNC or URL -> install.ps1 -Rules
 )
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"   # without it Invoke-WebRequest in PS 5.1 is very slow
@@ -101,6 +102,7 @@ try {
   if ($UpdateMarker)      { $p.UpdateMarker = $UpdateMarker }
   if ($UpdateEveryHours -gt 0) { $p.UpdateEveryHours = $UpdateEveryHours }
   if ($UpdateWindow)      { $p.UpdateWindow = $UpdateWindow }
+  if ($Rules)             { $p.Rules = $Rules }
   # without -Critical / -NoCritical the rules a PC already has stay as they are
   if ($Critical) {
     $crit = Join-Path $work "critical-rules.yar"

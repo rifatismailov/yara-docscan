@@ -187,6 +187,35 @@ if (Test-Path $keep) { Move-Item $keep "$repo\windows\vs2019\packages" }
 	if res.Status != "PASS" {
 		return fmt.Errorf("checkout failed")
 	}
+	return w.provideRules(ctx, src)
+}
+
+// provideRules — правила цього прогону: <repo>\docscan-project\rules (тести) і <wdir>\DocScan-rules-bundle.zip
+// (install.ps1 -Rules у smoke, навантажувальному і бойовому тестах). Звідки — rulesrc (підписаний реліз).
+func (w *Windows) provideRules(ctx context.Context, src Source) error {
+	if src.RulesZip == "" {
+		return nil
+	}
+	for local, remote := range map[string]string{src.RulesZip: w.wdir + `\rules.zip`, src.RulesBundle: w.wdir + `\DocScan-rules-bundle.zip`} {
+		b, err := os.ReadFile(local)
+		if err != nil {
+			return err
+		}
+		if err := w.t.Upload(ctx, b, remote); err != nil {
+			return fmt.Errorf("rules upload: %w", err)
+		}
+	}
+	res := w.step(ctx, "rules", `
+$d = "$repo\docscan-project\rules"
+Remove-Item $d -Recurse -Force -EA 0
+try { Expand-Archive "$w\rules.zip" $d -Force -ErrorAction Stop } catch { "ERROR: rules not unpacked: $_"; exit 1 }
+Remove-Item "$w\rules.zip"
+if (-not (Test-Path "$d\docscan-index.yar")) { "ERROR: no docscan-index.yar"; exit 1 }
+"rules: " + (Get-Content "$d\VERSION.txt" -TotalCount 1) + " (" + @(Get-ChildItem $d -Recurse -File).Count + " files)"
+`, -1)
+	if res.Status != "PASS" {
+		return fmt.Errorf("rules not unpacked")
+	}
 	return nil
 }
 
@@ -281,7 +310,7 @@ func (w *Windows) install(ctx context.Context) []StepResult {
 	pkg := w.pkgPath()
 	return append(steps, w.step(ctx, "install", `
 Set-Location $repo
-powershell -NoProfile -ExecutionPolicy Bypass -File docscan-project\ci\install_smoke.ps1 -Package '`+pkg+`' -Repo $repo -Work "$w\smoke"
+powershell -NoProfile -ExecutionPolicy Bypass -File docscan-project\ci\install_smoke.ps1 -Package '`+pkg+`' -Repo $repo -Work "$w\smoke" -Rules "$w\DocScan-rules-bundle.zip"
 exit $LASTEXITCODE
 `, -1))
 }
@@ -513,7 +542,7 @@ if (-not (Test-Path "$root\docs")) { "no test documents in $root\docs (once: rds
 $users = @(Get-ChildItem C:\Users -Directory | ? Name -match '^lt\d\d$').Count
 if ($users -lt `+fmt.Sprint(l.Users)+`) { "only $users load-test user profiles, `+fmt.Sprint(l.Users)+` needed (once: rds_setup.ps1 + one logon each)"; exit 1 }
 "users: $users, sessions: " + @(quser 2>$null | Select -Skip 1).Count + ", critical rules: " + $(if ($crit) { 'yes' } else { 'no' })
-$a = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "$lt\rds_reset.ps1", "-Package", '`+q(w.pkgPath())+`', "-DetectOnly")
+$a = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "$lt\rds_reset.ps1", "-Package", '`+q(w.pkgPath())+`', "-Rules", "$w\DocScan-rules-bundle.zip", "-DetectOnly")
 if ($crit) { $a += @("-Critical", $crit) }
 & powershell @a 2>&1 | % { "$_" }
 if ($LASTEXITCODE) { "rds_reset.ps1 failed: exit $LASTEXITCODE"; exit 1 }
@@ -644,7 +673,7 @@ exit 0
 	setup := w.step(ctx, "combat-setup", `
 $env:DOCSCAN_SHARE_PASS = '`+q(pass)+`'
 Set-Location $repo
-& powershell -NoProfile -ExecutionPolicy Bypass -File docscan-project\ci\combat_setup.ps1 -Repo $repo -Work '`+work+`' -Inbox '`+inbox+`' -Version {{V}} -Share '`+q(fs.UNC)+`' -ShareUser '`+q(user)+`'
+& powershell -NoProfile -ExecutionPolicy Bypass -File docscan-project\ci\combat_setup.ps1 -Repo $repo -Work '`+work+`' -Inbox '`+inbox+`' -Version {{V}} -Share '`+q(fs.UNC)+`' -ShareUser '`+q(user)+`' -Rules "$w\DocScan-rules-bundle.zip"
 exit $LASTEXITCODE
 `, -1)
 	steps = append(steps, setup)

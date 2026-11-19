@@ -737,6 +737,8 @@ PDF: 2 HIGHs on pdf.js test files made exactly for `/Launch` and `launchURL` —
 
 ### 6.2 Rule files
 
+> **The rules now live in the separate repository [yara-docscan-rules](https://github.com/rifatismailov/yara-docscan-rules)** (signed releases; not in git of this project). `rules/…` below are paths in it; in the project working tree cirun puts the release of a run into `docscan-project/rules/`.
+
 | File | Purpose | Contents |
 |---|---|---|
 | `rules/docscan-policy.yar` | policy | `import "docscan"` + the `DS_*` rules |

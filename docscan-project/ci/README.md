@@ -288,6 +288,20 @@ DocScan-Install.ps1                 єдиний скрипт для ПК
 manifest.json + manifest.sig        підписаний маніфест (версія, sha256 пакета і кожного файлу в ньому) — для docscan-updater
 ```
 
+**Правила — не в цьому репозиторії** (github.com/rifatismailov/yara-docscan-rules). ▷ бере реліз правил
+(`--rules latest` або `--rules vX.Y.Z`), перевіряє підпис і кожен файл (`cirun/rulesrc`), кладе в
+`docscan-project/rules/` (у `.gitignore`) для macOS і передає ту саму версію стендам (вхід `rules` workflow):
+Windows / Linux отримують `DocScan-rules.zip` у свій `docscan-project\rules` (тести) і `DocScan-rules-bundle.zip`
+(smoke, навантажувальний і бойовий тести ставлять DocScan з `-Rules`, як справжній ПК). Пакет програми — без правил.
+
+**Реліз правил** (окремий репозиторій github.com/rifatismailov/yara-docscan-rules, номер vX.Y.Z — свій):
+
+```bash
+go run -C docscan-project/ci/cirun . rules-release --dir <checkout yara-docscan-rules> [--bump minor] [--dry-run]
+```
+Коміт правил має бути чистим і вже на GitHub; правила компілюються нашим `./yarac`; активи — `DocScan-rules.zip`,
+`rules-manifest.json` / `.sig`, `DocScan-rules-bundle.zip` (для `-Rules` інсталятора), підпис — той самий ключ.
+
 **Підпис.** `cirun publish` / `--release` складає `manifest.json` і підписує його ключем ed25519
 `release.signing_key_ref` (типово `keepassxc:CI/Release/signing-key`; на раннері — `env:CI_SIGNING_KEY`, секрет
 Forgejo). Ключ має бути серед `OfficialKeys` у `watcher-go/manifest` — інакше реліз не випускається (ПК його не

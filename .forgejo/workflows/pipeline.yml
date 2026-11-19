@@ -30,6 +30,9 @@ on:
       fuzz:
         description: "Fuzzing seconds on the Linux stand"
         default: "300"
+      rules:
+        description: "Rules release of github.com/rifatismailov/yara-docscan-rules (the one ▷ tested on macOS)"
+        default: "latest"
 
 env:
   ART: /home/runner/ci-art/${{ github.run_id }}
@@ -86,7 +89,7 @@ jobs:
     timeout-minutes: 120
     steps:
       - name: Windows 11 - MSBuild, smoke suite, package
-        run: cd "$ART/src" && "$ART/cirun" stand --config "$ART/config.yaml" --art "$ART" --sha "$SHA" --name win11
+        run: cd "$ART/src" && "$ART/cirun" stand --config "$ART/config.yaml" --art "$ART" --sha "$SHA" --name win11 --rules "${{ inputs.rules }}"
 
   srv2019:
     needs: [probe, win11]
@@ -95,7 +98,7 @@ jobs:
     timeout-minutes: 300
     steps:
       - name: Windows Server 2019 - full suite + terminal-server load test on the win11 package
-        run: cd "$ART/src" && "$ART/cirun" stand --config "$ART/config.yaml" --art "$ART" --sha "$SHA" --name srv2019 --assets "${{ inputs.assets }}"
+        run: cd "$ART/src" && "$ART/cirun" stand --config "$ART/config.yaml" --art "$ART" --sha "$SHA" --name srv2019 --rules "${{ inputs.rules }}" --assets "${{ inputs.assets }}"
 
   win10:
     needs: [probe, win11]
@@ -104,7 +107,7 @@ jobs:
     timeout-minutes: 180
     steps:
       - name: Windows 10 - full suite on the win11 package
-        run: cd "$ART/src" && "$ART/cirun" stand --config "$ART/config.yaml" --art "$ART" --sha "$SHA" --name win10 --assets "${{ inputs.assets }}"
+        run: cd "$ART/src" && "$ART/cirun" stand --config "$ART/config.yaml" --art "$ART" --sha "$SHA" --name win10 --rules "${{ inputs.rules }}" --assets "${{ inputs.assets }}"
 
   ubuntu:
     needs: probe
@@ -113,7 +116,7 @@ jobs:
     timeout-minutes: 180
     steps:
       - name: Ubuntu - build, full suite, fuzzing
-        run: cd "$ART/src" && "$ART/cirun" stand --config "$ART/config.yaml" --art "$ART" --sha "$SHA" --name ubuntu --assets "${{ inputs.assets }}" --fuzz "${{ inputs.fuzz }}"
+        run: cd "$ART/src" && "$ART/cirun" stand --config "$ART/config.yaml" --art "$ART" --sha "$SHA" --name ubuntu --rules "${{ inputs.rules }}" --assets "${{ inputs.assets }}" --fuzz "${{ inputs.fuzz }}"
 
   report:
     needs: [probe, win11, srv2019, win10, ubuntu]
@@ -130,4 +133,4 @@ jobs:
           "$ART/cirun" report --config "$ART/config.yaml" --art "$ART" --sha "$SHA" --mac "${{ inputs.mac }}" --md "$ART/report.md"
           rel=""
           if [ "${{ inputs.release }}" = "true" ]; then rel="--release --bump ${{ inputs.bump }}"; fi
-          "$ART/cirun" publish --config "$ART/config.yaml" --art "$ART" --sha "$SHA" --notes "$ART/report.md" $rel
+          "$ART/cirun" publish --config "$ART/config.yaml" --art "$ART" --sha "$SHA" --notes "$ART/report.md" --rules "${{ inputs.rules }}" $rel

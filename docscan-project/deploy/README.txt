@@ -44,6 +44,10 @@ DocScan стежить за новими файлами, перевіряє до
      -Workers 8                          фіксована кількість паралельних сканів (за замовчуванням — автоматично
                                          від 2 до кількості CPU, за чергою і навантаженням CPU)
      -WatcherEngine ps                   старий PowerShell-watcher (один скан за раз) замість docscan-watcher.exe
+     -Rules <DocScan-rules-bundle.zip | URL>  ОБОВ'ЯЗКОВО на новому ПК: пакет правил з релізу
+                                         github.com/rifatismailov/yara-docscan-rules (у пакеті програми правил немає;
+                                         завантажити ДО встановлення; інсталятор перевіряє підпис CI і кожен файл).
+                                         Оновлення вже встановленого ПК — без -Rules: правила лишаються, їх оновлює DocScanUpdater
      -UpdateMode github|mirror|marker|off  автооновлення (служба DocScan Updater), за замовчуванням github
      -UpdateMirror <https://...|\\сервер\шара>   mode mirror: тека з файлами релізу (manifest.json, manifest.sig, пакет)
      -UpdateMarker <файл>                mode marker: файл, який пише агент (за замовчуванням ...\update\update.json)

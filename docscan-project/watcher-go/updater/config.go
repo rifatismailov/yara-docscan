@@ -26,12 +26,19 @@ type Config struct {
 	GitHub          GitHub   `json:"github"`
 	Mirror          Mirror   `json:"mirror"`
 	Marker          Marker   `json:"marker"`
+	Rules           Rules    `json:"rules"`
 	Window          string   `json:"window"`            // "22:00-06:00" — ставити лише в цей час (порожньо — будь-коли)
 	ExtraPublicKeys []string `json:"extra_public_keys"` // ключі організації, що підписує свої збірки (ed25519:<base64>)
 }
 
 type GitHub struct {
 	Repo string `json:"repo"` // owner/repo
+}
+
+// Rules — оновлення правил (пакети релізів yara-docscan-rules) у тому ж режимі, що й програма.
+type Rules struct {
+	Off    bool   `json:"off"`    // true — правила не оновлювати (лишаються ті, що поставив інсталятор)
+	GitHub GitHub `json:"github"` // репозиторій релізів правил
 }
 
 type Mirror struct {
@@ -70,6 +77,9 @@ func loadConfig(path, dataDir string) (*Config, error) {
 	if c.GitHub.Repo == "" {
 		c.GitHub.Repo = DefaultRepo
 	}
+	if c.Rules.GitHub.Repo == "" {
+		c.Rules.GitHub.Repo = DefaultRulesRepo
+	}
 	if c.Marker.File == "" {
 		c.Marker.File = dataDir + `\update\update.json`
 	}
@@ -91,6 +101,9 @@ func (c *Config) check() error {
 	}
 	if !repoRe.MatchString(c.GitHub.Repo) {
 		return fmt.Errorf("github.repo %q: expected owner/repo", c.GitHub.Repo)
+	}
+	if !repoRe.MatchString(c.Rules.GitHub.Repo) {
+		return fmt.Errorf("rules.github.repo %q: expected owner/repo", c.Rules.GitHub.Repo)
 	}
 	if c.Window != "" {
 		if _, _, err := parseWindow(c.Window); err != nil {
@@ -152,6 +165,7 @@ func (c *Config) inWindow(t time.Time) bool {
 
 // Request — що ставити: періодична перевірка (усе порожнє — найновіше з джерела режиму) або маркер агента.
 type Request struct {
+	Component string `json:"component"`  // program (за замовчуванням) | rules
 	Version   string `json:"version"`    // vX.Y.Z; порожньо — найновіше
 	Source    string `json:"source"`     // "" | "github" | "mirror" | http(s) URL / UNC теки з файлами релізу
 	SHA256    string `json:"sha256"`     // sha256 manifest.json, якщо агент хоче закріпити саме цей реліз
@@ -178,6 +192,11 @@ func parseMarker(b []byte) (*Request, error) {
 	case !reqIDRe.MatchString(r.RequestID):
 		return nil, fmt.Errorf("marker: request_id: up to 64 characters [A-Za-z0-9_.:-]")
 	}
+	switch r.Component {
+	case "", "program", "rules":
+	default:
+		return nil, fmt.Errorf("marker: component %q (program | rules)", r.Component)
+	}
 	switch r.Source {
 	case "", "github", "mirror":
 	default:
@@ -186,4 +205,12 @@ func parseMarker(b []byte) (*Request, error) {
 		}
 	}
 	return &r, nil
+}
+
+// component — що оновлювати за цим запитом.
+func (r *Request) component() string {
+	if r.Component == "rules" {
+		return "rules"
+	}
+	return "program"
 }

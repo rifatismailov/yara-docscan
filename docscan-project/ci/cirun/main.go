@@ -41,6 +41,7 @@ import (
 	"docscan/cirun/gitops"
 	"docscan/cirun/orchestrator"
 	"docscan/cirun/platform"
+	"docscan/cirun/rulesrc"
 	"docscan/cirun/transport"
 )
 
@@ -77,6 +78,7 @@ func main() {
 	pushOnly := flag.Bool("push-only", false, "only git push HEAD to GitHub (after an earlier green run)")
 	release := flag.Bool("release", false, "after a green, pushed run: GitHub release vX.Y.Z (package + installer scripts)")
 	bump := flag.String("bump", "patch", "release number part to increase: patch (v1.0.1), minor (v1.1.0) or major (v2.0.0)")
+	rulesVer := flag.String("rules", "latest", "rules release of github.com/rifatismailov/yara-docscan-rules to build and test with (latest | vX.Y.Z)")
 	watch := flag.Bool("watch", false, "pipeline mode forgejo: wait for the Forgejo run and print its result (default: start it and exit)")
 	releaseRun := flag.String("release-run", "", "only make the GitHub release from an earlier green, pushed run (ci-out/<run>)")
 	flag.Parse()
@@ -164,6 +166,16 @@ func main() {
 		src.GitURL = strings.TrimRight(cfg.Forgejo.URL, "/") + "/" + cfg.Forgejo.Repo + ".git"
 		src.GitToken, _ = sec.Get(cfg.Forgejo.CheckoutTokenRef)
 	}
+	// правила — з підписаного релізу yara-docscan-rules (у git проєкту їх немає): у робочу теку (macOS, тести) і стендам
+	rules, err := rulesrc.Fetch(*rulesVer, config.ExpandHome("~/docscan-ci/rules"))
+	if err == nil {
+		err = rules.Materialize(rulesrc.TreeDir)
+	}
+	if err != nil {
+		die("rules: %v", err)
+	}
+	src.RulesZip, src.RulesBundle, src.RulesVersion = rules.Zip, rules.Bundle, rules.Version
+	say("rules %s (github.com/%s, signature checked) -> %s", rules.Version, rulesrc.Repo, rulesrc.TreeDir)
 	// тестові файли поза git (корпуси, шкідливе ПЗ): Мак — локальна копія, віддалені машини — зі сховку
 	if cfg.Tests.Enabled {
 		as, err := assets.Prepare(cfg.Tests, sec, say)

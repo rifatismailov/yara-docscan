@@ -27,6 +27,9 @@
 #      parallel scans, the pool grows with the load - see watcher-go\README.md); -Workers N = a fixed number of
 #      parallel scans. -WatcherEngine ps = the old PowerShell script, run by the scheduled task "DocScan Watcher"
 #      (a script cannot be a service). A task left by an older version is removed.
+#   3b) rules: -Rules <bundle> (signed rules release of yara-docscan-rules, verified by docscan-updater.exe); without
+#      -Rules the rules a PC already has from a bundle (rules\VERSION.txt) stay - a program update never replaces
+#      them; otherwise the rules of this package (until packages come without rules); no rules at all - not installed;
 #   8) the update service "DocScan Updater" (DocScanUpdater, updater\docscan-updater.exe): how it updates is in
 #      <DataDir>\update\updater.json, written from -UpdateMode (github | mirror | marker | off), -UpdateMirror,
 #      -UpdateMarker, -UpdateEveryHours, -UpdateWindow (only when given, or on the first install: github). It installs
@@ -61,6 +64,8 @@ param(
   [string]  $UpdateMarker = "",   # mode marker: the file an agent writes (default <DataDir>\update\update.json)
   [double]  $UpdateEveryHours = 0, # github / mirror: how often to check (default 6)
   [string]  $UpdateWindow = "",   # install updates only at this time, e.g. 22:00-06:00
+  [string]  $Rules = "",          # rules bundle from a yara-docscan-rules release (DocScan-rules-bundle.zip: file, UNC or URL; or a
+                                  # folder with rules-manifest.json/.sig + DocScan-rules.zip) - verified (CI signature) and installed
   [switch]  $Reuse,               # take the parameters of the previous install (<DataDir>\install.json) - used by the updater
   [string]  $ResultFile = ""      # write {"ok":..,"version":..,"error":..} here at the end (the updater reads it)
 )
@@ -208,12 +213,19 @@ if (-not $NoAvExclusion) {
 # --- 3. program files ---
 Step "copying to $InstallDir"
 New-Item -ItemType Directory -Force $InstallDir | Out-Null
-if (Test-Path "$InstallDir\rules") {
+if ((Test-Path "$InstallDir\rules") -and -not $Rules -and -not (Test-Path "$InstallDir\rules\VERSION.txt") -and (Test-Path (Join-Path $Pkg "rules"))) {
   Remove-Item "$InstallDir\rules.prev" -Recurse -Force -EA SilentlyContinue
   Copy-Item "$InstallDir\rules" "$InstallDir\rules.prev" -Recurse
 }
+# rules: from a bundle (-Rules, installed below by docscan-updater) / kept (the PC has bundle rules: rules\VERSION.txt)
+# / from this package (until packages come without rules)
+$bundleRules = Test-Path "$InstallDir\rules\VERSION.txt"
+$pkgRules = Test-Path (Join-Path $Pkg "rules\docscan-index.yar")
+$rulesFrom = if ($Rules) { "bundle" } elseif ($bundleRules) { "kept" } elseif ($pkgRules) { "package" } else { "" }
+if (-not $rulesFrom) { Fail "no rules: this package has none and none are installed - give the rules bundle: -Rules <DocScan-rules-bundle.zip | URL> (a yara-docscan-rules release)" }
 foreach ($d in "bin", "rules", "watcher", "updater") {
   if (-not (Test-Path (Join-Path $Pkg $d))) { continue }   # updater\: packages from v1.0.x on
+  if ($d -eq "rules" -and $rulesFrom -ne "package") { continue }
   Remove-Item "$InstallDir\$d" -Recurse -Force -EA SilentlyContinue
   Copy-Item (Join-Path $Pkg $d) "$InstallDir\$d" -Recurse
 }
@@ -350,6 +362,27 @@ if ((Test-Path $ossecConf) -and -not $NoWazuhConfig) {
     Write-Host "  (WazuhSvc service not found - restart the agent manually)"
   }
   $wazuhDone = $true
+}
+
+# --- 4d. rules bundle (-Rules): docscan-updater checks the CI signature, every file, compiles them, installs ---
+if ($Rules) {
+  Step "rules bundle: $Rules"
+  $rb = $Rules
+  if ($Rules -match '^https?://') {
+    $rb = Join-Path $env:TEMP "DocScan-rules-bundle.zip"
+    $ProgressPreference = "SilentlyContinue"
+    try { Invoke-WebRequest -UseBasicParsing $Rules -OutFile $rb } catch { Fail "-Rules: could not download $Rules - $($_.Exception.Message)" }
+  } elseif (-not (Test-Path -LiteralPath $Rules)) { Fail "-Rules: not found: $Rules" }
+  $upd = "$InstallDir\updater\docscan-updater.exe"
+  if (-not (Test-Path $upd)) { Fail "-Rules needs updater\docscan-updater.exe (a newer package)" }
+  $eap = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+  $o = & $upd -InstallRules $rb -DataDir $DataDir -InstallDir $InstallDir 2>&1 | % { "$_" }
+  $rc = $LASTEXITCODE; $ErrorActionPreference = $eap
+  if ($Rules -match '^https?://') { Remove-Item $rb -EA SilentlyContinue }
+  if ($rc -ne 0) { Fail "the rules bundle was not installed: $($o -join ' ')" }
+  Write-Host "  $($o -join ' ')"
+} elseif ($rulesFrom -eq "kept") {
+  Write-Host ("==> rules: kept " + [string](Get-Content "$InstallDir\rules\VERSION.txt" -TotalCount 1) + " (updated separately)") -ForegroundColor Cyan
 }
 
 # --- 5. self-test ---
@@ -541,5 +574,7 @@ if ($wazuhDone) { Write-Host "  Wazuh:      the agent reads results\docscan-resu
 elseif ($NoWazuhConfig) { Write-Host "  Wazuh:      not configured (-NoWazuhConfig)" }
 else { Write-Host "  Wazuh:      NO AGENT ($ossecConf not found) - results stay on this PC only; run the installer again after installing the agent" -ForegroundColor Yellow }
 Write-Host ("  policy:     $InstallDir\rules\docscan-policy.yar  (after a change: " + $(if ($WatcherEngine -eq "go") { "Restart-Service $SvcName" } else { "Restart-ScheduledTask '$TaskName'" }) + ")")
+$rv = if (Test-Path "$InstallDir\rules\VERSION.txt") { [string](Get-Content "$InstallDir\rules\VERSION.txt" -TotalCount 1) } else { "from the program package" }
+Write-Host "  rules:      $InstallDir\rules ($rv)"
 Write-Host ("  updates:    " + $(if ((Test-Path -LiteralPath $updExe) -and $updMode -ne "off") { "service $UpdSvc, mode $updMode ($updCfg); records: $DataDir\results\docscan-updates.json" } else { "off" }))
 Write-Host "  uninstall:  powershell -ExecutionPolicy Bypass -File '$InstallDir\uninstall.ps1'"

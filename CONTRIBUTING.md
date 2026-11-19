@@ -25,9 +25,9 @@ Before you start, read:
 Ground rules:
 
 - **The module reports facts; the policy rules decide.** A new detection is usually a new fact in the
-  module plus a rule in `docscan-project/rules/docscan-policy.yar`, not a hard-coded verdict in C.
+  module plus a rule in `docscan-policy.yar` of [yara-docscan-rules](https://github.com/rifatismailov/yara-docscan-rules), not a hard-coded verdict in C.
 - **We do not write our own vendor YARA signatures.** Third-party rules come only from public sources
-  with a clear license, through `docscan-project/rules/tools/build_vendor_rules.py` (pinned commits,
+  with a clear license, through `tools/build_vendor_rules.py` of [yara-docscan-rules](https://github.com/rifatismailov/yara-docscan-rules) (pinned commits,
   per-rule filter, every drop recorded with a reason). Do not edit generated files under
   `rules/general/` and `rules/maldoc/` by hand.
 - **Untrusted input.** Every parser reads attacker-controlled bytes: bounds-check every read, cap every
@@ -44,4 +44,4 @@ License
 -------
 
 DocScan code is under the same BSD 3-Clause license as YARA ([COPYING](COPYING)). Third-party rules keep
-their own licenses (`docscan-project/rules/LICENSE-*`).
+their own licenses (`LICENSE-*` in [yara-docscan-rules](https://github.com/rifatismailov/yara-docscan-rules)).

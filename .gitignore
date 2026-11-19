@@ -125,3 +125,6 @@ __pycache__/
 
 # cirun: real settings with internal addresses (passwords are only references) - never in git
 /docscan-project/ci/config.yaml
+
+# YARA rules live in github.com/rifatismailov/yara-docscan-rules (signed releases); cirun puts the release of the run here
+/docscan-project/rules/
