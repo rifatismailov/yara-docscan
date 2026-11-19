@@ -152,6 +152,30 @@ type Stand struct {
 	Connection Connection `yaml:"connection"`
 	Workdir    string     `yaml:"workdir"` // C:\ci (Windows), ~/docscan-ci (Linux)
 	Load       *LoadTest  `yaml:"load"`    // навантажувальний тест термінального сервера після набору (лише Windows)
+	VM         *StandVM   `yaml:"vm"`      // ВМ на Proxmox: cirun prepare вмикає її, якщо вимкнена
+	Sessions   *Sessions  `yaml:"sessions"`
+}
+
+// StandVM — ВМ стенда на Proxmox (proxmox:).
+type StandVM struct {
+	ProxmoxID int `yaml:"proxmox_id"`
+}
+
+// Sessions — RDP-сесії користувачів <prefix>01..NN на цьому стенді (термінальний сервер), які cirun prepare
+// відкриває зі стенда from (mstsc через rds_connect.ps1 в інтерактивній сесії його користувача — там автовхід),
+// якщо їх менше count. Навантажувальний тест іде і без них, але з ними ближчий до справжнього сервера.
+type Sessions struct {
+	From        string `yaml:"from"`         // Windows-стенд-клієнт (win11)
+	Count       int    `yaml:"count"`        // 12
+	Prefix      string `yaml:"prefix"`       // lt
+	PasswordRef string `yaml:"password_ref"` // пароль користувачів (keepassxc:Infra/rds-loadtest-users, env:CI_LT_PASS)
+}
+
+// Proxmox — хост ВМ стендів: cirun prepare вмикає вимкнені стенди API-токеном лише з VM.PowerMgmt + VM.Audit.
+type Proxmox struct {
+	URL      string `yaml:"url"`       // https://<хост>:8006
+	Node     string `yaml:"node"`      // pve
+	TokenRef string `yaml:"token_ref"` // "<user>@pve!<token>=<uuid>" (keepassxc:CI/Proxmox/api-token, env:CI_PROXMOX_TOKEN)
 }
 
 // LoadTest — навантажувальний тест на стенді-термінальному сервері (ci/loadtest): пакет цього коміту ставиться
@@ -207,6 +231,7 @@ type Config struct {
 	Release    Release              `yaml:"release"`
 	Stands     []Stand              `yaml:"stands"`
 	Pipeline   Pipeline             `yaml:"pipeline"`
+	Proxmox    Proxmox              `yaml:"proxmox"`
 
 	Path string `yaml:"-"` // звідки завантажено
 }
@@ -301,6 +326,14 @@ func (c *Config) defaults() {
 		}
 		if st.Suite == "" {
 			st.Suite = "full"
+		}
+		if ss := st.Sessions; ss != nil {
+			if ss.Count <= 0 {
+				ss.Count = 12
+			}
+			if ss.Prefix == "" {
+				ss.Prefix = "lt"
+			}
 		}
 		if l := st.Load; l != nil {
 			def := func(v *int, d int) {
@@ -442,8 +475,22 @@ func (c *Config) validate() error {
 		if st.Load != nil && st.OS != "windows" {
 			return fmt.Errorf("stands.%s.load: the load test is for a Windows terminal server", st.Name)
 		}
+		if st.VM != nil && (st.VM.ProxmoxID <= 0 || c.Proxmox.URL == "") {
+			return fmt.Errorf("stands.%s.vm: proxmox_id and the proxmox: section (url, token_ref) are needed", st.Name)
+		}
+		if st.Sessions != nil && (st.OS != "windows" || st.Sessions.From == "" || st.Sessions.PasswordRef == "") {
+			return fmt.Errorf("stands.%s.sessions: Windows stand, from: <client stand> and password_ref are needed", st.Name)
+		}
+	}
+	if c.Proxmox.Node == "" {
+		c.Proxmox.Node = "pve"
 	}
 	for _, st := range c.Stands {
+		if st.Sessions != nil {
+			if f := names[st.Sessions.From]; f == nil || f.OS != "windows" {
+				return fmt.Errorf("stands.%s.sessions.from %q: not a Windows stand", st.Name, st.Sessions.From)
+			}
+		}
 		if st.Role == "test" {
 			if b := names[st.From]; b == nil || b.Role != "build" || b.OS != st.OS {
 				return fmt.Errorf("stands.%s.from %q: not a %s stand with role build", st.Name, st.From, st.OS)

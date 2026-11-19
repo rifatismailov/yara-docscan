@@ -30,7 +30,10 @@ git push на GitHub (push.remote) — ЗАВЖДИ, від Forgejo не зал�
 ▷ (Мак)  коміт + перевірка безпеки → macOS: збірка й тести локально → macOS tar.gz у сховок → push у Forgejo
          → запуск .forgejo/workflows/pipeline.yml → кінець (RESULT: STARTED); далі Forgejo працює сам
          (--watch: ▷ чекає й друкує стан завдань і статус кожного стенда до кінця прогону)
-Forgejo  probe: які стенди доступні (недоступний → SKIPPED (host offline), прогін не падає)
+Forgejo  prepare: вимкнена ВМ стенда (vm:) → start через API Proxmox (токен лише VM.PowerMgmt + VM.Audit), чекати
+         WinRM / SSH; srv2019 (sessions:) — менше 12 RDP-сесій lt01.. → відкрити їх з win11 (rds_connect.ps1 в
+         інтерактивній сесії Admin — на win11 автовхід); ВМ після прогону не вимикаються
+         probe: які стенди доступні (недоступний → SKIPPED (host offline), прогін не падає)
          win11 (Windows 11):            MSBuild + Go-watcher, 42 зразки, пісочниця, пакет, установка + watcher
          srv2019 (Windows Server 2019): пакет win11, повний набір (третій прохід, ворожі файли, корпус,
          win10 (Windows 10)             шкідливе ПЗ — лише сканування, установка + watcher);
@@ -53,6 +56,9 @@ Forgejo  probe: які стенди доступні (недоступний →
   `CI_GITHUB_TOKEN`, `CI_FORGEJO_TOKEN`. У публічному workflow нічого внутрішнього немає.
 - Підкоманди для завдань workflow (`cirun/pipeline.go`): `probe`, `stand`, `report`, `publish`; ▷-частина —
   `cirun/forgejo_run.go`. Повернутися до старого режиму (усе з Мака): `pipeline.mode: local`.
+- Proxmox вмикається вручну; стенди мають «Start at boot» (після Forgejo і файлового сервера), prepare — підстраховка,
+  якщо якусь ВМ вимкнули. Секрети prepare: `CI_PROXMOX_TOKEN` (KeePassXC `CI/Proxmox/api-token`), `CI_LT_PASS`
+  (`Infra/rds-loadtest-users`). Конфіг стендів (секрет `CIRUN_CONFIG`) — у KeePassXC `CI/Forgejo/cirun-config` (нотатки).
 - Стенди без Microsoft Defender (на тестових машинах він вимкнений політикою: забирав би тестові зразки).
 
 ## Що де лежить

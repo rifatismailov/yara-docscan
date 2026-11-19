@@ -124,10 +124,18 @@ pipeline:
 #      connection: {type: winrm, host: <ip>, user: <user>, password_ref: "env:CI_WIN11_PASS"}}
 #   - {name: srv2019, title: Windows Server 2019, os: windows, role: test, from: win11, suite: full,
 #      connection: {type: winrm, host: <ip>, user: <user>, password_ref: "env:CI_SRV2019_PASS"},
-#      load: {users: 25, minutes: 20, interval_sec: 20, burst: 10, probe_users: 5, drain_minutes: 30}}
+#      load: {users: 25, minutes: 20, interval_sec: 20, burst: 10, probe_users: 5, drain_minutes: 30},
+#      vm: {proxmox_id: 104},                                   # cirun prepare: start it when it is off
+#      sessions: {from: win11, count: 12, prefix: lt, password_ref: "env:CI_LT_PASS"}}   # RDP sessions before the load test
 #      # load: навантажувальний тест термінального сервера після набору (ci/loadtest; root: C:\loadtest,
 #      # critical: <root>\critical-rules.yar, якщо є); сервер готується один раз: rds_setup.ps1, rds_docs.ps1
 #   - {name: win10,   title: Windows 10,          os: windows, role: test, from: win11, suite: full,
 #      connection: {type: winrm, host: <ip>, user: <user>, password_ref: "env:CI_WIN10_PASS"}}
 #   - {name: ubuntu,  title: Ubuntu Server,       os: linux, role: self, suite: full,
 #      connection: {type: ssh, host: <ip>, user: <user>, key_file: ~/.ssh/docscan_ci}}
+
+# Proxmox host of the stand VMs (cirun prepare): API token with VM.PowerMgmt + VM.Audit on the stand VMs only.
+# proxmox:
+#   url: https://<proxmox>:8006
+#   node: pve
+#   token_ref: "env:CI_PROXMOX_TOKEN"        # "<user>@pve!<token>=<uuid>"

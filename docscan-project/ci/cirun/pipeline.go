@@ -70,6 +70,8 @@ func pipelineCommand(args []string) int {
 		return cmdPublish(args[1:])
 	case "probe":
 		return cmdProbe(args[1:])
+	case "prepare":
+		return cmdPrepare(args[1:])
 	case "stand":
 		return cmdStand(args[1:])
 	case "report":

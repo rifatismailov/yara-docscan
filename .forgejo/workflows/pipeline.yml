@@ -1,5 +1,6 @@
 # DocScan CI/CD: started by ▷ in VS Code (cirun on the Mac) after the local macOS check, never by hand-written
-# pushes. Flow: probe (which stands are reachable) -> win11 (MSBuild + smoke suite + package) -> srv2019 / win10
+# pushes. Flow: prepare (start the stand VMs that are off on Proxmox, open the RDP sessions of the load test) ->
+# probe (which stands are reachable) -> win11 (MSBuild + smoke suite + package) -> srv2019 / win10
 # (full suite on the win11 package) and ubuntu (own build, full suite, fuzzing) in parallel -> report
 # ([CI/CD] lines, Verified on) -> only if no stand has ERROR: security gate -> git push to GitHub -> release.
 # An unreachable stand is SKIPPED and does not stop the run. All jobs run on the runner "lan" (LXC next to
@@ -69,6 +70,11 @@ jobs:
           umask 077
           printf '%s\n' "$CIRUN_CONFIG" > "$ART/config.yaml"
           mkdir -p ~/.ssh && printf '%s\n' "$CI_SSH_KEY" > ~/.ssh/docscan_ci && printf '%s\n' "$CI_KNOWN_HOSTS" > ~/.ssh/known_hosts
+      - name: prepare - start the stand VMs that are off, RDP sessions for the load test
+        env:
+          CI_PROXMOX_TOKEN: ${{ secrets.CI_PROXMOX_TOKEN }}
+          CI_LT_PASS: ${{ secrets.CI_LT_PASS }}
+        run: cd "$ART/src" && "$ART/cirun" prepare --config "$ART/config.yaml"
       - id: probe
         name: which stands are reachable
         run: cd "$ART/src" && "$ART/cirun" probe --config "$ART/config.yaml" --art "$ART" --sha "$SHA"

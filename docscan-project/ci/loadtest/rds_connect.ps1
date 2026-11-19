@@ -4,6 +4,7 @@
 # task "interactive, only when the user is logged on" (see rds_run.py). A disconnected session works as well.
 #   rds_connect.ps1 -Server <ip> -Password <pw> [-Count 25] [-Prefix lt] [-Domain <server name>] [-DelaySec 5]
 #   rds_connect.ps1 -Close            # close every mstsc window opened by this script
+#   cirun prepare (CI): -Close first, then -Server .. -PasswordFile <file> -Count 12 (the file is deleted when read)
 # mstsc keeps one saved password per target name, and all N users go to the same server, so every user gets its own
 # alias: hosts file "<ip> <Prefix>rds01" ... and cmdkey TERMSRV/<Prefix>rdsNN = that user. The server certificate
 # warning is switched off for the client user (AuthenticationLevelOverride = 0) - a test client only.
@@ -12,6 +13,7 @@
 param(
   [string]$Server = "",
   [string]$Password = "",
+  [string]$PasswordFile = "",  # the password in a file (read and deleted at once) - safer than the command line
   [int]$Count = 25,
   [string]$Prefix = "lt",
   [string]$Domain = "",     # the server's computer name (local accounts); empty = ".\"
@@ -30,7 +32,11 @@ if ($Close) {
   "closed mstsc: $n"
   exit 0
 }
-if (-not $Server -or -not $Password) { throw "-Server and -Password are required" }
+if ($PasswordFile) {
+  $Password = (Get-Content -LiteralPath $PasswordFile -Raw).Trim()
+  Remove-Item -LiteralPath $PasswordFile -Force
+}
+if (-not $Server -or -not $Password) { throw "-Server and -Password (or -PasswordFile) are required" }
 
 # hosts aliases (rewritten every run)
 $old = @([IO.File]::ReadAllLines($hosts))
