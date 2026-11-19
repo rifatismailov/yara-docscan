@@ -70,23 +70,27 @@ function Pick-Mine {
   }
   return $null
 }
+$srcOf = @{}   # file -> the test document it holds now: an edit must really change the content
 function Act-New {
   $src = $pool[$rnd.Next($pool.Count)]
   $dst = New-Name $src.Name $dirs[$rnd.Next($dirs.Count)]
-  try { Copy-Item -LiteralPath $src.FullName $dst; $mine.Add($dst); W "new" $dst $src.FullName "" }
+  try { Copy-Item -LiteralPath $src.FullName $dst; $mine.Add($dst); $srcOf[$dst] = $src.FullName; W "new" $dst $src.FullName "" }
   catch { W "new" $dst $src.FullName $_.Exception.Message }
 }
 function Act-Edit {
   $p = Pick-Mine; if (-not $p) { Act-New; return }
-  $c = $byExt[[IO.Path]::GetExtension($p).ToLower()]
+  # another document of the same type: the same one again would leave the content (and its sha256) unchanged,
+  # and the watcher rightly does not scan an unchanged file twice
+  $c = @($byExt[[IO.Path]::GetExtension($p).ToLower()] | ? { $_.FullName -ne $srcOf[$p] })
+  if (-not $c.Count) { Act-New; return }
   $src = $c[$rnd.Next($c.Count)]
-  try { Copy-Item -LiteralPath $src.FullName $p -Force; W "edit" $p $src.FullName "" }
+  try { Copy-Item -LiteralPath $src.FullName $p -Force; $srcOf[$p] = $src.FullName; W "edit" $p $src.FullName "" }
   catch { W "edit" $p $src.FullName $_.Exception.Message }
 }
 function Act-Rename {
   $p = Pick-Mine; if (-not $p) { Act-New; return }
   $new = New-Name $p (Split-Path $p)
-  try { Rename-Item -LiteralPath $p ([IO.Path]::GetFileName($new)); $mine.Remove($p) | Out-Null; $mine.Add($new); W "rename" $new $p "" }
+  try { Rename-Item -LiteralPath $p ([IO.Path]::GetFileName($new)); $mine.Remove($p) | Out-Null; $mine.Add($new); $srcOf[$new] = $srcOf[$p]; $srcOf.Remove($p); W "rename" $new $p "" }
   catch { W "rename" $new $p $_.Exception.Message }
 }
 function Act-Delete {

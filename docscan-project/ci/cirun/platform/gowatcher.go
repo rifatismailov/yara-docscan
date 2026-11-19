@@ -11,10 +11,11 @@ import (
 // goWatcherDir — модуль Go-watcher-а в репозиторії (cirun працює з кореня репозиторію).
 const goWatcherDir = "docscan-project/watcher-go"
 
-// buildGoWatcher збирає docscan-watcher.exe (windows/amd64, без cgo) на цьому Маку з ТОЧНОГО коміту sha:
+// buildGoWatcher збирає docscan-watcher.exe і docscan-updater.exe (windows/amd64, без cgo) з ТОЧНОГО коміту sha:
 // git archive теки watcher-go у тимчасову теку -> go vet + go test (модульні тести) -> go build.
-// Go для Windows крос-компілюється, тож на Windows-машині Go не потрібен. Повертає exe і вивід.
-func buildGoWatcher(ctx context.Context, sha string) ([]byte, string, error) {
+// Go для Windows крос-компілюється, тож на Windows-машині Go не потрібен. Повертає exe (шлях у watcher-go -> вміст)
+// і вивід.
+func buildGoWatcher(ctx context.Context, sha string) (map[string][]byte, string, error) {
 	tmp, err := os.MkdirTemp("", "cirun-watcher-go-")
 	if err != nil {
 		return nil, "", err
@@ -47,14 +48,22 @@ func buildGoWatcher(ctx context.Context, sha string) ([]byte, string, error) {
 	if err := run(src, nil, "go", "test", "./..."); err != nil {
 		return nil, log, err
 	}
-	exe := filepath.Join(tmp, "docscan-watcher.exe")
 	win := []string{"GOOS=windows", "GOARCH=amd64", "CGO_ENABLED=0"}
 	if err := run(src, win, "go", "vet", "./..."); err != nil {
 		return nil, log, err
 	}
-	if err := run(src, win, "go", "build", "-trimpath", "-ldflags=-s -w", "-o", exe, "."); err != nil {
-		return nil, log, err
+	out := map[string][]byte{}
+	// watcher (корінь модуля) і updater (updater/) -> ті самі шляхи в watcher-go на машині, звідти — build_package.ps1
+	for _, t := range []struct{ pkg, path string }{{".", "docscan-watcher.exe"}, {"./updater", "updater/docscan-updater.exe"}} {
+		exe := filepath.Join(tmp, filepath.Base(t.path))
+		if err := run(src, win, "go", "build", "-trimpath", "-ldflags=-s -w", "-o", exe, t.pkg); err != nil {
+			return nil, log, err
+		}
+		b, err := os.ReadFile(exe)
+		if err != nil {
+			return nil, log, err
+		}
+		out[t.path] = b
 	}
-	b, err := os.ReadFile(exe)
-	return b, log, err
+	return out, log, nil
 }

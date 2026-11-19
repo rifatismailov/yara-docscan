@@ -103,7 +103,7 @@ func main() {
 		}
 		tail := []string{}
 		if err == nil {
-			tail = doRelease(cfg, *releaseRun, sha, *bump)
+			tail = doRelease(cfg, sec, *releaseRun, sha, *bump)
 		} else {
 			say("! release: %v", err)
 			tail = append(tail, "NOT released")
@@ -204,7 +204,7 @@ func main() {
 	// ---- реліз на GitHub: звідти ПК ставлять DocScan
 	if green && *release {
 		if contains(tail, "PUSHED") {
-			tail = append(tail, doRelease(cfg, o.RunDir, sha, *bump)...)
+			tail = append(tail, doRelease(cfg, sec, o.RunDir, sha, *bump)...)
 		} else {
 			say("! --release: the commit is not pushed to GitHub - no release")
 			tail = append(tail, "NOT released")
@@ -407,7 +407,7 @@ func contains(list []string, s string) bool {
 }
 
 // doRelease: пакет прогону -> активи релізу -> gh release create -> перевірка завантаження.
-func doRelease(cfg *config.Config, runDir, sha, bump string) []string {
+func doRelease(cfg *config.Config, sec *config.Resolver, runDir, sha, bump string) []string {
 	repo := cfg.Release.Repo
 	if repo == "" {
 		u, _ := gitops.Git("remote", "get-url", cfg.Push.Remote)
@@ -426,6 +426,13 @@ func doRelease(cfg *config.Config, runDir, sha, bump string) []string {
 		say("commit %s is already released as %s", sha[:8], tag)
 	}
 	r, err := deploy.Prepare(runDir, repo, tag)
+	if err == nil {
+		// підписаний маніфест: без нього updater на ПК реліз не прийме
+		var seed string
+		if seed, err = sec.Get(cfg.Release.SigningKeyRef); err == nil {
+			err = r.Sign(sha, seed)
+		}
+	}
 	if err == nil {
 		err = r.Publish(sha, say)
 	}

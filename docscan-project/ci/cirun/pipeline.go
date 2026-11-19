@@ -519,6 +519,14 @@ func cmdPublish(args []string) int {
 		if err != nil {
 			return fail("release: %v", err)
 		}
+		// підписаний маніфест: без нього updater на ПК реліз не прийме, тож без ключа — без релізу
+		seed, err := sec.Get(cfg.Release.SigningKeyRef)
+		if err != nil {
+			return fail("release signing key: %v", err)
+		}
+		if err := r.Sign(full, seed); err != nil {
+			return fail("release manifest: %v", err)
+		}
 		// tar.gz Linux / macOS під сталими іменами (releases/latest/download/<ім'я>)
 		extra := map[string]string{}
 		if l, _ := filepath.Glob(filepath.Join(*art, "*", "yara-linux-*.tar.gz")); len(l) > 0 {

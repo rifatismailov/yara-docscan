@@ -4,7 +4,7 @@
 # arrive on a workstation: in small batches (a mass copy of thousands of files at once would overflow the
 # FileSystemWatcher buffer - the watcher survives that, but this test is about every single file). After each
 # batch it waits until the watcher has gone quiet, then the next batch. Nothing here scans anything: the
-# installed DocScan watcher (scheduled task "DocScan Watcher", SYSTEM) does all the work.
+# installed DocScan watcher (Windows service DocScanWatcher, SYSTEM) does all the work.
 #
 # Progress: <Work>\feed-status.txt (one line, rewritten); the end: a line starting with "done".
 # The files are only copied, never opened or run.

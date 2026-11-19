@@ -4,7 +4,8 @@
 // Активи релізу vX.Y.Z (тег на протестований і запушений коміт, номер — version.go):
 //
 //	DocScan-windows-x64.zip (+ .sha256)  повний пакет: bin\ (yara64, yarac64, рантайм VC++), rules\,
-//	                                     watcher\, install.ps1, uninstall.ps1, SHA256SUMS.txt, VERSION.txt
+//	                                     watcher\, updater\, install.ps1, uninstall.ps1, SHA256SUMS.txt, VERSION.txt
+//	manifest.json + manifest.sig         підписаний маніфест (manifest.go): docscan-updater на ПК ставить лише його
 //	                                     (перший рядок: "DocScan vX.Y.Z (build <дата>-<коміт>)")
 //	DocScan-Install.ps1                  єдиний скрипт для ПК: качає пакет з релізу, звіряє SHA256,
 //	                                     запускає install.ps1 з пакета
@@ -116,7 +117,7 @@ func repack(src, dst, title string) error {
 	defer f.Close()
 	w := zip.NewWriter(f)
 	need := map[string]bool{"bin/yara64.exe": false, "install.ps1": false, "SHA256SUMS.txt": false, "VERSION.txt": false,
-		"watcher/docscan-watcher.exe": false, "watcher/docscan-watcher.ps1": false}
+		"watcher/docscan-watcher.exe": false, "watcher/docscan-watcher.ps1": false, "updater/docscan-updater.exe": false}
 	read := func(e *zip.File) ([]byte, error) {
 		r, err := e.Open()
 		if err != nil {

@@ -3,6 +3,7 @@ module docscan/cirun
 go 1.26.0
 
 require (
+	docscan/watcher v0.0.0
 	github.com/masterzen/winrm v0.0.0-20261004123143-57b335310d59
 	golang.org/x/crypto v0.59.0
 	golang.org/x/term v0.48.0
@@ -25,3 +26,6 @@ require (
 	golang.org/x/sys v0.50.0 // indirect
 	golang.org/x/text v0.44.0 // indirect
 )
+
+// спільний з docscan-updater формат підписаного маніфесту релізу (watcher-go/manifest)
+replace docscan/watcher => ../../watcher-go

@@ -531,7 +531,7 @@ E5Search за цей запуск — повторний скан того са�
 | Файл / функція | Що робить |
 |---|---|
 | `build_package.ps1` | На машині збірки: копіює `yara64.exe`, `yarac64.exe`, VC++ runtime, правила, вотчер, інсталятор, `manager/`; `VERSION.txt`, `SHA256SUMS.txt`, zip. |
-| `install.ps1` | На станції (адмін): перевірка SHA256 → копіювання в `C:\Program Files\DocScan` → `C:\ProgramData\DocScan` (доступ SYSTEM + Administrators) → прибирання старої реалізації → `ossec.conf` агента (з відкатом) → самоперевірка → завдання `DocScan Watcher`. |
+| `install.ps1` | На станції (адмін): перевірка SHA256 → копіювання в `C:\Program Files\DocScan` → `C:\ProgramData\DocScan` (доступ SYSTEM + Administrators) → прибирання старої реалізації → `ossec.conf` агента (з відкатом) → самоперевірка → служба Windows `DocScanWatcher` («DocScan Watcher», перезапуск після збою). |
 | `Remove-DocScanBlock(c)` | Прибирає наш блок `<localfile>` з `ossec.conf` (між маркерами), щоб додати новий. |
 | `Remove-LegacyArBlocks(c)` | Прибирає блоки старого active-response (`doc-scan`, `yara-scan`). |
 | `Read-Text` / `Write-Text` | Читання/запис UTF-8 без BOM (`ossec.conf`). |

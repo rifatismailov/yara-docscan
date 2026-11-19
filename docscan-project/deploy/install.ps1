@@ -22,11 +22,19 @@
 #   6) Wazuh agent: ossec.conf (backup) - removes <command>/<active-response> doc-scan/yara-scan,
 #      adds <localfile> (json) for results\docscan-results.json; restarts WazuhSvc, restores the old
 #      ossec.conf on a configuration error;
-#   7) registers the scheduled task "DocScan Watcher": at Windows startup, as SYSTEM,
-#      restart on failure; and starts it. The task runs watcher\docscan-watcher.exe (Go: parallel scans, the
-#      pool grows with the load - see watcher-go\README.md); -WatcherEngine ps = the old PowerShell script;
-#      -Workers N = a fixed number of parallel scans.
-# Running it again = update (the previous rules are kept in rules.prev\).
+#   7) registers the Windows service "DocScan Watcher" (DocScanWatcher): automatic start with Windows, as SYSTEM,
+#      restarted by Windows after every failure; and starts it. The service is watcher\docscan-watcher.exe (Go:
+#      parallel scans, the pool grows with the load - see watcher-go\README.md); -Workers N = a fixed number of
+#      parallel scans. -WatcherEngine ps = the old PowerShell script, run by the scheduled task "DocScan Watcher"
+#      (a script cannot be a service). A task left by an older version is removed.
+#   8) the update service "DocScan Updater" (DocScanUpdater, updater\docscan-updater.exe): how it updates is in
+#      <DataDir>\update\updater.json, written from -UpdateMode (github | mirror | marker | off), -UpdateMirror,
+#      -UpdateMarker, -UpdateEveryHours, -UpdateWindow (only when given, or on the first install: github). It installs
+#      only releases signed by the DocScan CI, never an older version, and rolls back when the new one does not start.
+# Running it again = update (the previous rules are kept in rules.prev\). The parameters of every install are kept in
+# <DataDir>\install.json: -Reuse repeats them (the updater runs install.ps1 -Reuse -ResultFile <json>, so the PC keeps
+# its mode: -DetectOnly, -WatchPath, -Workers, ...). The installed package stays in <DataDir>\update\packages\<version>
+# (current + previous) - the updater rolls back with it.
 
 param(
   # ProgramW6432 = the 64-bit Program Files even when this runs in a 32-bit PowerShell (from a 32-bit cmd / SysWOW64)
@@ -46,15 +54,60 @@ param(
   [string]  $OssecDir = "${env:ProgramFiles(x86)}\ossec-agent",
   [switch]  $KeepLegacy,          # do not remove the old DocScan (active-response)
   [switch]  $KeepLegacyYara,      # do NOT remove the old active-response YARA (yara-scan + yara\)
-  [switch]  $NoWazuhConfig        # do not touch the agent's ossec.conf and do not restart WazuhSvc
+  [switch]  $NoWazuhConfig,       # do not touch the agent's ossec.conf and do not restart WazuhSvc
+  [ValidateSet("", "github", "mirror", "marker", "off")]
+  [string]  $UpdateMode = "",     # updates: github (default on a new install) | mirror | marker | off; empty - keep updater.json
+  [string]  $UpdateMirror = "",   # mode mirror: folder with the release files (https://... or \\server\share\docscan)
+  [string]  $UpdateMarker = "",   # mode marker: the file an agent writes (default <DataDir>\update\update.json)
+  [double]  $UpdateEveryHours = 0, # github / mirror: how often to check (default 6)
+  [string]  $UpdateWindow = "",   # install updates only at this time, e.g. 22:00-06:00
+  [switch]  $Reuse,               # take the parameters of the previous install (<DataDir>\install.json) - used by the updater
+  [string]  $ResultFile = ""      # write {"ok":..,"version":..,"error":..} here at the end (the updater reads it)
 )
 
 $ErrorActionPreference = "Stop"
-$TaskName = "DocScan Watcher"
+$TaskName = "DocScan Watcher"     # scheduled task: only -WatcherEngine ps (and older versions)
+$SvcName  = "DocScanWatcher"      # Windows service: the Go watcher (display name "DocScan Watcher")
 $Pkg = $PSScriptRoot
 
 function Step($m) { Write-Host "==> $m" -ForegroundColor Cyan }
-function Fail($m) { Write-Host "ERROR: $m" -ForegroundColor Red; exit 1 }
+function Write-Result([bool]$ok, [string]$err) {
+  if (-not $ResultFile) { return }
+  $v = ""
+  if (Test-Path "$InstallDir\VERSION.txt") { $v = ([string](Get-Content "$InstallDir\VERSION.txt" -TotalCount 1)) -replace '^.*?(v\d+\.\d+\.\d+).*$', '$1' }
+  try { (@{ ok = $ok; version = $v; error = $err } | ConvertTo-Json -Compress) | Set-Content -LiteralPath $ResultFile -Encoding ASCII } catch { }
+}
+$script:updStopped = $false
+function Fail($m) {
+  Write-Host "ERROR: $m" -ForegroundColor Red
+  Write-Result $false $m
+  # the update service was stopped for this install: it must run again - it is the one that rolls back
+  if ($script:updStopped -and (Get-Service -Name "DocScanUpdater" -EA SilentlyContinue)) {
+    Set-Service -Name "DocScanUpdater" -StartupType Automatic -EA SilentlyContinue
+    Start-Service -Name "DocScanUpdater" -EA SilentlyContinue
+  }
+  exit 1
+}
+# any other terminating error (a cmdlet under -ErrorAction Stop, a native tool's stderr in PowerShell 5.1) -> Fail,
+# so the result file is written and the updater service comes back
+trap { Fail "unexpected error: $($_.Exception.Message)" }
+
+# -Reuse: the parameters of the previous install, except the ones given now
+$InstallJson = Join-Path $DataDir "install.json"
+$prevInstall = $null
+if (Test-Path -LiteralPath $InstallJson) { try { $prevInstall = Get-Content -LiteralPath $InstallJson -Raw | ConvertFrom-Json } catch { } }
+if ($Reuse) {
+  if (-not $prevInstall) { Fail "-Reuse: no $InstallJson (DocScan was not installed by this version of install.ps1)" }
+  $p = $prevInstall.params
+  foreach ($n in "WatchPath", "MacroUpload", "WatcherEngine", "Workers", "OssecDir") {
+    if (-not $PSBoundParameters.ContainsKey($n) -and $null -ne $p.$n -and "$($p.$n)" -ne "") { Set-Variable -Name $n -Value $p.$n }
+  }
+  foreach ($n in "QuarantineGeneral", "NoAvExclusion", "DetectOnly", "NoWazuhConfig", "KeepLegacy", "KeepLegacyYara") {
+    if (-not $PSBoundParameters.ContainsKey($n) -and $p.$n) { Set-Variable -Name $n -Value ([switch]$true) }
+  }
+  $WatchPath = @($WatchPath)
+  Write-Host "==> -Reuse: parameters of the install of $($prevInstall.installed)" -ForegroundColor Cyan
+}
 
 # ---- agent ossec.conf (text edits: the file has several <ossec_config> blocks, it is not one XML document) ----
 $DsBegin = "<!-- DocScan: managed by DocScan install.ps1 -->"
@@ -98,14 +151,30 @@ if ($WatcherEngine -eq "go" -and -not (Test-Path (Join-Path $Pkg "watcher\docsca
 # --- 2. stop the previous version ---
 # "DocScan Watcher Go" = the load-test task of ci\loadtest\rds_watcher_swap.ps1 - replaced by the normal task now
 $oldTasks = @($TaskName, "DocScan Watcher Go") | ? { Get-ScheduledTask -TaskName $_ -EA SilentlyContinue }
+$oldSvc = Get-Service -Name $SvcName -EA SilentlyContinue
+$UpdSvc = "DocScanUpdater"
+# the updater: stopped for the update (it may be the one running this installer - the installer lives on)
+if ((Get-Service -Name $UpdSvc -EA SilentlyContinue) -and (Get-Service -Name $UpdSvc).Status -ne 'Stopped') {
+  Set-Service -Name $UpdSvc -StartupType Disabled -EA SilentlyContinue
+  Stop-Service -Name $UpdSvc -Force -EA SilentlyContinue
+  $script:updStopped = $true
+}
 $oldProcs = @(Get-CimInstance Win32_Process | ? { $_.Name -eq 'docscan-watcher.exe' -or ($_.Name -eq 'powershell.exe' -and $_.CommandLine -like "*docscan-watcher.ps1*") })
-if ($oldTasks.Count -or $oldProcs.Count) {
+if ($oldTasks.Count -or $oldSvc -or $oldProcs.Count) {
   Step "stopping the previous version"
+  # the service first; Disabled for the time of the update: its recovery actions must not start the watcher again
+  # if it has to be killed below (step 6 sets Automatic again)
+  if ($oldSvc -and $oldSvc.Status -ne 'Stopped') {
+    Set-Service -Name $SvcName -StartupType Disabled -EA SilentlyContinue
+    Stop-Service -Name $SvcName -Force -EA SilentlyContinue
+    try { $oldSvc.WaitForStatus('Stopped', [TimeSpan]::FromSeconds(30)) } catch { }
+  }
   foreach ($t in $oldTasks) { Stop-ScheduledTask -TaskName $t -EA SilentlyContinue }
   Start-Sleep 2
   # by process name (the Go exe) / the script path (PowerShell) - the exe must be gone before it is overwritten
   Get-CimInstance Win32_Process | ? { $_.Name -eq 'docscan-watcher.exe' -or ($_.Name -eq 'powershell.exe' -and $_.CommandLine -like "*docscan-watcher.ps1*") } |
     % { Stop-Process -Id $_.ProcessId -Force -EA SilentlyContinue }
+  Get-Process docscan-updater -EA SilentlyContinue | ? { $_.Path -like "$InstallDir\*" } | Stop-Process -Force -EA SilentlyContinue
   # scans still running (up to -ScanTimeout) would keep bin\yara64.exe locked
   Get-CimInstance Win32_Process -Filter "Name='yara64.exe'" | ? { $_.ExecutablePath -like "$InstallDir\bin\*" } |
     % { Stop-Process -Id $_.ProcessId -Force -EA SilentlyContinue }
@@ -143,7 +212,8 @@ if (Test-Path "$InstallDir\rules") {
   Remove-Item "$InstallDir\rules.prev" -Recurse -Force -EA SilentlyContinue
   Copy-Item "$InstallDir\rules" "$InstallDir\rules.prev" -Recurse
 }
-foreach ($d in "bin", "rules", "watcher") {
+foreach ($d in "bin", "rules", "watcher", "updater") {
+  if (-not (Test-Path (Join-Path $Pkg $d))) { continue }   # updater\: packages from v1.0.x on
   Remove-Item "$InstallDir\$d" -Recurse -Force -EA SilentlyContinue
   Copy-Item (Join-Path $Pkg $d) "$InstallDir\$d" -Recurse
 }
@@ -230,13 +300,18 @@ if ((Test-Path $ossecConf) -and -not $NoWazuhConfig) {
   $results = "$DataDir\results\docscan-results.json"
   # create it beforehand: otherwise the agent logs ERROR (1103) "could not open file" after the restart
   if (-not (Test-Path -LiteralPath $results)) { [IO.File]::WriteAllText($results, "") }
-  $block = "  $DsBegin`r`n  <localfile>`r`n    <log_format>json</log_format>`r`n    <location>$results</location>`r`n  </localfile>`r`n  $DsEnd`r`n"
+  $updates = "$DataDir\results\docscan-updates.json"   # records of the updater (event "Update")
+  if (-not (Test-Path -LiteralPath $updates)) { [IO.File]::WriteAllText($updates, "") }
+  $block = "  $DsBegin`r`n"
+  foreach ($loc in $results, $updates) { $block += "  <localfile>`r`n    <log_format>json</log_format>`r`n    <location>$loc</location>`r`n  </localfile>`r`n" }
+  $block += "  $DsEnd`r`n"
   $i = $new.LastIndexOf("</ossec_config>")
   if ($i -lt 0) { Fail "ossec.conf has no </ossec_config> - not touching it (backup: $bak)" }
   $new = $new.Substring(0, $i) + $block + $new.Substring($i)
-  Write-Text $ossecConf $new
+  $unchanged = ($new -eq $orig)
+  if (-not $unchanged) { Write-Text $ossecConf $new }
   Write-Host "  backup: $bak"
-  Write-Host "  <localfile> json -> $results"
+  Write-Host ("  <localfile> json -> $results, $updates" + $(if ($unchanged) { " (already there - no agent restart)" } else { "" }))
 
   # Restart-Service sometimes fails with "Cannot stop WazuhSvc" (the agent hangs while stopping):
   # wait for it, then end the agent process and start the service again
@@ -250,7 +325,9 @@ if ((Test-Path $ossecConf) -and -not $NoWazuhConfig) {
     try { Start-Service WazuhSvc -ErrorAction Stop } catch { Write-Host "  Start-Service: $($_.Exception.Message)" -ForegroundColor Yellow }
   }
   $svc = Get-Service WazuhSvc -EA SilentlyContinue
-  if ($svc) {
+  if ($unchanged) {
+    # an update with the same ossec.conf block: the agent keeps running
+  } elseif ($svc) {
     $log = Join-Path $OssecDir "ossec.log"
     $mark = if (Test-Path $log) { (Get-Item $log).Length } else { 0 }
     Restart-Wazuh
@@ -279,6 +356,7 @@ if ((Test-Path $ossecConf) -and -not $NoWazuhConfig) {
 Step "self-test"
 $yara  = "$InstallDir\bin\yara64.exe"
 $rules = "$InstallDir\rules\docscan-index.yar"
+$eap = $ErrorActionPreference; $ErrorActionPreference = "Continue"   # yara64 writes errors to stderr: read them, do not stop
 $ver = & $yara --version 2>&1
 if ($LASTEXITCODE -ne 0) { Fail "yara64.exe does not start: $ver (vcruntime140.dll missing?)" }
 $probe = Join-Path $env:TEMP "docscan-probe.txt"; "probe" | Set-Content $probe
@@ -291,14 +369,15 @@ if (Test-Path -LiteralPath $critRules) {
   if ($LASTEXITCODE -ne 0) { Remove-Item $probe -EA SilentlyContinue; Fail "the critical rules do not compile:`n$($co -join "`n")" }
 }
 Remove-Item $probe -EA SilentlyContinue
+$ErrorActionPreference = $eap
 $json = $out | ? { $_ -like '{*' } | Select -First 1
 if (-not $json) { Fail "the rules do not compile or there is no JSON:`n$($out -join "`n")" }
 $j = $json | ConvertFrom-Json
 Write-Host "  yara64 $ver; rules compile; test scan: verdict=$($j.verdict)"
 
-# --- 6. scheduled task ---
-Step "registering task '$TaskName' (starts at Windows boot, SYSTEM)"
+# --- 6. Windows service (Go watcher) / scheduled task (-WatcherEngine ps) ---
 if ($WatcherEngine -eq "go") {
+  Step "registering service '$SvcName' (DocScan Watcher: starts with Windows, SYSTEM, restarted after a failure)"
   # docscan-watcher.exe: same option names as the script. One -WatchPath per folder (its list option splits on
   # commas). Quoting for the C runtime command-line parser: a trailing backslash before the closing quote is
   # doubled ("D:\\" -> D:\), otherwise it would escape the quote.
@@ -311,8 +390,25 @@ if ($WatcherEngine -eq "go") {
   if ($MacroUpload) { $goArgs += "-MacroUpload", (Q $MacroUpload) }
   if (Test-Path -LiteralPath $critRules) { $goArgs += "-CriticalRules", (Q $critRules), "-CriticalOut", (Q "$DataDir\critical\critical.json") }
   if ($Workers -gt 0) { $goArgs += "-Workers", $Workers }
-  $action = New-ScheduledTaskAction -Execute "$InstallDir\watcher\docscan-watcher.exe" -Argument ($goArgs -join " ")
+  $bin = (Q "$InstallDir\watcher\docscan-watcher.exe") + " " + ($goArgs -join " ")
+  # the older scheduled task (before the service) - the service replaces it
+  foreach ($t in @($TaskName, "DocScan Watcher Go")) { Unregister-ScheduledTask -TaskName $t -Confirm:$false -EA SilentlyContinue }
+  $desc = "DocScan: auto-scan and disarm of new documents (yara64 + docscan)"
+  if (Get-Service -Name $SvcName -EA SilentlyContinue) {
+    # update: the parameters of this install (ImagePath = exe + arguments); New-Service cannot change an existing one
+    Set-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Services\$SvcName" -Name ImagePath -Value $bin
+    Set-Service -Name $SvcName -StartupType Automatic -DisplayName "DocScan Watcher" -Description $desc
+  } else {
+    New-Service -Name $SvcName -BinaryPathName $bin -DisplayName "DocScan Watcher" -Description $desc -StartupType Automatic | Out-Null
+  }
+  # LocalSystem; recovery: restart 10 s / 10 s / 60 s after each failure (the count resets after a day without one),
+  # also when the watcher exits with an error code (failureflag), not only on a crash
+  sc.exe config $SvcName obj= LocalSystem | Out-Null
+  sc.exe failure $SvcName reset= 86400 actions= restart/10000/restart/10000/restart/60000 | Out-Null
+  sc.exe failureflag $SvcName 1 | Out-Null
 } else {
+  Step "registering task '$TaskName' (starts at Windows boot, SYSTEM)"
+  if (Get-Service -Name $SvcName -EA SilentlyContinue) { sc.exe delete $SvcName | Out-Null }   # the Go service of a newer install
   $wp = ($WatchPath | % { "'" + ($_ -replace "'", "''") + "'" }) -join ","
   $taskArgs = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command `"& '$InstallDir\watcher\docscan-watcher.ps1'" +
           " -WatchPath $wp -Yara '$yara' -Rules '$rules' -OutDir '$DataDir\results' -BackupDir '$DataDir\quarantine'" +
@@ -321,26 +417,26 @@ if ($WatcherEngine -eq "go") {
           ($(if ($MacroUpload) { " -MacroUpload '" + ($MacroUpload -replace "'", "''") + "'" } else { "" })) +
           ($(if (Test-Path -LiteralPath $critRules) { " -CriticalRules '$critRules' -CriticalOut '$DataDir\critical\critical.json'" } else { "" })) + "`""
   $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument $taskArgs
+  $trigger   = New-ScheduledTaskTrigger -AtStartup
+  $principal = New-ScheduledTaskPrincipal -UserId "S-1-5-18" -LogonType ServiceAccount -RunLevel Highest
+  $settings  = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -StartWhenAvailable `
+                 -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -MultipleInstances IgnoreNew `
+                 -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1)
+  Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Principal $principal `
+    -Settings $settings -Description "DocScan: auto-scan and disarm of new documents (yara64 + docscan)" -Force | Out-Null
 }
-$trigger   = New-ScheduledTaskTrigger -AtStartup
-$principal = New-ScheduledTaskPrincipal -UserId "S-1-5-18" -LogonType ServiceAccount -RunLevel Highest
-$settings  = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -StartWhenAvailable `
-               -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -MultipleInstances IgnoreNew `
-               -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1)
-Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Principal $principal `
-  -Settings $settings -Description "DocScan: auto-scan and disarm of new documents (yara64 + docscan)" -Force | Out-Null
 
 if (-not $NoStart) {
   # On start the watcher compiles thousands of rules - on a slow PC that takes a minute or more.
   # Wait for ITS OWN "start: watching" line (only text written after this point), up to 180 s.
   $log = "$DataDir\results\watcher.log"
   $mark = if (Test-Path $log) { (Get-Item $log).Length } else { 0 }
-  Start-ScheduledTask -TaskName $TaskName
+  if ($WatcherEngine -eq "go") { Start-Service -Name $SvcName } else { Start-ScheduledTask -TaskName $TaskName }
   Write-Host "  waiting for the watcher to compile the rules (up to 3 min)..."
   $started = $false; $state = ""
   for ($t = 0; $t -lt 180 -and -not $started; $t += 3) {
     Start-Sleep 3
-    $state = "$((Get-ScheduledTask -TaskName $TaskName).State)"
+    $state = if ($WatcherEngine -eq "go") { "$((Get-Service -Name $SvcName).Status)" } else { "$((Get-ScheduledTask -TaskName $TaskName).State)" }
     if ($state -ne "Running") { break }
     if (Test-Path $log) {
       $fs = [IO.File]::Open($log, 'Open', 'Read', 'ReadWrite'); [void]$fs.Seek($mark, 'Begin')
@@ -350,18 +446,91 @@ if (-not $NoStart) {
   }
   if (-not $started) {
     # why: the task's exit code (0x1 = the script exited with an error, 0x41303 = never ran) and the log tail
-    $ti = Get-ScheduledTaskInfo -TaskName $TaskName -EA SilentlyContinue
-    if ($ti) { Write-Host ("  task: last run {0}, result 0x{1:X}" -f $ti.LastRunTime, $ti.LastTaskResult) }
+    if ($WatcherEngine -eq "go") {
+      $sv = Get-CimInstance Win32_Service -Filter "Name='$SvcName'" -EA SilentlyContinue
+      if ($sv) { Write-Host ("  service: {0}, exit code {1} (service-specific {2})" -f $sv.State, $sv.ExitCode, $sv.ServiceSpecificExitCode) }
+    } else {
+      $ti = Get-ScheduledTaskInfo -TaskName $TaskName -EA SilentlyContinue
+      if ($ti) { Write-Host ("  task: last run {0}, result 0x{1:X}" -f $ti.LastRunTime, $ti.LastTaskResult) }
+    }
     if (Test-Path $log) { Get-Content $log -Tail 15 | % { Write-Host "  | $_" } } else { Write-Host "  (no $log - the script did not get to logging: execution policy / antivirus?)" }
     Fail "the watcher did not start (state: $state). See $log"
   }
   Write-Host "  watcher is running"
 }
 
+# --- 7. what was installed and how: install.json (-Reuse), the package for a rollback ---
+$verTitle = if (Test-Path "$InstallDir\VERSION.txt") { [string](Get-Content "$InstallDir\VERSION.txt" -TotalCount 1) } else { "" }
+$relVer = if ($verTitle -match '\b(v\d+\.\d+\.\d+)\b') { $Matches[1] } else { "" }
+$hist = @()
+if ($prevInstall -and $prevInstall.history) { $hist = @($prevInstall.history | ? { $_ -and $_ -ne $relVer }) }
+if ($relVer) { $hist += $relVer }
+$hist = @($hist | Select-Object -Last 2)
+$keepParams = [ordered]@{
+  WatchPath = @($WatchPath); MacroUpload = $MacroUpload; WatcherEngine = $WatcherEngine; Workers = $Workers; OssecDir = $OssecDir
+  QuarantineGeneral = [bool]$QuarantineGeneral; NoAvExclusion = [bool]$NoAvExclusion; DetectOnly = [bool]$DetectOnly
+  NoWazuhConfig = [bool]$NoWazuhConfig; KeepLegacy = [bool]$KeepLegacy; KeepLegacyYara = [bool]$KeepLegacyYara
+}
+# UTF-8 without BOM (Write-Text): docscan-updater (Go) reads these files
+Write-Text $InstallJson ([ordered]@{ installed = $verTitle; version = $relVer; time = (Get-Date).ToString("s"); history = $hist; params = $keepParams } | ConvertTo-Json -Depth 4)
+# the package itself (current + previous release): the updater reinstalls the previous one when an update fails
+$pkgRoot = "$DataDir\update\packages"
+if ($relVer) {
+  $keepPkg = "$pkgRoot\$relVer"
+  if ((Resolve-Path $Pkg).Path.TrimEnd('\') -ne $keepPkg) {
+    Remove-Item $keepPkg -Recurse -Force -EA SilentlyContinue
+    New-Item -ItemType Directory -Force $keepPkg | Out-Null
+    Copy-Item "$Pkg\*" $keepPkg -Recurse -Force
+  }
+  Get-ChildItem $pkgRoot -Directory -EA SilentlyContinue | ? { $hist -notcontains $_.Name -and $_.Name -notlike "*.tmp" } |
+    % { Remove-Item $_.FullName -Recurse -Force -EA SilentlyContinue }
+}
+
+# --- 8. update service (DocScanUpdater) ---
+$updExe = "$InstallDir\updater\docscan-updater.exe"
+$updDir = "$DataDir\update"
+$updCfg = "$updDir\updater.json"
+New-Item -ItemType Directory -Force $updDir | Out-Null
+$cfgGiven = $UpdateMode -or $UpdateMirror -or $UpdateMarker -or $UpdateEveryHours -gt 0 -or $UpdateWindow
+if ($cfgGiven -or -not (Test-Path -LiteralPath $updCfg)) {
+  $c = [ordered]@{ mode = "github"; check_every_hours = 6; github = @{ repo = "rifatismailov/yara-docscan" }; mirror = @{ url = "" }
+                   marker = @{ file = "$updDir\update.json" }; window = ""; extra_public_keys = @() }
+  if (Test-Path -LiteralPath $updCfg) {   # given parameters change the existing config, the rest stays
+    try { $o = Get-Content -LiteralPath $updCfg -Raw | ConvertFrom-Json; foreach ($k in @($c.Keys)) { if ($null -ne $o.$k) { $c[$k] = $o.$k } } } catch { }
+  }
+  if ($UpdateMode) { $c.mode = $UpdateMode }
+  if ($UpdateMirror) { $c.mirror = @{ url = $UpdateMirror } }
+  if ($UpdateMarker) { $c.marker = @{ file = $UpdateMarker } }
+  if ($UpdateEveryHours -gt 0) { $c.check_every_hours = $UpdateEveryHours }
+  if ($UpdateWindow) { $c.window = $UpdateWindow }
+  if ($c.mode -eq "mirror" -and -not $c.mirror.url) { Fail "-UpdateMode mirror needs -UpdateMirror <folder with the release files>" }
+  Write-Text $updCfg ($c | ConvertTo-Json -Depth 4)
+}
+$updMode = try { (Get-Content -LiteralPath $updCfg -Raw | ConvertFrom-Json).mode } catch { "github" }
+if ((Test-Path -LiteralPath $updExe) -and $updMode -ne "off") {
+  Step "update service '$UpdSvc' (DocScan Updater: mode $updMode, $updCfg)"
+  $ubin = '"' + $updExe + '" -DataDir "' + $DataDir.TrimEnd('\') + '" -InstallDir "' + $InstallDir.TrimEnd('\') + '"'
+  $udesc = "DocScan: installs signed DocScan updates (see $updCfg)"
+  if (Get-Service -Name $UpdSvc -EA SilentlyContinue) {
+    Set-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Services\$UpdSvc" -Name ImagePath -Value $ubin
+    Set-Service -Name $UpdSvc -StartupType Automatic -DisplayName "DocScan Updater" -Description $udesc
+  } else {
+    New-Service -Name $UpdSvc -BinaryPathName $ubin -DisplayName "DocScan Updater" -Description $udesc -StartupType Automatic | Out-Null
+  }
+  sc.exe config $UpdSvc obj= LocalSystem | Out-Null
+  sc.exe failure $UpdSvc reset= 86400 actions= restart/60000/restart/60000/restart/300000 | Out-Null
+  sc.exe failureflag $UpdSvc 1 | Out-Null
+  if (-not $NoStart) { Start-Service -Name $UpdSvc; Write-Host "  running" }
+} elseif (Get-Service -Name $UpdSvc -EA SilentlyContinue) {
+  Write-Host "  updates off (mode off / no updater in the package): service $UpdSvc removed"
+  Stop-Service -Name $UpdSvc -Force -EA SilentlyContinue; sc.exe delete $UpdSvc | Out-Null
+}
+
+Write-Result $true ""
 Write-Host ""
 Write-Host "DocScan installed." -ForegroundColor Green
 Write-Host "  program:    $InstallDir"
-Write-Host ("  watcher:    " + $(if ($WatcherEngine -eq "go") { "docscan-watcher.exe (Go), " + $(if ($Workers -gt 0) { "$Workers parallel scans" } else { "parallel scans: automatic" }) } else { "docscan-watcher.ps1 (PowerShell, one scan at a time)" }))
+Write-Host ("  watcher:    " + $(if ($WatcherEngine -eq "go") { "service $SvcName - docscan-watcher.exe (Go), " + $(if ($Workers -gt 0) { "$Workers parallel scans" } else { "parallel scans: automatic" }) } else { "task '$TaskName' - docscan-watcher.ps1 (PowerShell, one scan at a time)" }))
 Write-Host ("  watching:   $($WatchPath -join ', ')   " + $(if ($DetectOnly) { "(DETECT ONLY: files are not changed)" } else { "(disarm enabled)" }))
 Write-Host "  results:    $DataDir\results\docscan-results.json  (log: watcher.log)"
 Write-Host "  quarantine: $DataDir\quarantine"
@@ -371,5 +540,6 @@ if ($legacyRemoved.Count) { Write-Host "  old DocScan (Wazuh active-response) fu
 if ($wazuhDone) { Write-Host "  Wazuh:      the agent reads results\docscan-results.json (json); on the manager - deploy\manager\cleanup_manager.sh" }
 elseif ($NoWazuhConfig) { Write-Host "  Wazuh:      not configured (-NoWazuhConfig)" }
 else { Write-Host "  Wazuh:      NO AGENT ($ossecConf not found) - results stay on this PC only; run the installer again after installing the agent" -ForegroundColor Yellow }
-Write-Host "  policy:     $InstallDir\rules\docscan-policy.yar  (after a change: Restart-ScheduledTask '$TaskName')"
+Write-Host ("  policy:     $InstallDir\rules\docscan-policy.yar  (after a change: " + $(if ($WatcherEngine -eq "go") { "Restart-Service $SvcName" } else { "Restart-ScheduledTask '$TaskName'" }) + ")")
+Write-Host ("  updates:    " + $(if ((Test-Path -LiteralPath $updExe) -and $updMode -ne "off") { "service $UpdSvc, mode $updMode ($updCfg); records: $DataDir\results\docscan-updates.json" } else { "off" }))
 Write-Host "  uninstall:  powershell -ExecutionPolicy Bypass -File '$InstallDir\uninstall.ps1'"

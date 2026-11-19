@@ -1,8 +1,47 @@
 # DocScan — як працюватиме оновлення
 
-**Стан:** чернетка дизайну (2026-11-18), ще не реалізовано. Зараз оновлення — вручну: новий GitHub-реліз і
-повторний запуск `DocScan-Install.ps1` на кожному ПК ([SCAN-FLOW.md](SCAN-FLOW.md) §8, [ci/README.md](ci/README.md)
-«Реліз на GitHub»). Цей документ описує, як це стане автоматичним і керованим з Wazuh.
+**Стан (2026-11-19): оновлення програми зроблено** (розділ 0 нижче) — служба `DocScanUpdater`, підписаний
+маніфест релізу, три режими. Решта документа (окремий репозиторій правил, критичні правила, оновлення лише
+правил) — дизайн наступних етапів; де він розходиться з розділом 0, чинний розділ 0.
+
+## 0. Що зроблено: оновлення програми
+
+- **Служба `DocScanUpdater`** (`watcher-go/updater`, `updater\docscan-updater.exe` у пакеті) — ставить
+  `install.ps1`, як і `DocScanWatcher` (автозапуск, SYSTEM, перезапуск після збою).
+- **Як оновлюватися — конфіг `C:\ProgramData\DocScan\update\updater.json`** (пише інсталятор з `-UpdateMode`,
+  `-UpdateMirror`, `-UpdateMarker`, `-UpdateEveryHours`, `-UpdateWindow`; далі можна правити; доступ лише SYSTEM +
+  адміністратори). Кожна організація вибирає сама — Wazuh не обов'язковий:
+
+  | `mode` | що робить служба |
+  |---|---|
+  | `github` (типово) | раз на `check_every_hours` (6) — `releases/latest/download/manifest.json` |
+  | `mirror` | те саме з `mirror.url`: тека з файлами релізу (`manifest.json`, `manifest.sig`, пакет) — http(s), шлях або UNC |
+  | `marker` | чекає файл `marker.file` (типово `update\update.json`), який пише агент (Wazuh чи будь-який інший): `{"version": "v1.0.5", "source": "github" \| "mirror" \| "<адреса теки>", "sha256": "<sha256 manifest.json>", "request_id": "…"}` — усі поля необов'язкові |
+  | `off` | не оновлювати (служба не ставиться) |
+
+  ```json
+  {"mode": "github", "check_every_hours": 6, "github": {"repo": "rifatismailov/yara-docscan"},
+   "mirror": {"url": ""}, "marker": {"file": "C:\\ProgramData\\DocScan\\update\\update.json"},
+   "window": "", "extra_public_keys": []}
+  ```
+  `window` — напр. `"22:00-06:00"`: періодичні режими ставлять оновлення лише в цей час (маркер — одразу).
+- **Довіра — лише підпис.** CI (`cirun publish`) кладе в реліз `manifest.json` (версія, пакет, sha256 кожного
+  файлу) і `manifest.sig` (ed25519; приватний ключ — KeePassXC `CI/Release/signing-key`, секрет Forgejo
+  `CI_SIGNING_KEY`; публічний — `watcher-go/manifest` `OfficialKeys`). Updater ставить лише підписане довіреним
+  ключем (+ `extra_public_keys` організації), хоч із GitHub, хоч із дзеркала, хоч за адресою з маркера; лише
+  новішу версію; пакет — розмір і sha256 з маніфесту, кожен файл — його sha256, зайвих немає.
+- **Встановлює сам `install.ps1` нового пакета** з `-Reuse` (параметри ПК з `C:\ProgramData\DocScan\install.json`:
+  `-DetectOnly`, `-WatchPath`, `-Workers`, …) і `-ResultFile`. Пакет поточної і попередньої версії лишається в
+  `update\packages\<версія>`. Не встановилось (інсталятор упав, watcher не стартував, версія не та) — updater
+  ставить попередній пакет так само = **відкат**; невдалу версію періодична перевірка більше не пробує (маркер — може).
+- **Звіт для агента** — `C:\ProgramData\DocScan\results\docscan-updates.json` (інсталятор додає його в `ossec.conf`
+  поруч із `docscan-results.json`): `{"event": "Update", "update": {"status": "success" | "rollback" | "failed" |
+  "current" | "error", "from", "to", "mode", "source", "request_id", "message"}}`. Журнал — `results\updater.log`.
+- Перевірено на ВМ (2026-11-19, тестовий ключ у `extra_public_keys`): маркер → v9.0.1 → v9.0.2 (`success`); зламаний
+  v9.0.3 (правила не компілюються) → відкат на v9.0.2 (`rollback`).
+
+Далі: оновлення лише правил і окремий репозиторій правил (§2–5), критичні правила (§4.4), правило Wazuh на
+події `Update` (зміна на менеджері — з OK).
 
 **Зміст**
 1. [Коротко](#1-коротко)
@@ -406,5 +445,4 @@ DocScan-Install.ps1 -RulesSource https://github.com/<org>/docscan-rules/releases
 - ключ розшифрування критичних правил — лише через спільні файли Wazuh, чи потрібен варіант без Wazuh;
 - як часто міняти `key_id` (кожен пакет чи раз на період);
 - чи оновлювати рушій і watcher щоденною перевіркою, чи лише за командою (пропозиція — лише за командою);
-- служба Windows замість завдання планувальника для watcher-а (простіше зупиняти й перевіряти здоров'я);
 - як Wazuh визначає, на які ПК слати `critical` (група агентів з перевіркою критичної інформації).

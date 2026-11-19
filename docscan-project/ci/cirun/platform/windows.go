@@ -197,9 +197,14 @@ func (w *Windows) Build(ctx context.Context) (StepResult, error) {
 	if w.role == "test" {
 		return w.deployPrebuilt(ctx), nil
 	}
-	exe, glog, err := buildGoWatcher(ctx, w.sha)
-	if err == nil {
-		err = w.t.Upload(ctx, exe, w.repo+`\docscan-project\watcher-go\docscan-watcher.exe`)
+	exes, glog, err := buildGoWatcher(ctx, w.sha)
+	sizes := ""
+	for rel, b := range exes {
+		if err != nil {
+			break
+		}
+		err = w.t.Upload(ctx, b, w.repo+`\docscan-project\watcher-go\`+strings.ReplaceAll(rel, "/", `\`))
+		sizes += fmt.Sprintf(" %s %d bytes;", rel, len(b))
 	}
 	if err != nil {
 		res := StepResult{Name: "build", Status: "FAIL", Log: "Go watcher: " + err.Error() + "\n" + glog}
@@ -208,7 +213,7 @@ func (w *Windows) Build(ctx context.Context) (StepResult, error) {
 		w.report(Event{Platform: "windows", Kind: "done", Step: "build", Result: &res})
 		return res, nil
 	}
-	res := w.step(ctx, "build", fmt.Sprintf("\n\"Go watcher: docscan-watcher.exe %d bytes (cross-built, go vet + go test passed)\"", len(exe))+`
+	res := w.step(ctx, "build", fmt.Sprintf("\n\"Go watcher + updater:%s cross-built, go vet + go test passed\"", sizes)+`
 Set-Location $repo
 $pk = "windows\vs2019\packages"
 if (Get-Command nuget -EA 0) { nuget restore windows\vs2019\yara.sln 2>&1 | Select-Object -Last 2 }

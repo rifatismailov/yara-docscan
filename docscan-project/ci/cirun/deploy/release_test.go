@@ -16,7 +16,7 @@ import (
 func TestRepackVersionAndSums(t *testing.T) {
 	dir := t.TempDir()
 	files := map[string]string{
-		`bin\yara64.exe`: "exe", "install.ps1": "ps", `watcher\docscan-watcher.exe`: "go", `watcher\docscan-watcher.ps1`: "ps1",
+		`bin\yara64.exe`: "exe", "install.ps1": "ps", `watcher\docscan-watcher.exe`: "go", `watcher\docscan-watcher.ps1`: "ps1", `updater\docscan-updater.exe`: "upd",
 		"VERSION.txt": "DocScan 20261118-abcdef12\r\nyara64 4.6.0\r\nbuilt 2026-11-18T10:00:00 on VM\r\n",
 	}
 	sums := ""

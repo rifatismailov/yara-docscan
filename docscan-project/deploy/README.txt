@@ -44,7 +44,23 @@ DocScan стежить за новими файлами, перевіряє до
      -Workers 8                          фіксована кількість паралельних сканів (за замовчуванням — автоматично
                                          від 2 до кількості CPU, за чергою і навантаженням CPU)
      -WatcherEngine ps                   старий PowerShell-watcher (один скан за раз) замість docscan-watcher.exe
+     -UpdateMode github|mirror|marker|off  автооновлення (служба DocScan Updater), за замовчуванням github
+     -UpdateMirror <https://...|\\сервер\шара>   mode mirror: тека з файлами релізу (manifest.json, manifest.sig, пакет)
+     -UpdateMarker <файл>                mode marker: файл, який пише агент (за замовчуванням ...\update\update.json)
+     -UpdateEveryHours 6                 github / mirror: як часто перевіряти
+     -UpdateWindow 22:00-06:00           ставити оновлення лише в цей час
    Без -CriticalRules уже встановлені правила E5Search лишаються (звичайне оновлення їх не прибирає).
+   Параметри встановлення запам'ятовуються (C:\ProgramData\DocScan\install.json): автооновлення зберігає режим ПК.
+
+   Автооновлення (служба "DocScan Updater", DocScanUpdater): ставить лише релізи, підписані CI DocScan, і лише
+   новішу версію; якщо нова версія не запустилась — сама повертає попередню. Як оновлюватися — у
+   C:\ProgramData\DocScan\update\updater.json (можна правити, потім Restart-Service DocScanUpdater):
+     github   раз на 6 год перевіряє останній реліз на GitHub;
+     mirror   те саме з вашого сервера / шари (копія файлів релізу);
+     marker   чекає, поки агент (Wazuh чи інший) запише update.json, напр.
+              {"version": "v1.0.5", "source": "github", "request_id": "job-42"}  (усі поля необов'язкові);
+     off      не оновлювати.
+   Результати — C:\ProgramData\DocScan\results\docscan-updates.json (подія "Update" для Wazuh), журнал — updater.log.
 
 3. Антивірус
 ------------
@@ -73,21 +89,22 @@ DocScan стежить за новими файлами, перевіряє до
    макроси:     C:\ProgramData\DocScan\macros                       (код VBA документів, 90 днів / 500 МБ)
    черга:       C:\ProgramData\DocScan\critical\critical.json       (лише третій прохід; забирає інший watcher)
    Усе в C:\ProgramData\DocScan доступне лише SYSTEM і адміністраторам.
-   Завдання планувальника "DocScan Watcher": стартує з Windows від SYSTEM, перезапускається при збої.
+   Служба Windows "DocScan Watcher" (DocScanWatcher): стартує з Windows від SYSTEM; після збою Windows сама
+   перезапускає її (через 10 с / 10 с / 60 с); зупинка й збої видно в журналі System (події 7036, 7031).
    Лікування (якщо не -DetectOnly): документи з HIGH-вектором лікуються за політикою (rules\docscan-policy.yar);
    LNK, небезпечні PDF, старі .doc/.xls з макросами, RTF з вкладеним об'єктом — у карантин.
    Файл, відкритий у Word, лікується, щойно його закриють (повтор переживає перезавантаження).
 
 6. Перевірка й обслуговування
 -----------------------------
-   Get-ScheduledTask "DocScan Watcher"
+   Get-Service DocScanWatcher, DocScanUpdater    (або services.msc -> "DocScan Watcher", "DocScan Updater")
    Get-Content "C:\Program Files\DocScan\VERSION.txt" -TotalCount 1
    Get-Content C:\ProgramData\DocScan\results\watcher.log -Encoding UTF8 -Wait
    Режим: Get-Content C:\ProgramData\DocScan\results\watcher.log -Encoding UTF8 | Select-String "start:|critical:" | Select -Last 2
      (disarm=True — лікування, disarm=False — лише детект; "critical: off" — третій прохід вимкнений)
 
    Змінити політику: відредагуйте C:\Program Files\DocScan\rules\docscan-policy.yar, потім
-     Restart-ScheduledTask "DocScan Watcher"
+     Restart-Service DocScanWatcher
    Видалення: powershell -ExecutionPolicy Bypass -File "C:\Program Files\DocScan\uninstall.ps1" [-Purge]
 
 Вимоги: Windows 10/11 x64, PowerShell 5.1 (є в системі), права адміністратора. Вивід усіх скриптів —

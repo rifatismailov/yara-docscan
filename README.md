@@ -109,7 +109,7 @@ powershell -ExecutionPolicy Bypass -File $f -Critical <file or URL>         # + 
 ```
 
 The installer verifies the package, adds Defender exclusions, configures the Wazuh agent and registers the
-"DocScan Watcher" task. Wazuh manager rules: `docscan-project/deploy/manager/local_rules.docscan.xml`.
+Windows service "DocScan Watcher" (`DocScanWatcher`). Wazuh manager rules: `docscan-project/deploy/manager/local_rules.docscan.xml`.
 
 ### Where things are
 

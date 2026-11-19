@@ -33,6 +33,13 @@ if ($DefenderOff) {
 }
 
 Step "stop watchers"
+# the service (Go watcher, install.ps1): Disabled first - otherwise its recovery actions start a killed watcher again
+foreach ($s in "DocScanUpdater", "DocScanWatcher") {   # the updater too: no update in the middle of a test
+  if (Get-Service $s -EA SilentlyContinue) {
+    Set-Service $s -StartupType Disabled -EA SilentlyContinue
+    Stop-Service $s -Force -EA SilentlyContinue
+  }
+}
 foreach ($t in "DocScan Watcher Go", "DocScan Watcher") {
   if (Get-ScheduledTask $t -EA SilentlyContinue) { Stop-ScheduledTask $t -EA SilentlyContinue }
 }
@@ -62,7 +69,8 @@ if ($Package) {
   $pk = Join-Path $env:TEMP "docscan-load-pkg"
   Remove-Item $pk -Recurse -Force -EA SilentlyContinue
   Expand-Archive -LiteralPath $Package -DestinationPath $pk -Force
-  $a = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", (Join-Path $pk "install.ps1"), "-NoWazuhConfig")
+  # -UpdateMode off: the update service must not replace the tested build with a release during the test
+  $a = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", (Join-Path $pk "install.ps1"), "-NoWazuhConfig", "-UpdateMode", "off")
   if ($Critical) { $a += @("-CriticalRules", $Critical) }
   if ($DetectOnly) { $a += "-DetectOnly" }
   if ($Workers -gt 0 -and -not $GoExe) { $a += @("-Workers", $Workers) }

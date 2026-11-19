@@ -7,6 +7,8 @@ For every successful new / edit / rename action the watcher must write a record 
 action time (an edit within the watcher's 60 s cooldown is covered by the scan of the later version):
   covered     - a record exists; latency = record time - action time;
   superseded  - no record, but the file was renamed / deleted later (nothing left to scan);
+  unchanged   - an edit that wrote the same test document again (older loadgen.ps1): same content, the watcher
+                rightly skips an unchanged file - not a miss;
   MISSED      - no record and the file is still there.
 Also: verdicts, records with errors, watcher WARN / ERROR lines (buffer overflow, rescans), resources (perf.csv),
 and a per-minute timeline (actions, records, latency) to see whether the watcher keeps up.
@@ -109,6 +111,22 @@ for a in acts:
     elif a["action"] == "delete":
         later[a["path"].lower()].append(a["t"])
 
+# the test document each file holds, in action order: an edit with the same source leaves the content unchanged
+holds = {}
+same_content = set()
+for a in sorted(acts, key=lambda a: a["t"]):
+    if a["error"]:
+        continue
+    p = a["path"].lower()
+    if a["action"] in ("new", "probe"):
+        holds[p] = a["src"]
+    elif a["action"] == "edit":
+        if holds.get(p) == a["src"]:
+            same_content.add(id(a))
+        holds[p] = a["src"]
+    elif a["action"] == "rename":
+        holds[p] = holds.pop(a["src"].lower(), None)
+
 stat = Counter()
 lat = []
 missed = []
@@ -128,6 +146,8 @@ for a in acts:
         a["lat"] = d
     elif any(t >= a["t"] for t in later.get(p, [])):
         stat["superseded"] += 1
+    elif id(a) in same_content:
+        stat["unchanged"] += 1
     else:
         stat["MISSED"] += 1
         missed.append(a)
@@ -158,8 +178,8 @@ re_ = Counter("; ".join(r["errors"])[:90] for r in allrecs if r.get("errors"))
 for e, n in re_.most_common(5):
     print("  %4d x %s" % (n, e))
 
-print("\ncoverage: covered %d, superseded %d, MISSED %d, action errors %d"
-      % (stat["covered"], stat["superseded"], stat["MISSED"], stat["action_error"]))
+print("\ncoverage: covered %d, superseded %d, unchanged %d, MISSED %d, action errors %d"
+      % (stat["covered"], stat["superseded"], stat["unchanged"], stat["MISSED"], stat["action_error"]))
 for kind in ("probe", "new", "rename", "edit"):
     l = [a["lat"] for a in acts if a["action"] == kind and "lat" in a]
     if l:

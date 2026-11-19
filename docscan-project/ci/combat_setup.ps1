@@ -2,7 +2,7 @@
 #
 # The test runs DocScan exactly as on a workstation: the package built from this commit is installed with
 # install.ps1 (an update if DocScan is already there: C:\Program Files\DocScan, C:\ProgramData\DocScan, the
-# scheduled task "DocScan Watcher" as SYSTEM), the watcher watches C:\Users as usual plus the test inbox, and
+# Windows service DocScanWatcher as SYSTEM), the watcher watches C:\Users as usual plus the test inbox, and
 # every test file is dropped into that inbox (combat_feed.ps1). check_watcher.py then reads what the watcher
 # wrote to docscan-results.json. combat_cleanup.ps1 removes the test files, the malware and their backups.
 #
@@ -83,7 +83,7 @@ $snap = [ordered]@{
 
 # --- 4. install / update DocScan as on a workstation (the Wazuh agent is not needed here)
 $wp = "'C:\Users','" + $Inbox + "'"
-& powershell -NoProfile -ExecutionPolicy Bypass -Command "& '$Work\pkg\x\install.ps1' -WatchPath $wp -NoWazuhConfig" 2>&1 | % { "  $_" }
+& powershell -NoProfile -ExecutionPolicy Bypass -Command "& '$Work\pkg\x\install.ps1' -WatchPath $wp -NoWazuhConfig -UpdateMode off" 2>&1 | % { "  $_" }
 if ($LASTEXITCODE) { Fail "install.ps1 failed" }
 $snap.critical_on = Test-Path "$InstallDir\critical\critical-rules.yar"
 $snap | ConvertTo-Json -Depth 3 | Set-Content "$Work\snap.json" -Encoding UTF8

@@ -9,7 +9,8 @@ watcher is its §7.
 
 **Status (2026-11-18):** the Go watcher has been tested on a test terminal server and now ships in the
 package: ▷ (cirun) builds `docscan-watcher.exe` from the commit under test (cross-built on the Mac, `go vet` +
-`go test`), `build_package.ps1` puts it into `watcher\`, and `install.ps1` registers the "DocScan Watcher" task
+`go test`), `build_package.ps1` puts it into `watcher\`, and `install.ps1` registers it as the Windows service "DocScan Watcher" (`DocScanWatcher`: automatic, SYSTEM, restarted
+after a failure; `service_windows.go`)
 with it. The PowerShell watcher stays in the package as a fallback: `install.ps1 -WatcherEngine ps`.
 
 **Contents**
@@ -246,7 +247,8 @@ workers without a gain → back). Further speed-ups — §8.
    `DocScan-Install.ps1` (passes both on), the combat test (`check_watcher.py` reads the extension lists from
    `config.go`; `config_test.go` checks they match the `.ps1`).
 2. **A normal PC** (Windows 11, 4 cores, Defender) — the same stress in one user's profile.
-3. **A Windows service** instead of a scheduled task (clean stop, restart by the SCM).
+3. ~~A Windows service~~ — done: `DocScanWatcher` instead of a scheduled task (clean stop, restart by the SCM,
+   events in the System log); `install_smoke.ps1` in CI checks the restart after the process is killed.
 4. **Batch mode for `yara64`** (several files per process) — would remove the cost of a process start and a
    rules load per file.
 5. Signing `docscan-watcher.exe`, so antivirus heuristics leave the new binary alone.

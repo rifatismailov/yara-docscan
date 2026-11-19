@@ -117,6 +117,7 @@ jobs:
       - name: report, security gate, push to GitHub, release
         env:
           CI_GITHUB_TOKEN: ${{ secrets.CI_GITHUB_TOKEN }}
+          CI_SIGNING_KEY: ${{ secrets.CI_SIGNING_KEY }}
         run: |
           set -eu
           cd "$ART/src"

@@ -17,7 +17,7 @@
 #   3) -Critical: the E5Search rules are NOT in the release (sensitive) - they come from the given local
 #      file / UNC path or URL (a private URL: -CriticalToken or $env:DOCSCAN_CRITICAL_TOKEN);
 #   4) runs install.ps1 from the package (it checks every file against SHA256SUMS.txt, installs to
-#      C:\Program Files\DocScan, registers the "DocScan Watcher" task) and removes the temp files.
+#      C:\Program Files\DocScan, registers the Windows service "DocScan Watcher") and removes the temp files.
 # Update: the same command; a new release on GitHub = a new version for every PC that runs it.
 
 param(
@@ -33,7 +33,13 @@ param(
   [string]  $MacroUpload = "",      # -> install.ps1 -MacroUpload (collector URL); empty - macro code stays on the PC
   [ValidateSet("", "go", "ps")]
   [string]  $WatcherEngine = "",    # -> install.ps1 -WatcherEngine (default there: go; ps = the old PowerShell watcher)
-  [int]     $Workers = 0            # -> install.ps1 -Workers (fixed number of parallel scans; 0 = automatic)
+  [int]     $Workers = 0,           # -> install.ps1 -Workers (fixed number of parallel scans; 0 = automatic)
+  # updates (service DocScanUpdater, see install.ps1): -> install.ps1 -UpdateMode / -UpdateMirror / ...
+  [string]  $UpdateMode = "",       # github (default) | mirror | marker | off
+  [string]  $UpdateMirror = "",     # mode mirror: folder with the release files (https://... or \\server\share)
+  [string]  $UpdateMarker = "",     # mode marker: the file an agent writes
+  [double]  $UpdateEveryHours = 0,  # github / mirror: check interval (default 6)
+  [string]  $UpdateWindow = ""      # e.g. 22:00-06:00
 )
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"   # without it Invoke-WebRequest in PS 5.1 is very slow
@@ -90,6 +96,11 @@ try {
   if ($NoCritical)        { $p.NoCritical = $true }
   if ($WatcherEngine)     { $p.WatcherEngine = $WatcherEngine }
   if ($Workers -gt 0)     { $p.Workers = $Workers }
+  if ($UpdateMode)        { $p.UpdateMode = $UpdateMode }
+  if ($UpdateMirror)      { $p.UpdateMirror = $UpdateMirror }
+  if ($UpdateMarker)      { $p.UpdateMarker = $UpdateMarker }
+  if ($UpdateEveryHours -gt 0) { $p.UpdateEveryHours = $UpdateEveryHours }
+  if ($UpdateWindow)      { $p.UpdateWindow = $UpdateWindow }
   # without -Critical / -NoCritical the rules a PC already has stay as they are
   if ($Critical) {
     $crit = Join-Path $work "critical-rules.yar"

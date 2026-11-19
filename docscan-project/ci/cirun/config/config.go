@@ -104,6 +104,9 @@ type Secrets struct {
 // Release — реліз програми на GitHub (cirun --release; gh має бути встановлений і авторизований).
 type Release struct {
 	Repo string `yaml:"repo"` // "owner/repo"; порожньо — з адреси push.remote
+	// SigningKeyRef — приватний ключ ed25519 (base64 seed), яким підписується manifest.json релізу; updater на ПК
+	// приймає лише підписані релізи. За замовчуванням keepassxc:CI/Release/signing-key (на раннері: env:CI_SIGNING_KEY)
+	SigningKeyRef string `yaml:"signing_key_ref"`
 }
 
 // Push — головна публікація: git push коміту на GitHub після зеленого прогону. Від Forgejo не
@@ -325,6 +328,9 @@ func (c *Config) defaults() {
 	}
 	if c.Tests.Store.Package == "" {
 		c.Tests.Store.Package = "docscan-tests"
+	}
+	if c.Release.SigningKeyRef == "" {
+		c.Release.SigningKeyRef = "keepassxc:CI/Release/signing-key"
 	}
 	if c.Push.Remote == "" {
 		c.Push.Remote = "docscan"

@@ -35,6 +35,8 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+
+	"docscan/watcher/winsvc"
 )
 
 type fsEvent struct {
@@ -114,12 +116,27 @@ func (w *Watcher) excluded(p string) bool {
 	return false
 }
 
+// ServiceName — служба Windows watcher-а (sc query DocScanWatcher); у списку служб — "DocScan Watcher".
+const ServiceName = "DocScanWatcher"
+
 func main() {
 	c, err := parseConfig(os.Args[1:])
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
 	}
+	body := func(stop <-chan os.Signal) int { return start(c, stop) }
+	// служба Windows (install.ps1): SCM подає «стоп»; інакше — консоль, Ctrl+C / SIGTERM
+	if ok, code := winsvc.Run(ServiceName, body); ok {
+		os.Exit(code)
+	}
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
+	os.Exit(body(stop))
+}
+
+// start — усе від підготовки тек і правил до зупинки; код виходу (0 — зупинено як слід).
+func start(c *Config, stop <-chan os.Signal) int {
 	for _, d := range []string{c.OutDir, c.BackupDir, c.MacroDir} {
 		os.MkdirAll(d, 0o755)
 	}
@@ -142,15 +159,15 @@ func main() {
 				w.docSet[e] = true
 			}
 		} else {
-			fmt.Printf("critical rules not found: %s - critical check off\n", c.CriticalRules)
+			w.log.Log("WARN", "critical rules not found: %s - critical check off", c.CriticalRules)
 		}
 	}
 	w.loadMacroSent()
 	if err := w.prepareRules(); err != nil {
 		w.log.Log("ERROR", "%v", err)
-		os.Exit(1)
+		return 1
 	}
-	os.Exit(w.run())
+	return w.run(stop)
 }
 
 // rules: exist, compile (otherwise every scan would fail silently), then compiled ONCE with yarac64 -> every
@@ -194,7 +211,7 @@ func (w *Watcher) prepareRules() error {
 	return nil
 }
 
-func (w *Watcher) run() int {
+func (w *Watcher) run(stop <-chan os.Signal) int {
 	c := w.c
 	events := make(chan fsEvent, 200000)
 	var overflow atomic.Bool
@@ -237,8 +254,6 @@ func (w *Watcher) run() int {
 	}
 	go w.syncMacros()
 
-	stop := make(chan os.Signal, 1)
-	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
 	co := newCoordinator(w, p, events, &overflow)
 	co.loop(stop)
 	w.log.Log("INFO", "stopped")

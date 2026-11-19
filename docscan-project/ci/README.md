@@ -170,7 +170,7 @@ go run -C docscan-project/ci/cirun . --combat --only windows --fuzz 0
 
 | Крок | Що |
 |---|---|
-| combat-setup | `combat_setup.ps1`: пакет цього коміту → `install.ps1` (оновлення: `C:\Program Files\DocScan`, `C:\ProgramData\DocScan`, завдання «DocScan Watcher» від SYSTEM; watcher стежить за `C:\Users` і тестовою текою `C:\ci\inbox`); тестові файли з **файлового сервера** (`fileserver` у config.yaml): `yara\corpus`, `yara\seeds`, `yara\malware\malware.zip` і `provided.zip` (пароль `infected`, розпаковуються лише в `C:\ci\combat`) + 42 зразки з git; знімок стану |
+| combat-setup | `combat_setup.ps1`: пакет цього коміту → `install.ps1` (оновлення: `C:\Program Files\DocScan`, `C:\ProgramData\DocScan`, служба Windows DocScanWatcher від SYSTEM; watcher стежить за `C:\Users` і тестовою текою `C:\ci\inbox`); тестові файли з **файлового сервера** (`fileserver` у config.yaml): `yara\corpus`, `yara\seeds`, `yara\malware\malware.zip` і `provided.zip` (пароль `infected`, розпаковуються лише в `C:\ci\combat`) + 42 зразки з git; знімок стану |
 | combat-feed | `combat_feed.ps1` (окреме завдання SYSTEM): кладе файли в `C:\ci\inbox` партіями по 50 і чекає, поки watcher упорається; cirun раз на 30 с показує хід |
 | combat | `check_watcher.py`: на кожен файл, який watcher має сканувати (за його списками розширень), є запис без `ERROR`; 42 зразки — вердикт, лікування і вердикт після лікування за еталоном; реальні зразки замовника — HIGH; шкідливе ПЗ — кожен шлях `expected.txt`, який watcher сканує, виявлений (решта — список «не сканується через розширення»); корпус — вердикт політики = прямому скану (крок corpus). Звіт — `combat-report.txt`, записи — `combat-records.json`, лог watcher-а — `combat-watcher.log` |
 | combat-cleanup | `combat_cleanup.ps1` (завжди): тестові файли, розпаковане шкідливе ПЗ, бекапи й копії макросів, створені тестом, рядки тесту в черзі E5Search. DocScan лишається встановленим (оновленим до перевіреної збірки) |
@@ -277,9 +277,16 @@ v0.x — колишні релізи `docscan-2026…` з PowerShell-watcher-о�
 Активи в `ci-out/<прогін>/release/`:
 
 ```
-DocScan-windows-x64.zip + .sha256   повний пакет: bin\ (yara64, yarac64, рантайм VC++), rules\, watcher\, install.ps1 ...
+DocScan-windows-x64.zip + .sha256   повний пакет: bin\ (yara64, yarac64, рантайм VC++), rules\, watcher\, updater\, install.ps1 ...
 DocScan-Install.ps1                 єдиний скрипт для ПК
+manifest.json + manifest.sig        підписаний маніфест (версія, sha256 пакета і кожного файлу в ньому) — для docscan-updater
 ```
+
+**Підпис.** `cirun publish` / `--release` складає `manifest.json` і підписує його ключем ed25519
+`release.signing_key_ref` (типово `keepassxc:CI/Release/signing-key`; на раннері — `env:CI_SIGNING_KEY`, секрет
+Forgejo). Ключ має бути серед `OfficialKeys` у `watcher-go/manifest` — інакше реліз не випускається (ПК його не
+прийняли б). Служба оновлення на ПК (`DocScanUpdater`, [../UPDATE-DESIGN.md](../UPDATE-DESIGN.md) §0) ставить лише
+підписане. Новий ключ: спершу додати публічний у `OfficialKeys` і випустити реліз зі старим ключем, потім міняти.
 
 - Імена активів однакові в усіх релізах — `releases/latest/download/<ім'я>` завжди дає найновіший (без GitHub API
   і його ліміту 60 запитів/год з однієї адреси).
@@ -288,7 +295,8 @@ DocScan-Install.ps1                 єдиний скрипт для ПК
   `release.repo` у `config.yaml`, порожньо — з адреси `push.remote`.
 - На ПК: `DocScan-Install.ps1` качає пакет з релізу, звіряє SHA256, запускає `install.ps1` з пакета (той ще раз
   звіряє кожен файл з `SHA256SUMS.txt`). Правила E5Search у реліз не входять: `-Critical <файл / UNC / URL>`.
-- Довіра — обліковому запису GitHub (увімкнена 2FA обов'язкова): хто може створити реліз, той ставить програму на ПК.
+- Довіра: для `DocScan-Install.ps1` — обліковому запису GitHub (увімкнена 2FA обов'язкова); для автооновлення — лише
+  ключу підпису CI (реліз, створений на GitHub без підпису, updater не поставить).
 - Не зелений або не запушений прогін релізу не робить ніколи.
 
 ## Налаштування з нуля (покроково)
