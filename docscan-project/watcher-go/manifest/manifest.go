@@ -218,3 +218,35 @@ func VersionFromTitle(line string) string {
 	}
 	return ""
 }
+
+// VerifySig — підпис "ed25519 <key_id> <base64>" над data будь-яким з keys (без розбору вмісту: для інших
+// підписаних файлів, напр. списків організації). Повертає key_id.
+func VerifySig(data []byte, sig string, keys []string) (string, error) {
+	f := strings.Fields(sig)
+	if len(f) != 3 || f[0] != "ed25519" {
+		return "", fmt.Errorf("signature: expected \"ed25519 <key_id> <signature>\"")
+	}
+	s, err := base64.StdEncoding.DecodeString(f[2])
+	if err != nil || len(s) != ed25519.SignatureSize {
+		return "", fmt.Errorf("signature: bad signature")
+	}
+	for _, k := range keys {
+		pub, err := ParseKey(k)
+		if err != nil {
+			continue
+		}
+		if KeyID(pub) == f[1] && ed25519.Verify(pub, data, s) {
+			return f[1], nil
+		}
+	}
+	return "", fmt.Errorf("signature is not valid for any trusted key (key_id %s)", f[1])
+}
+
+// NewSeed — новий ключ ed25519: seed (base64, тримати в секреті) і публічний ключ "ed25519:<base64>".
+func NewSeed() (seedB64, pub string, err error) {
+	p, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		return "", "", err
+	}
+	return base64.StdEncoding.EncodeToString(priv.Seed()), "ed25519:" + base64.StdEncoding.EncodeToString(p), nil
+}

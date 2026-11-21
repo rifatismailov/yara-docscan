@@ -50,6 +50,8 @@ type Config struct {
 	MacroUpload        string
 	MacroKeepDays      int
 	MacroMaxMB         int
+	Whitelist          string // whitelist.json of the organisation (lists.go)
+	Blacklist          string // blacklist.json of the organisation (lists.go)
 	CriticalRules      string
 	CriticalOut        string
 	CriticalExt        []string
@@ -123,6 +125,8 @@ func parseConfig(args []string) (*Config, error) {
 	fs.IntVar(&c.MacroKeepDays, "MacroKeepDays", 90, "macro store retention, days")
 	fs.IntVar(&c.MacroMaxMB, "MacroMaxMB", 500, "macro store size limit, MB")
 	fs.StringVar(&c.CriticalRules, "CriticalRules", "", "critical-information rules (.yar, E5Search); empty = off")
+	fs.StringVar(&c.Whitelist, "Whitelist", "", "white list of the organisation (whitelist.json): matching files are not scanned; re-read when it changes")
+	fs.StringVar(&c.Blacklist, "Blacklist", "", "black list of the organisation (blacklist.json): matching files -> HIGH, quarantine; re-read when it changes")
 	fs.StringVar(&c.CriticalOut, "CriticalOut", "", `E5Search queue (default <OutDir>\..\critical\critical.json)`)
 	fs.Var(critExt, "CriticalExt", "extra extensions watched with the critical check on")
 	fs.Var(docExt, "DocExt", "document extensions")

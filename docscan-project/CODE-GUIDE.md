@@ -494,6 +494,9 @@ PowerShell 5.1. Файл **лише ASCII** (усі повідомлення й 
 **Параметри** (верх файлу): `-WatchPath`, `-Yara`, `-Yarac`, `-Rules`, `-OutDir`, `-BackupDir`, `-NoDisarm`,
 `-QuarantineGeneral`, `-MaxLogMB`, `-KeepLogs`, `-MaxSizeMB`, `-SettleSeconds`, `-ReadyTimeout`,
 `-RescanCooldown`, `-DisarmRetryMinutes`, `-DisarmNoticeHours`, `-DocExt`, `-GenExt`, `-ExcludePattern`;
+білий / чорний списки: `-Whitelist`, `-Blacklist` (`lists.go`: перечитування при зміні, зламаний файл — лишається
+попередній; `applyLists` до сканування: чорний sha256 → білий → чорний path / lnk_target; ціль ярлика — скан без
+лікування, `evidence.lnk_target`; формат і зіставлення — пакет `watcher-go/orglists`, спільний з updater; у записі — `list`);
 збереження макросів: `-MacroDir`, `-MacroUpload`, `-MacroKeepDays`, `-MacroMaxMB`; третій прохід: `-CriticalRules`,
 `-CriticalOut`, `-CriticalExt` (`.odt .ods .odp .txt .csv` — лише коли третій прохід увімкнений).
 
@@ -579,6 +582,7 @@ E5Search за цей запуск — повторний скан того са�
 |---|---|
 | `ci/cirun/` (Go) | Коміт з перевіркою для публічного репозиторію (`gitops/git.go`, винятки — `skipChecks`), платформи `unix.go` / `windows.go`, хвилі, підсумок, push. |
 | `ci/build-test-unix.sh` | Збірка й тести на macOS / Linux: documents, critical, hostile, corpus, malware, fuzz. |
+| `watcher-go/orglists`, `watcher-go/updater/lists.go`, `listsign.go`, `listscli.go` | Списки організації: формат, `Decide`; DocScanUpdater — `lists.url` / `lists.public_keys` (підпис ключем організації, `serial` новіший, бекап `.prev`, запис `component: lists`); `docscan-updater -CheckList / -NewListKey / -SignList`. Тести — `go test ./...`, на стенді — `install_smoke.ps1`. |
 | `ci/check_verdicts.py` / `.ps1`, `ci/expected-verdicts.tsv` | Документи: вердикт, лікування, повторний скан, оригінали — проти еталона 42 зразків (`--write` — свідома зміна еталона). |
 | `ci/check_corpus.py` | Корпуси й шкідливе ПЗ: вердикти в TSV для звірки Мак ↔ Windows; `expected.txt` — обов'язкові виявлення. |
 | `test-range/gen_test_range.py` | Генерує нешкідливі зразки: `write_docx`, `write_xlsx`, `write_zip`, `rels`, `build_cfb(stream, name)`, `build_cfb_multi`, `vba_project`, `ovba_container`, `build_lnk`, `ole10native`, `ole1_object`, `gen()` / `gen_objects()` / `gen_vba_projects()` / `gen_fp_regressions()` / `gen_archives()`. Вихід (`range/`) — не в git; потрібні файли копіюються в `test-samples/generated/`. |

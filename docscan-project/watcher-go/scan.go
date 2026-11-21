@@ -56,7 +56,8 @@ type Record struct {
 	Disarm          string          `json:"disarm,omitempty"`
 	Macro           *MacroInfo      `json:"macro,omitempty"`
 	Critical        *CritInfo       `json:"critical,omitempty"`
-	Summary         string          `json:"summary"` // for the Wazuh alert description
+	List            *ListHit        `json:"list,omitempty"` // decided by the white / black list (lists.go)
+	Summary         string          `json:"summary"`        // for the Wazuh alert description
 	Errors          []string        `json:"errors"`
 
 	ds *dsResult `json:"-"`
@@ -64,7 +65,10 @@ type Record struct {
 
 // the parts of the docscan JSON the watcher needs (the whole object goes into the record as it is)
 type dsResult struct {
-	Ftype           string   `json:"ftype"`
+	Ftype    string `json:"ftype"`
+	Evidence struct {
+		LnkTarget string `json:"lnk_target"`
+	} `json:"evidence"`
 	Verdict         string   `json:"verdict"`
 	Findings        []string `json:"findings"`
 	FindingsText    []string `json:"findings_text"`
@@ -265,6 +269,14 @@ func (w *Watcher) summary(r *Record) string {
 		}
 		p = append(p, t)
 	}
+	if lh := r.List; lh != nil {
+		t := map[string]string{"white": "Дозволено білим списком організації", "black": "Файл у чорному списку організації"}[lh.List]
+		t += fmt.Sprintf(" (запис %d: %s", lh.Entry+1, lh.By)
+		if lh.Comment != "" {
+			t += ", " + lh.Comment
+		}
+		p = append(p, t+")")
+	}
 	if r.Disarm != "" {
 		p = append(p, "action: "+r.Disarm)
 	}
@@ -315,6 +327,10 @@ func (w *Watcher) scanFile(path, evt string, wk *worker) *Record {
 			return
 		}
 		r.DocFile.Sha256 = sha
+		// white / black lists of the organisation decide BEFORE the scan (lists.go)
+		if w.applyLists(r, path, sha, wk) {
+			return
+		}
 
 		// vendor rules see the bytes BEFORE disarm: yara collects the matches before --docscan-disarm.
 		// The same content goes to the E5Search queue once (disarm retries / DisarmPending rescan it).

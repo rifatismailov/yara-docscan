@@ -64,6 +64,9 @@ func (u *Updater) rulesBase(r *Request) (string, string) {
 		}
 		return "github", fmt.Sprintf("https://github.com/%s/releases/latest/download", u.cfg.Rules.GitHub.Repo)
 	case "mirror":
+		if u.cfg.Rules.Mirror.URL != "" {
+			return "mirror", u.cfg.Rules.Mirror.URL
+		}
 		return "mirror", u.cfg.Mirror.URL
 	}
 	return "url", src

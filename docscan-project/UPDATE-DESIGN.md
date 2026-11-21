@@ -59,6 +59,13 @@
   — `failed`, не встановлені, watcher не чіпався; перевстановлення програми без `-Rules` правила лишило; без правил
   watcher чекав, з правилами — стартував.
 
+**Списки організації (2026-11-21):** `whitelist.json` / `blacklist.json` (`<DataDir>\lists\`) — третій компонент
+DocScanUpdater (`component: lists`, `updater/lists.go`): `updater.json` → `"lists": {"url", "check_every_hours": 24,
+"public_keys"}` (`install.ps1 -ListsUrl / -ListsKey`), у будь-якому режимі, і `off` теж; ставиться лише список з
+підписом ключем організації (окремо від ключа релізів), правильного формату і з більшим `serial`; попередній —
+`.prev`. Для правил — `rules.mirror.url` (окреме дзеркало правил; порожньо — те саме, що для програми). Схеми —
+[LISTS-FLOW.md](LISTS-FLOW.md).
+
 **Етап 2 (2026-11-19): правил у проєкті програми більше немає** — `docscan-project/rules` прибрано з git (у
 `.gitignore`); CI бере підписаний реліз правил (`cirun/rulesrc`, вхід `rules` workflow) — у робочу теку і на стенди;
 пакет програми без правил, на новому ПК `-Rules` обов'язковий. Далі: CI репозиторію правил (корпуси, expected / clean)

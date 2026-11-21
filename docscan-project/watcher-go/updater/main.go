@@ -6,6 +6,7 @@
 //	docscan-updater.exe [-DataDir C:\ProgramData\DocScan] [-InstallDir <тека над updater\>] [-Config <updater.json>]
 //	docscan-updater.exe -Once      # одна перевірка зараз (і завершення оновлення, що триває) — вручну / для тесту
 //	docscan-updater.exe -InstallRules <DocScan-rules-bundle.zip | тека>   # install.ps1 -Rules: перевірити й поставити правила
+//	docscan-updater.exe -CheckList / -NewListKey / -SignList   # списки організації (listscli.go)
 package main
 
 import (
@@ -27,6 +28,10 @@ import (
 const ServiceName = "DocScanUpdater"
 
 func main() {
+	// list administration: -CheckList, -NewListKey, -SignList (listscli.go) — not the service
+	if code, ok := listsCLI(os.Args); ok {
+		os.Exit(code)
+	}
 	exe, _ := os.Executable()
 	dataDir := flag.String("DataDir", `C:\ProgramData\DocScan`, "DocScan data folder")
 	installDir := flag.String("InstallDir", filepath.Dir(filepath.Dir(exe)), "DocScan program folder (VERSION.txt)")
@@ -87,14 +92,19 @@ func run(u *Updater, cfgPath string, once bool, stop <-chan os.Signal) int {
 	if once {
 		u.handleState(time.Now())
 		u.tick(time.Now(), true)
+		u.listsTick(time.Now())
 		return 0
 	}
 	// перша перевірка — через 2..12 хв після старту (сотні ПК після ранкового ввімкнення не б'ють джерело разом)
 	next := time.Now().Add(2*time.Minute + time.Duration(rand.Int64N(int64(10*time.Minute))))
+	u.listsNext = next // списки — теж не одразу після старту
 	var markerMod time.Time
 	for {
 		now := time.Now()
 		u.handleState(now)
+		if !u.busy() && cfg.Lists.URL != "" && !now.Before(u.listsNext) {
+			u.listsTick(now) // списки організації: власний розклад, будь-який режим (і off)
+		}
 		if !u.busy() {
 			switch cfg.Mode {
 			case "github", "mirror":

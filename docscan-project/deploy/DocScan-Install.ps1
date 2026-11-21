@@ -27,6 +27,11 @@ param(
   [string]  $Critical = "",         # critical-rules.yar: local / UNC path or http(s) URL -> install.ps1 -CriticalRules
   [string]  $CriticalToken = "",    # bearer token for a private -Critical URL (or $env:DOCSCAN_CRITICAL_TOKEN)
   [switch]  $NoCritical,            # -> install.ps1 -NoCritical (turn the check off, remove the rules)
+  [string]  $Whitelist = "",        # whitelist.json: local / UNC path or http(s) URL -> install.ps1 -Whitelist
+  [string]  $Blacklist = "",        # blacklist.json: local / UNC path or http(s) URL -> install.ps1 -Blacklist
+  [string]  $ListsToken = "",       # token for private -Whitelist / -Blacklist URLs and a closed -ListsUrl mirror (or $env:DOCSCAN_LISTS_TOKEN)
+  [switch]  $NoWhitelist,           # -> install.ps1 -NoWhitelist
+  [switch]  $NoBlacklist,           # -> install.ps1 -NoBlacklist
   [string[]]$WatchPath,             # -> install.ps1 -WatchPath
   [switch]  $NoAvExclusion,         # -> install.ps1 -NoAvExclusion
   [switch]  $QuarantineGeneral,     # -> install.ps1 -QuarantineGeneral
@@ -40,6 +45,9 @@ param(
   [string]  $UpdateMarker = "",     # mode marker: the file an agent writes
   [double]  $UpdateEveryHours = 0,  # github / mirror: check interval (default 6)
   [string]  $UpdateWindow = "",     # e.g. 22:00-06:00
+  [string]  $ListsUrl = "",         # -> install.ps1 -ListsUrl: the organisation's mirror with signed lists (checked daily)
+  [string[]]$ListsKey = @(),        # -> install.ps1 -ListsKey: the organisation's public key(s) for the lists
+  [double]  $ListsEveryHours = 0,   # -> install.ps1 -ListsEveryHours (default 24)
   [string]  $Rules = ""             # rules bundle (DocScan-rules-bundle.zip of a yara-docscan-rules release): file, UNC or URL -> install.ps1 -Rules
 )
 $ErrorActionPreference = "Stop"
@@ -57,6 +65,8 @@ if ($Version -and $Version -notmatch '^(v\d+\.\d+\.\d+|\d{8}-[0-9a-f]+)$') { Fai
 # release tags: vX.Y.Z; the releases before v1.0.0 were tagged docscan-<date>-<commit>
 $tag = if ($Version -match '^v') { $Version } else { "docscan-$Version" }
 if ($Critical -and $NoCritical) { Fail "-Critical and -NoCritical together" }
+if ($Whitelist -and $NoWhitelist) { Fail "-Whitelist and -NoWhitelist together" }
+if ($Blacklist -and $NoBlacklist) { Fail "-Blacklist and -NoBlacklist together" }
 
 $asset = "DocScan-windows-x64.zip"
 $base = if ($Version) { "https://github.com/$Repo/releases/download/$tag" } else { "https://github.com/$Repo/releases/latest/download" }
@@ -95,6 +105,8 @@ try {
   if ($WatchPath)         { $p.WatchPath = $WatchPath }
   if ($MacroUpload)       { $p.MacroUpload = $MacroUpload }
   if ($NoCritical)        { $p.NoCritical = $true }
+  if ($NoWhitelist)       { $p.NoWhitelist = $true }
+  if ($NoBlacklist)       { $p.NoBlacklist = $true }
   if ($WatcherEngine)     { $p.WatcherEngine = $WatcherEngine }
   if ($Workers -gt 0)     { $p.Workers = $Workers }
   if ($UpdateMode)        { $p.UpdateMode = $UpdateMode }
@@ -102,6 +114,10 @@ try {
   if ($UpdateMarker)      { $p.UpdateMarker = $UpdateMarker }
   if ($UpdateEveryHours -gt 0) { $p.UpdateEveryHours = $UpdateEveryHours }
   if ($UpdateWindow)      { $p.UpdateWindow = $UpdateWindow }
+  if ($ListsUrl)          { $p.ListsUrl = $ListsUrl }
+  if ($ListsKey.Count)    { $p.ListsKey = $ListsKey }
+  if ($ListsEveryHours -gt 0) { $p.ListsEveryHours = $ListsEveryHours }
+  if ($ListsUrl -and ($ListsToken -or $env:DOCSCAN_LISTS_TOKEN)) { $p.ListsToken = $(if ($ListsToken) { $ListsToken } else { $env:DOCSCAN_LISTS_TOKEN }) }   # closed mirror
   if ($Rules)             { $p.Rules = $Rules }
   # without -Critical / -NoCritical the rules a PC already has stay as they are
   if ($Critical) {
@@ -118,6 +134,23 @@ try {
     }
     if ((Get-Item $crit).Length -eq 0) { Fail "-Critical: the rules file is empty" }
     $p.CriticalRules = $crit
+  }
+
+  # white / black lists: without -Whitelist / -Blacklist the lists a PC already has stay (install.ps1 checks the format)
+  foreach ($l in @(@{ Src = $Whitelist; Key = "Whitelist"; File = "whitelist.json" }, @{ Src = $Blacklist; Key = "Blacklist"; File = "blacklist.json" })) {
+    if (-not $l.Src) { continue }
+    $dst = Join-Path $work $l.File
+    if ($l.Src -match '^https?://') {
+      $tok = if ($ListsToken) { $ListsToken } else { $env:DOCSCAN_LISTS_TOKEN }
+      $h = @{}
+      if ($tok) { $h.Authorization = "Bearer $tok" }
+      try { Invoke-WebRequest -UseBasicParsing $l.Src -Headers $h -OutFile $dst }
+      catch { Fail "-$($l.Key): could not download $($l.Src) - $($_.Exception.Message)" }
+    } else {
+      if (-not (Test-Path -LiteralPath $l.Src -PathType Leaf)) { Fail "-$($l.Key): file not found: $($l.Src)" }
+      Copy-Item -LiteralPath $l.Src $dst
+    }
+    $p[$l.Key] = $dst
   }
 
   # 4) install

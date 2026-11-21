@@ -96,20 +96,31 @@ held open by Word, and appends one JSON line per file (with a human-readable `su
 documents go to `C:\ProgramData\DocScan\critical\critical.json`; another program sends them to E5Search.
 
 Install or update on a workstation (PowerShell as administrator) from the
-[GitHub release](https://github.com/rifatismailov/yara-docscan/releases/latest) - it holds everything (yara64,
-rules, watcher, scripts):
+[GitHub release](https://github.com/rifatismailov/yara-docscan/releases/latest) (yara64, watcher, updater,
+scripts). The rules are released separately in
+[yara-docscan-rules](https://github.com/rifatismailov/yara-docscan-rules/releases/latest): download the rules
+bundle **before** installing and pass it with `-Rules` (file, UNC path or URL):
 
 ```powershell
 [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12   # GitHub needs TLS 1.2 (Windows PowerShell 5.1)
 $f = "$env:TEMP\DocScan-Install.ps1"
 irm https://github.com/rifatismailov/yara-docscan/releases/latest/download/DocScan-Install.ps1 -OutFile $f
-powershell -ExecutionPolicy Bypass -File $f                                 # normal PC
-powershell -ExecutionPolicy Bypass -File $f -DetectOnly                     # pilot: detection and alerts only
-powershell -ExecutionPolicy Bypass -File $f -Critical <file or URL>         # + pass 3 (critical-information rules, not in the release)
+$r = "$env:TEMP\DocScan-rules-bundle.zip"
+irm https://github.com/rifatismailov/yara-docscan-rules/releases/latest/download/DocScan-rules-bundle.zip -OutFile $r
+powershell -ExecutionPolicy Bypass -File $f -Rules $r                       # normal PC
+powershell -ExecutionPolicy Bypass -File $f -Rules $r -DetectOnly           # pilot: detection and alerts only
+powershell -ExecutionPolicy Bypass -File $f -Rules $r -Critical <file or URL>   # + pass 3 (critical-information rules, not in the release)
+powershell -ExecutionPolicy Bypass -File $f -Rules $r -Whitelist <file> -Blacklist <file>   # + the organisation's lists
 ```
 
-The installer verifies the package, adds Defender exclusions, configures the Wazuh agent and registers the
-Windows service "DocScan Watcher" (`DocScanWatcher`). Wazuh manager rules: `docscan-project/deploy/manager/local_rules.docscan.xml`.
+The installer verifies the package and the signed rules, adds Defender exclusions, configures the Wazuh agent and
+registers the Windows services "DocScan Watcher" (`DocScanWatcher`: watches files, runs yara64) and `DocScanUpdater`
+(program, rules and lists updates; the sources are set per organisation in `updater.json`).
+
+The organisation's **white list** (`whitelist.json`: files not scanned) and **black list** (`blacklist.json`: HIGH and
+quarantine before any scan) name files by path mask, by the network folder a shortcut points to, or by sha256; the
+organisation keeps them itself, by hand or on its own mirror (signed with its key, checked daily by DocScanUpdater).
+Format and diagrams: `docscan-project/deploy/README.txt`, [LISTS-FLOW.md](docscan-project/LISTS-FLOW.md). Wazuh manager rules: `docscan-project/deploy/manager/local_rules.docscan.xml`.
 
 ### Where things are
 

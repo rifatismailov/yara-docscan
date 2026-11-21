@@ -33,10 +33,30 @@ New-Item -ItemType Directory -Force "$Work\pkg", $inbox | Out-Null
 Expand-Archive $Package "$Work\pkg" -Force
 "package: " + (Get-Content "$Work\pkg\VERSION.txt" -TotalCount 1)
 
+# white / black lists of the organisation: a folder in the inbox where .exe is banned (black: path), a known bad file
+# (black: sha256), our own program allowed there (white: sha256); detect-only here -> HIGH without quarantine
+$lst = "$inbox\lists"; New-Item -ItemType Directory -Force $lst | Out-Null
+$ownApp = "$Work\own-app.exe"; [IO.File]::WriteAllText($ownApp, "our own program " + [guid]::NewGuid())
+$badFile = "$Work\bad.dll"; [IO.File]::WriteAllText($badFile, "known bad " + [guid]::NewGuid())
+$hOwn = (Get-FileHash $ownApp).Hash.ToLower(); $hBad = (Get-FileHash $badFile).Hash.ToLower()
+$wl = "$Work\whitelist.json"; $bl = "$Work\blacklist.json"
+[IO.File]::WriteAllText($wl, (@{ schema = 1; entries = @(@{ sha256 = $hOwn; comment = "smoke: own app" }) } | ConvertTo-Json -Depth 5))
+[IO.File]::WriteAllText($bl, (@{ schema = 1; entries = @(@{ path = "$lst\*.exe"; comment = "smoke: no exe here" }, @{ sha256 = $hBad; comment = "smoke: known bad" }) } | ConvertTo-Json -Depth 5))
+$badList = "$Work\bad-list.json"; [IO.File]::WriteAllText($badList, '{"schema": 1, "entries": [{"path": "%USERPROFILE%\\Downloads\\*.exe"}]}')
+# the organisation's list mirror (a local folder here): a new org key, the white list signed with it
+$du = "$Work\pkg\updater\docscan-updater.exe"
+$orgDir = "$Work\orglists"; New-Item -ItemType Directory -Force $orgDir | Out-Null
+$keyOut = & $du -NewListKey -Out "$Work\org-lists.key" 2>&1 | % { "$_" }
+$orgPub = @($keyOut | ? { $_ -match '^ed25519:' })[0]
+if (-not $orgPub) { Fail "-NewListKey printed no public key: $keyOut" }
+Copy-Item $wl "$orgDir\whitelist.json"
+$signOut = & $du -SignList "$orgDir\whitelist.json" -Kind white -Key "$Work\org-lists.key" 2>&1 | % { "$_" }
+if ($LASTEXITCODE) { Fail "-SignList: $signOut" } else { "org lists: $signOut" }
+
 # install: an update if DocScan is already there; watch only the test inbox. Updates: mode marker - the update
 # service runs (checked below) but does nothing without a marker; github would "update" this CI build (no vX.Y.Z)
 # to the latest release in the middle of the test
-& powershell -NoProfile -ExecutionPolicy Bypass -Command "& '$Work\pkg\install.ps1' -WatchPath '$inbox' -NoWazuhConfig -DetectOnly -UpdateMode marker$(if ($Rules) { " -Rules '$Rules'" })" 2>&1 | % { "  $_" }
+& powershell -NoProfile -ExecutionPolicy Bypass -Command "& '$Work\pkg\install.ps1' -WatchPath '$inbox' -NoWazuhConfig -DetectOnly -UpdateMode marker -Whitelist '$wl' -Blacklist '$bl' -ListsUrl '$orgDir' -ListsKey '$orgPub'$(if ($Rules) { " -Rules '$Rules'" })" 2>&1 | % { "  $_" }
 if ($LASTEXITCODE) { "FAIL: install.ps1 exit $LASTEXITCODE"; exit 1 }
 # the watcher is the Windows service DocScanWatcher: automatic, LocalSystem, restart after a failure, the Go exe
 $sv = Get-CimInstance Win32_Service -Filter "Name='DocScanWatcher'"
@@ -61,6 +81,26 @@ if (-not (Test-Path $ij)) { Fail "no $ij" } else { $j = Get-Content $ij -Raw | C
 Start-Sleep 3
 $ul = "$env:ProgramData\DocScan\results\updater.log"
 if (Test-Path $ul) { "updater.log: " + (Get-Content $ul -Tail 1) } else { Fail "no $ul - the updater did not start" }
+
+# lists installed; a broken list is refused by the same check the watcher uses
+foreach ($f in "whitelist.json", "blacklist.json") { if (-not (Test-Path "$env:ProgramData\DocScan\lists\$f")) { Fail "no lists\$f" } }
+$chk = & "$env:ProgramW6432\DocScan\updater\docscan-updater.exe" -CheckList black $badList 2>&1 | % { "$_" }
+if ($LASTEXITCODE -ne 1) { Fail "-CheckList accepted a broken list: $chk" } else { "lists: installed; broken list refused - $chk" }
+# signed list from the organisation's mirror: DocScanUpdater -Once installs it, refuses a forged one
+$upd = "$env:ProgramW6432\DocScan\updater\docscan-updater.exe"
+& $upd -Once 2>&1 | Out-Null
+$inst = Get-Content "$env:ProgramData\DocScan\lists\whitelist.json" -Raw | ConvertFrom-Json
+$served = Get-Content "$orgDir\whitelist.json" -Raw | ConvertFrom-Json
+if ($inst.serial -ne $served.serial) { Fail "signed org list not installed by DocScanUpdater (installed serial $($inst.serial), served $($served.serial))" }
+elseif (-not (Test-Path "$env:ProgramData\DocScan\lists\whitelist.json.prev")) { Fail "no backup whitelist.json.prev" }
+else { "org lists: whitelist.json serial $($inst.serial) installed by DocScanUpdater, previous kept as .prev" }
+$forged = (Get-Content "$orgDir\whitelist.json" -Raw) -replace '"serial":\s*\d+', ('"serial": ' + ([int64]$served.serial + 1)) -replace 'own app', 'evil app'
+[IO.File]::WriteAllText("$orgDir\whitelist.json", $forged)
+& $upd -Once 2>&1 | Out-Null
+$inst2 = Get-Content "$env:ProgramData\DocScan\lists\whitelist.json" -Raw | ConvertFrom-Json
+$ur = Get-Content "$env:ProgramData\DocScan\results\docscan-updates.json" -Tail 1 | ConvertFrom-Json
+if ($inst2.serial -ne $served.serial -or $ur.update.component -ne "lists" -or $ur.update.status -ne "error") { Fail "a forged org list was not refused (installed serial $($inst2.serial), last record $($ur.update.component) $($ur.update.status))" }
+else { "org lists: forged list refused - $($ur.update.message)" }
 
 $mark = if (Test-Path $results) { (Get-Item $results).Length } else { 0 }
 foreach ($s in $samples) { Copy-Item "$Repo\docscan-project\test-samples\generated\$s" $inbox }
@@ -87,6 +127,29 @@ foreach ($s in $samples) {
   "{0,-6} {1,-24} verdict {2,-6} expected {3,-6} {4}" -f $(if ($ok) { "ok" } else { "FAIL" }), $s, $r.verdict, $expected[$s], ($r.errors -join "; ")
   if (-not $ok) { $failed = $true }
 }
+# lists decide before the scan: .exe in the banned folder -> HIGH; our own app there -> allowed; a known bad file -> HIGH
+$mark2 = (Get-Item $results).Length
+[IO.File]::WriteAllText("$lst\setup.exe", "unknown installer " + [guid]::NewGuid())
+Copy-Item $ownApp "$lst\own-app.exe"
+Copy-Item $badFile "$lst\bad.dll"
+$hits = @{}
+$deadline = (Get-Date).AddSeconds($TimeoutSec)
+while ((Get-Date) -lt $deadline -and $hits.Count -lt 3) {
+  Start-Sleep 3
+  $fs = [IO.File]::Open($results, 'Open', 'Read', 'ReadWrite'); [void]$fs.Seek([Math]::Min($mark2, $fs.Length), 'Begin')
+  $tail = (New-Object IO.StreamReader($fs, [Text.Encoding]::UTF8)).ReadToEnd(); $fs.Close()
+  foreach ($l in ($tail -split "`n")) {
+    if ($l -notlike '{*') { continue }
+    try { $r = $l | ConvertFrom-Json } catch { continue }
+    if ($r.docfile.path -like "$lst\*" -and $r.list) { $hits[$r.docfile.name] = $r }
+  }
+}
+foreach ($c in @(@("setup.exe", "black", "HIGH", "path"), @("own-app.exe", "white", "INFO", "sha256"), @("bad.dll", "black", "HIGH", "sha256"))) {
+  $r = $hits[$c[0]]
+  if (-not $r -or $r.list.list -ne $c[1] -or $r.verdict -ne $c[2] -or $r.list.by -ne $c[3]) { Fail "lists: $($c[0]) must be $($c[1]) / $($c[2]) by $($c[3]), got $($r.list.list) / $($r.verdict) by $($r.list.by)" }
+  else { "lists: $($c[0]) -> $($r.verdict) | $($r.summary)" }
+}
+
 # recovery: the watcher process is killed (a crash) -> Windows starts the service again (sc failure: after 10 s)
 $p0 = (Get-CimInstance Win32_Service -Filter "Name='DocScanWatcher'").ProcessId
 if ($p0) {

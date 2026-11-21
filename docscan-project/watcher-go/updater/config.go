@@ -27,6 +27,7 @@ type Config struct {
 	Mirror          Mirror   `json:"mirror"`
 	Marker          Marker   `json:"marker"`
 	Rules           Rules    `json:"rules"`
+	Lists           Lists    `json:"lists"`
 	Window          string   `json:"window"`            // "22:00-06:00" — ставити лише в цей час (порожньо — будь-коли)
 	ExtraPublicKeys []string `json:"extra_public_keys"` // ключі організації, що підписує свої збірки (ed25519:<base64>)
 }
@@ -39,6 +40,16 @@ type GitHub struct {
 type Rules struct {
 	Off    bool   `json:"off"`    // true — правила не оновлювати (лишаються ті, що поставив інсталятор)
 	GitHub GitHub `json:"github"` // репозиторій релізів правил
+	Mirror Mirror `json:"mirror"` // режим mirror: окрема тека з релізом правил; порожньо — та сама, що й для програми
+}
+
+// Lists — білий / чорний списки організації з ЇЇ дзеркала (lists.go): whitelist.json / blacklist.json + .sig,
+// підписані ключем організації (public_keys — окремо від extra_public_keys: цей ключ не підпише програму).
+type Lists struct {
+	URL             string   `json:"url"`               // https://lists.org.local/docscan/ або \\server\share\docscan; "" — лише вручну
+	CheckEveryHours float64  `json:"check_every_hours"` // за замовчуванням 24
+	PublicKeys      []string `json:"public_keys"`       // ed25519:<base64> (docscan-updater -NewListKey)
+	Token           string   `json:"token,omitempty"`   // закрите дзеркало: "Authorization: token <це>" (Forgejo / Gitea / GitHub; лише читання)
 }
 
 type Mirror struct {
@@ -80,6 +91,9 @@ func loadConfig(path, dataDir string) (*Config, error) {
 	if c.Rules.GitHub.Repo == "" {
 		c.Rules.GitHub.Repo = DefaultRulesRepo
 	}
+	if c.Lists.CheckEveryHours <= 0 {
+		c.Lists.CheckEveryHours = 24
+	}
 	if c.Marker.File == "" {
 		c.Marker.File = dataDir + `\update\update.json`
 	}
@@ -108,6 +122,24 @@ func (c *Config) check() error {
 	if c.Window != "" {
 		if _, _, err := parseWindow(c.Window); err != nil {
 			return err
+		}
+	}
+	if c.Rules.Mirror.URL != "" {
+		if err := checkSource(c.Rules.Mirror.URL); err != nil {
+			return fmt.Errorf("rules.mirror.url: %w", err)
+		}
+	}
+	if c.Lists.URL != "" {
+		if err := checkSource(c.Lists.URL); err != nil {
+			return fmt.Errorf("lists.url: %w", err)
+		}
+		if len(c.Lists.PublicKeys) == 0 {
+			return fmt.Errorf("lists.url is set but lists.public_keys is empty - the lists must be signed by the organisation")
+		}
+	}
+	for _, k := range c.Lists.PublicKeys {
+		if _, err := manifest.ParseKey(k); err != nil {
+			return fmt.Errorf("lists.public_keys: %w", err)
 		}
 	}
 	for _, k := range c.ExtraPublicKeys {
@@ -209,8 +241,8 @@ func parseMarker(b []byte) (*Request, error) {
 
 // component — що оновлювати за цим запитом.
 func (r *Request) component() string {
-	if r.Component == "rules" {
-		return "rules"
+	if r.Component == "rules" || r.Component == "lists" {
+		return r.Component
 	}
 	return "program"
 }

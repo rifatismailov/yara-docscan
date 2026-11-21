@@ -32,6 +32,7 @@
 #      them; otherwise the rules of this package (until packages come without rules); no rules at all - not installed;
 #   8) the update service "DocScan Updater" (DocScanUpdater, updater\docscan-updater.exe): how it updates is in
 #      <DataDir>\update\updater.json, written from -UpdateMode (github | mirror | marker | off), -UpdateMirror,
+#      -ListsUrl / -ListsKey / -ListsEveryHours (the organisation's signed white / black lists),
 #      -UpdateMarker, -UpdateEveryHours, -UpdateWindow (only when given, or on the first install: github). It installs
 #      only releases signed by the DocScan CI, never an older version, and rolls back when the new one does not start.
 # Running it again = update (the previous rules are kept in rules.prev\). The parameters of every install are kept in
@@ -50,6 +51,10 @@ param(
   [string]  $MacroUpload = "",    # collector URL for the extracted macro code (POST), e.g. http://<server>:8080; empty - local only
   [string]  $CriticalRules = "",  # critical-information rules (.yar from E5Search) -> <InstallDir>\critical\; empty - keep the installed ones
   [switch]  $NoCritical,          # turn the critical-information check off on this PC (removes <InstallDir>\critical\)
+  [string]  $Whitelist = "",      # white list of the organisation (whitelist.json) -> <DataDir>\lists\; empty - keep the installed one
+  [string]  $Blacklist = "",      # black list of the organisation (blacklist.json) -> <DataDir>\lists\; empty - keep the installed one
+  [switch]  $NoWhitelist,         # remove the white list
+  [switch]  $NoBlacklist,         # remove the black list
   [switch]  $NoStart,             # register, but do not start now
   [ValidateSet("go", "ps")]
   [string]  $WatcherEngine = "go", # go = docscan-watcher.exe (parallel scans); ps = the old PowerShell script (fallback)
@@ -64,6 +69,11 @@ param(
   [string]  $UpdateMarker = "",   # mode marker: the file an agent writes (default <DataDir>\update\update.json)
   [double]  $UpdateEveryHours = 0, # github / mirror: how often to check (default 6)
   [string]  $UpdateWindow = "",   # install updates only at this time, e.g. 22:00-06:00
+  [string]  $ListsUrl = "",       # the organisation's mirror with signed whitelist.json / blacklist.json (+ .sig): https://... or
+                                  # \\server\share\docscan; DocScanUpdater checks it daily. Empty - lists only by hand
+  [string[]]$ListsKey = @(),      # public key(s) the organisation signs its lists with (ed25519:..., docscan-updater -NewListKey)
+  [double]  $ListsEveryHours = 0, # how often to check the lists (default 24)
+  [string]  $ListsToken = "",     # a closed mirror (Forgejo with sign-in, a private repository): read-only token -> lists.token
   [string]  $Rules = "",          # rules bundle from a yara-docscan-rules release (DocScan-rules-bundle.zip: file, UNC or URL; or a
                                   # folder with rules-manifest.json/.sig + DocScan-rules.zip) - verified (CI signature) and installed
   [switch]  $Reuse,               # take the parameters of the previous install (<DataDir>\install.json) - used by the updater
@@ -261,6 +271,25 @@ foreach ($sid in "S-1-5-18", "S-1-5-32-544") {  # SYSTEM, Administrators
 }
 Set-Acl -Path $DataDir -AclObject $acl   # results\ and quarantine\ inherit these permissions
 
+# white / black lists of the organisation (deploy\README.txt, "White and black lists"): the watcher applies them before
+# the scan and re-reads them when they change. Not part of the package; an update keeps them. Only SYSTEM /
+# Administrators can change them (DataDir ACL). Checked with docscan-updater -CheckList - the code the watcher uses.
+$listsDir = "$DataDir\lists"
+$whiteFile = "$listsDir\whitelist.json"
+$blackFile = "$listsDir\blacklist.json"
+New-Item -ItemType Directory -Force $listsDir | Out-Null
+foreach ($l in @(@{ Src = $Whitelist; No = $NoWhitelist; Dst = $whiteFile; Name = "white list"; Kind = "white" },
+                 @{ Src = $Blacklist; No = $NoBlacklist; Dst = $blackFile; Name = "black list"; Kind = "black" })) {
+  if ($l.No) { Remove-Item -LiteralPath $l.Dst -Force -EA SilentlyContinue; continue }
+  if (-not $l.Src) { continue }
+  if (-not (Test-Path -LiteralPath $l.Src -PathType Leaf)) { Fail "$($l.Name) not found: $($l.Src)" }
+  $chk = & "$InstallDir\updater\docscan-updater.exe" -CheckList $l.Kind $l.Src 2>&1 | % { "$_" }
+  if ($LASTEXITCODE -ne 0) { Fail "$($l.Name): $($chk -join ' ')" }
+  if (Test-Path -LiteralPath $l.Dst) { Copy-Item -LiteralPath $l.Dst "$($l.Dst).prev" -Force }   # backup
+  Copy-Item -LiteralPath $l.Src $l.Dst -Force
+  Write-Host "  $($l.Name): $($chk -join ' ') -> $($l.Dst)"
+}
+
 # --- 4b. old DocScan (Wazuh active-response) -> full removal ---
 $legacyRemoved = @()
 if ((Test-Path $OssecDir) -and -not $KeepLegacy) {
@@ -421,6 +450,7 @@ if ($WatcherEngine -eq "go") {
   if ($QuarantineGeneral) { $goArgs += "-QuarantineGeneral" }
   if ($DetectOnly) { $goArgs += "-NoDisarm" }
   if ($MacroUpload) { $goArgs += "-MacroUpload", (Q $MacroUpload) }
+  $goArgs += "-Whitelist", (Q $whiteFile), "-Blacklist", (Q $blackFile)   # re-read when changed; a missing file = no list
   if (Test-Path -LiteralPath $critRules) { $goArgs += "-CriticalRules", (Q $critRules), "-CriticalOut", (Q "$DataDir\critical\critical.json") }
   if ($Workers -gt 0) { $goArgs += "-Workers", $Workers }
   $bin = (Q "$InstallDir\watcher\docscan-watcher.exe") + " " + ($goArgs -join " ")
@@ -524,10 +554,12 @@ $updExe = "$InstallDir\updater\docscan-updater.exe"
 $updDir = "$DataDir\update"
 $updCfg = "$updDir\updater.json"
 New-Item -ItemType Directory -Force $updDir | Out-Null
-$cfgGiven = $UpdateMode -or $UpdateMirror -or $UpdateMarker -or $UpdateEveryHours -gt 0 -or $UpdateWindow
+$cfgGiven = $UpdateMode -or $UpdateMirror -or $UpdateMarker -or $UpdateEveryHours -gt 0 -or $UpdateWindow -or $ListsUrl -or $ListsKey.Count -or $ListsEveryHours -gt 0 -or $ListsToken
 if ($cfgGiven -or -not (Test-Path -LiteralPath $updCfg)) {
   $c = [ordered]@{ mode = "github"; check_every_hours = 6; github = @{ repo = "rifatismailov/yara-docscan" }; mirror = @{ url = "" }
-                   marker = @{ file = "$updDir\update.json" }; window = ""; extra_public_keys = @() }
+                   marker = @{ file = "$updDir\update.json" }; window = ""; extra_public_keys = @()
+                   rules = @{ off = $false; github = @{ repo = "rifatismailov/yara-docscan-rules" }; mirror = @{ url = "" } }
+                   lists = @{ url = ""; check_every_hours = 24; public_keys = @() } }
   if (Test-Path -LiteralPath $updCfg) {   # given parameters change the existing config, the rest stays
     try { $o = Get-Content -LiteralPath $updCfg -Raw | ConvertFrom-Json; foreach ($k in @($c.Keys)) { if ($null -ne $o.$k) { $c[$k] = $o.$k } } } catch { }
   }
@@ -536,12 +568,27 @@ if ($cfgGiven -or -not (Test-Path -LiteralPath $updCfg)) {
   if ($UpdateMarker) { $c.marker = @{ file = $UpdateMarker } }
   if ($UpdateEveryHours -gt 0) { $c.check_every_hours = $UpdateEveryHours }
   if ($UpdateWindow) { $c.window = $UpdateWindow }
+  # the organisation's lists: signed by ITS key (lists.public_keys - separate from extra_public_keys)
+  if ($ListsUrl -or $ListsKey.Count -or $ListsEveryHours -gt 0 -or $ListsToken) {
+    $l = [ordered]@{ url = [string]$c.lists.url; check_every_hours = $(if ($c.lists.check_every_hours) { $c.lists.check_every_hours } else { 24 }); public_keys = @($c.lists.public_keys | ? { $_ }); token = [string]$c.lists.token }
+    if ($ListsToken) { $l.token = $ListsToken }
+    if ($ListsUrl) { $l.url = $ListsUrl }
+    if ($ListsKey.Count) {
+      foreach ($k in $ListsKey) { if ($k -notmatch '^ed25519:[A-Za-z0-9+/]{43}=$') { Fail "-ListsKey '$k': expected ed25519:<base64> (docscan-updater -NewListKey prints it)" } }
+      $l.public_keys = @($ListsKey)
+    }
+    if ($ListsEveryHours -gt 0) { $l.check_every_hours = $ListsEveryHours }
+    if ($l.url -and -not $l.public_keys.Count) { Fail "-ListsUrl needs -ListsKey: lists from a mirror must be signed by the organisation" }
+    $c.lists = $l
+  }
   if ($c.mode -eq "mirror" -and -not $c.mirror.url) { Fail "-UpdateMode mirror needs -UpdateMirror <folder with the release files>" }
   Write-Text $updCfg ($c | ConvertTo-Json -Depth 4)
 }
 $updMode = try { (Get-Content -LiteralPath $updCfg -Raw | ConvertFrom-Json).mode } catch { "github" }
-if ((Test-Path -LiteralPath $updExe) -and $updMode -ne "off") {
-  Step "update service '$UpdSvc' (DocScan Updater: mode $updMode, $updCfg)"
+$listsUrlNow = try { [string](Get-Content -LiteralPath $updCfg -Raw | ConvertFrom-Json).lists.url } catch { "" }
+# the service runs when it has something to do: program / rule updates, or the organisation's lists
+if ((Test-Path -LiteralPath $updExe) -and ($updMode -ne "off" -or $listsUrlNow)) {
+  Step "update service '$UpdSvc' (DocScan Updater: mode $updMode$(if ($listsUrlNow) { ", lists $listsUrlNow" }), $updCfg)"
   $ubin = '"' + $updExe + '" -DataDir "' + $DataDir.TrimEnd('\') + '" -InstallDir "' + $InstallDir.TrimEnd('\') + '"'
   $udesc = "DocScan: installs signed DocScan updates (see $updCfg)"
   if (Get-Service -Name $UpdSvc -EA SilentlyContinue) {
@@ -576,5 +623,6 @@ else { Write-Host "  Wazuh:      NO AGENT ($ossecConf not found) - results stay 
 Write-Host ("  policy:     $InstallDir\rules\docscan-policy.yar  (after a change: " + $(if ($WatcherEngine -eq "go") { "Restart-Service $SvcName" } else { "Restart-ScheduledTask '$TaskName'" }) + ")")
 $rv = if (Test-Path "$InstallDir\rules\VERSION.txt") { [string](Get-Content "$InstallDir\rules\VERSION.txt" -TotalCount 1) } else { "from the program package" }
 Write-Host "  rules:      $InstallDir\rules ($rv)"
-Write-Host ("  updates:    " + $(if ((Test-Path -LiteralPath $updExe) -and $updMode -ne "off") { "service $UpdSvc, mode $updMode ($updCfg); records: $DataDir\results\docscan-updates.json" } else { "off" }))
+Write-Host ("  lists:      white " + $(if (Test-Path -LiteralPath $whiteFile) { $whiteFile } else { "-" }) + ", black " + $(if (Test-Path -LiteralPath $blackFile) { $blackFile } else { "-" }) + $(if ($listsUrlNow) { "; updated daily from $listsUrlNow" } else { "" }))
+Write-Host ("  updates:    " + $(if ((Test-Path -LiteralPath $updExe) -and ($updMode -ne "off" -or $listsUrlNow)) { "service $UpdSvc, mode $updMode ($updCfg); records: $DataDir\results\docscan-updates.json" } else { "off" }))
 Write-Host "  uninstall:  powershell -ExecutionPolicy Bypass -File '$InstallDir\uninstall.ps1'"

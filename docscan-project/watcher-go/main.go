@@ -79,6 +79,7 @@ type Watcher struct {
 	results    *appender
 	host       string
 	ruleArgs   []string
+	lists      *Lists // white / black lists of the organisation (nil - none)
 	criticalOn bool
 	docSet     map[string]bool
 	genSet     map[string]bool
@@ -144,6 +145,7 @@ func start(c *Config, stop <-chan os.Signal) int {
 	w.log = &Logger{a: &appender{file: filepath.Join(c.OutDir, "watcher.log"), maxBytes: int64(c.MaxLogMB) << 20, keep: c.KeepLogs}}
 	w.results = &appender{file: filepath.Join(c.OutDir, "docscan-results.json"), maxBytes: int64(c.MaxLogMB) << 20, keep: c.KeepLogs}
 	w.retryFile = filepath.Join(c.OutDir, "retry.json")
+	w.lists = newLists(c.Whitelist, c.Blacklist, w.log)
 	w.crit.seen = map[string]bool{}
 	for _, e := range c.DocExt {
 		w.docSet[e] = true

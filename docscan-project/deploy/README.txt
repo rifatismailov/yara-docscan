@@ -24,6 +24,8 @@ DocScan стежить за новими файлами, перевіряє до
    Правила E5Search (critical-rules.yar) у реліз НЕ входять (чутливі): -Critical бере їх з локального файлу,
    UNC-шляху або URL (приватний URL - -CriticalToken або змінна DOCSCAN_CRITICAL_TOKEN).
    ПК потрібен доступ до github.com і objects.githubusercontent.com (TLS 1.2).
+   Білий / чорний списки організації: -Whitelist / -Blacklist <файл | UNC | URL> (приватний URL - -ListsToken або
+   DOCSCAN_LISTS_TOKEN), -NoWhitelist / -NoBlacklist; щоденно з дзеркала - -ListsUrl + -ListsKey. Див. нижче.
    Інші параметри DocScan-Install.ps1: -NoCritical (вимкнути третій прохід), -MacroUpload <url> (копії коду
    макросів на колектор; без нього код лишається на ПК), -WatchPath, -NoAvExclusion, -QuarantineGeneral.
    Нова версія: cirun --release (після зеленого прогону; номер +1: v1.0.1, --bump minor -> v1.1.0).
@@ -40,6 +42,11 @@ DocScan стежить за новими файлами, перевіряє до
      -MacroUpload http://<сервер>:8080   копії коду макросів на сервер (POST)
      -CriticalRules <файл.yar>           третій прохід: правила E5Search -> C:\Program Files\DocScan\critical\
      -NoCritical                         вимкнути третій прохід і видалити його правила
+     -Whitelist / -Blacklist <файл.json> білий / чорний списки -> C:\ProgramData\DocScan\lists\ (див. нижче)
+     -NoWhitelist / -NoBlacklist         прибрати список
+     -ListsUrl <https://...|\\сервер\шара>  дзеркало організації з підписаними списками (щодня); -ListsToken - для закритого;
+                                         -ListsKey ed25519:...
+                                         - її публічний ключ; -ListsEveryHours 24
      -NoAvExclusion                      не додавати винятки Microsoft Defender
      -Workers 8                          фіксована кількість паралельних сканів (за замовчуванням — автоматично
                                          від 2 до кількості CPU, за чергою і навантаженням CPU)
@@ -54,6 +61,62 @@ DocScan стежить за новими файлами, перевіряє до
      -UpdateEveryHours 6                 github / mirror: як часто перевіряти
      -UpdateWindow 22:00-06:00           ставити оновлення лише в цей час
    Без -CriticalRules уже встановлені правила E5Search лишаються (звичайне оновлення їх не прибирає).
+
+   Білий і чорний списки (C:\ProgramData\DocScan\lists\whitelist.json, blacklist.json). Організація веде їх сама.
+   Watcher звіряє з ними кожен новий файл ДО сканування:
+     1) чорний список, запис з sha256  -> HIGH, карантин (відомий шкідливий файл блокується завжди)
+     2) білий список                   -> файл НЕ сканується (INFO "Дозволено білим списком організації")
+     3) чорний список, path / lnk_target -> HIGH, карантин
+     4) інакше                         -> звичайна перевірка yara64
+   Так своя програма з sha256 у білому проходить навіть з теки, де *.exe заборонені, а відомий шкідливий - ніколи.
+   Формат обох файлів (JSON, UTF-8; у JSON кожен \ подвоюється):
+       whitelist.json
+       {
+         "schema": 1,
+         "description": "Програми організації",
+         "entries": [
+           {"path": "C:\\Users\\*\\Desktop\\App*.lnk", "lnk_target": "\\\\fileserver\\BIN\\",
+            "comment": "бухгалтерська програма з файлового сервера", "added": "2026-11-21", "by": "admin"},
+           {"sha256": "<64 hex>", "comment": "наша внутрішня програма"}
+         ]
+       }
+       blacklist.json
+       {
+         "schema": 1,
+         "entries": [
+           {"path": "C:\\Users\\*\\Downloads\\*.exe", "comment": "інсталятори не з Завантажень"},
+           {"sha256": "<64 hex>", "comment": "відомий шкідливий файл"},
+           {"lnk_target": "\\\\evil-srv\\", "comment": "заборонений сервер"}
+         ]
+       }
+   Поля запису - хоча б одне; якщо кілька, файл має збігтися з УСІМА:
+     path        де лежить файл: повний шлях з маскою; * - будь-що в межах однієї теки, ** - будь-яка глибина,
+                 ? - один символ. Регістр не важливий. Змінних (%USERPROFILE%) немає - лише маски.
+     lnk_target  куди веде ярлик (.lnk): мережева тека \\сервер\шара\ (у чорному можна й увесь сервер \\сервер\).
+                 Ціль ярлика знає модуль docscan: ярлик спершу сканується без лікування, ціль береться зі звіту.
+     sha256      вміст файлу (Get-FileHash <файл>): саме цей файл, хоч як його перейменуй; нова версія = новий хеш.
+     comment / added / by - для людей (навіщо, коли, хто).
+   Для ярлика на свою шару краще path + lnk_target разом: лише маска пропустить і чужий ярлик з такою назвою. У
+   білому списку не можна дозволити «всі файли теки» (*.*) чи цілий сервер. Перевіряються лише типи файлів, за якими
+   стежить watcher (документи, ярлики, exe / dll / скрипти / архіви...).
+   Неправильний файл: install.ps1 його не ставить; зіпсований уже на ПК - watcher лишає попередню справну версію і
+   пише ERROR у watcher.log; перечитує список, щойно він змінився (перезапуск не потрібен). Перевірити заздалегідь:
+       docscan-updater.exe -CheckList white|black <файл>
+   Ставити: DocScan-Install.ps1 -Whitelist <файл> -Blacklist <файл> (попередня версія - <файл>.prev). Оновлення
+   програми й правил списки не чіпає; у публічні релізи вони не потрапляють.
+
+   Списки з дзеркала організації (необов'язково; інакше - вручну). Служба DocScanUpdater раз на добу бере
+   whitelist.json і blacklist.json разом з <файл>.sig з -ListsUrl і ставить лише список, що підписаний ключем
+   організації і має "serial" більший за встановлений (старий підписаний список повторно не підсунути). Інакше
+   лишається поточний, у docscan-updates.json - "error" (component "lists") -> Wazuh. Попередня версія - <файл>.prev.
+     один раз:   docscan-updater.exe -NewListKey -Out org-lists.key   (секрет - у сейф; виведений ed25519:... - на ПК)
+     щоразу:     docscan-updater.exe -SignList whitelist.json -Kind white -Key org-lists.key
+                 (новий serial + whitelist.json.sig; обидва файли - на дзеркало)
+     на ПК:      DocScan-Install.ps1 ... -ListsUrl https://lists.org.local/docscan/ -ListsKey ed25519:...
+                 закрите дзеркало (Forgejo з входом, приватний репозиторій) - ще -ListsToken <токен лише для читання>
+                 (у updater.json - lists.token; DocScanUpdater шле "Authorization: token ..."). Для Forgejo / Gitea
+                 адреса теки - .../<власник>/<репозиторій>/raw/branch/main
+   Ключ списків окремий від ключа релізів DocScan. Служба DocScanUpdater працює і з -UpdateMode off, якщо є -ListsUrl.
    Параметри встановлення запам'ятовуються (C:\ProgramData\DocScan\install.json): автооновлення зберігає режим ПК.
 
    Автооновлення (служба "DocScan Updater", DocScanUpdater): ставить лише релізи, підписані CI DocScan, і лише

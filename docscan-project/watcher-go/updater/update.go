@@ -56,6 +56,7 @@ type Updater struct {
 	svc        services               // зупинка / запуск watcher-а (заміна правил)
 	compiler   func(dir string) error // тест: замість yarac64
 	poll       time.Duration          // як часто дивитися watcher.log після запуску
+	listsNext  time.Time              // наступна перевірка списків організації (lists.go)
 }
 
 // services — служби Windows (svc_windows.go); тест підставляє свої.
@@ -423,7 +424,7 @@ type Record struct {
 
 type RecordUpdate struct {
 	Status    string `json:"status"`    // success | rollback | failed | current | error
-	Component string `json:"component"` // program | rules
+	Component string `json:"component"` // program | rules | lists
 	From      string `json:"from"`
 	To        string `json:"to,omitempty"`
 	Mode      string `json:"mode"`
