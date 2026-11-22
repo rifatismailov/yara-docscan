@@ -12,7 +12,8 @@
 #   2) copies bin\, rules\, watcher\ to -InstallDir (default C:\Program Files\DocScan);
 #   3) creates -DataDir (C:\ProgramData\DocScan): results\, quarantine\, macros\ - access for SYSTEM + Administrators only;
 #      macros\ = the VBA code of every document with macros (-MacroUpload: also POSTed to a collector);
-#      critical\ = the E5Search queue (critical.json: full text of documents matching -CriticalRules);
+#      critical\ = the E5Search queue (critical.json: full text of documents matching the critical rules - critical\*.yar of
+#      the rules package, on every PC unless -NoCritical);
 #   4) self-test: yara64 starts, the rules compile, a test scan returns JSON;
 #   5) FULLY removes the old DocScan (Wazuh active-response): doc-scan.ps1, doc-scan.cmd,
 #      <ossec-agent>\tmp\docscan; the old quarantine <ossec-agent>\quarantine is moved to
@@ -49,8 +50,8 @@ param(
   [switch]  $NoAvExclusion,       # do NOT add Defender exclusions (if a central policy sets them)
   [switch]  $DetectOnly,          # detection and alerts only: files are NOT disarmed or quarantined (pilot)
   [string]  $MacroUpload = "",    # collector URL for the extracted macro code (POST), e.g. http://<server>:8080; empty - local only
-  [string]  $CriticalRules = "",  # critical-information rules (.yar from E5Search) -> <InstallDir>\critical\; empty - keep the installed ones
-  [switch]  $NoCritical,          # turn the critical-information check off on this PC (removes <InstallDir>\critical\)
+  [switch]  $NoCritical,          # turn the critical-information check off on this PC (the critical rules come with the rules
+                                  # package: rules\critical\*.yar; without this switch the check runs on every PC)
   [string]  $Whitelist = "",      # white list of the organisation (whitelist.json) -> <DataDir>\lists\; empty - keep the installed one
   [string]  $Blacklist = "",      # black list of the organisation (blacklist.json) -> <DataDir>\lists\; empty - keep the installed one
   [switch]  $NoWhitelist,         # remove the white list
@@ -117,7 +118,7 @@ if ($Reuse) {
   foreach ($n in "WatchPath", "MacroUpload", "WatcherEngine", "Workers", "OssecDir") {
     if (-not $PSBoundParameters.ContainsKey($n) -and $null -ne $p.$n -and "$($p.$n)" -ne "") { Set-Variable -Name $n -Value $p.$n }
   }
-  foreach ($n in "QuarantineGeneral", "NoAvExclusion", "DetectOnly", "NoWazuhConfig", "KeepLegacy", "KeepLegacyYara") {
+  foreach ($n in "QuarantineGeneral", "NoAvExclusion", "DetectOnly", "NoWazuhConfig", "KeepLegacy", "KeepLegacyYara", "NoCritical") {
     if (-not $PSBoundParameters.ContainsKey($n) -and $p.$n) { Set-Variable -Name $n -Value ([switch]$true) }
   }
   $WatchPath = @($WatchPath)
@@ -241,14 +242,12 @@ foreach ($d in "bin", "rules", "watcher", "updater") {
 }
 Copy-Item (Join-Path $Pkg "uninstall.ps1") $InstallDir -Force
 Copy-Item (Join-Path $Pkg "VERSION.txt") $InstallDir -Force -EA SilentlyContinue
-# critical-information rules: not part of the package (they come from the E5Search project)
-$critRules = "$InstallDir\critical\critical-rules.yar"
-if ($NoCritical) {
+# critical-information rules: part of the rules package (rules\critical\*.yar, any number of files - CRITICAL-RULES.md);
+# the separate <InstallDir>\critical\critical-rules.yar of older versions is not used any more
+$critRules = "$InstallDir\rules\critical"
+if (Test-Path -LiteralPath "$InstallDir\critical") {
   Remove-Item "$InstallDir\critical" -Recurse -Force -EA SilentlyContinue
-} elseif ($CriticalRules) {
-  if (-not (Test-Path -LiteralPath $CriticalRules)) { Fail "critical rules not found: $CriticalRules" }
-  New-Item -ItemType Directory -Force "$InstallDir\critical" | Out-Null
-  Copy-Item -LiteralPath $CriticalRules $critRules -Force
+  Write-Host "  removed $InstallDir\critical (the critical rules now come with the rules package)"
 }
 
 # a stray copy from an earlier run in a 32-bit PowerShell (installed to Program Files (x86)) - remove it
@@ -423,7 +422,8 @@ $ver = & $yara --version 2>&1
 if ($LASTEXITCODE -ne 0) { Fail "yara64.exe does not start: $ver (vcruntime140.dll missing?)" }
 $probe = Join-Path $env:TEMP "docscan-probe.txt"; "probe" | Set-Content $probe
 $out = & $yara -w --docscan-json $rules $probe 2>&1 | % { "$_" }
-if (Test-Path -LiteralPath $critRules) {
+$critOn = (-not $NoCritical) -and @(Get-ChildItem -LiteralPath $critRules -File -Filter *.yar -EA SilentlyContinue | ? { $_.Extension -eq ".yar" }).Count -gt 0
+if ($critOn) {
   $q = Join-Path $env:TEMP "docscan-probe-critical.json"
   # --file-vars: the main rules use the filename/filepath externals
   $co = & $yara -w --file-vars "--critical-rules=$critRules" "--critical-out=$q" $rules $probe 2>&1 | % { "$_" }
@@ -451,7 +451,7 @@ if ($WatcherEngine -eq "go") {
   if ($DetectOnly) { $goArgs += "-NoDisarm" }
   if ($MacroUpload) { $goArgs += "-MacroUpload", (Q $MacroUpload) }
   $goArgs += "-Whitelist", (Q $whiteFile), "-Blacklist", (Q $blackFile)   # re-read when changed; a missing file = no list
-  if (Test-Path -LiteralPath $critRules) { $goArgs += "-CriticalRules", (Q $critRules), "-CriticalOut", (Q "$DataDir\critical\critical.json") }
+  if (-not $NoCritical) { $goArgs += "-CriticalRules", (Q $critRules), "-CriticalOut", (Q "$DataDir\critical\critical.json") }
   if ($Workers -gt 0) { $goArgs += "-Workers", $Workers }
   $bin = (Q "$InstallDir\watcher\docscan-watcher.exe") + " " + ($goArgs -join " ")
   # the older scheduled task (before the service) - the service replaces it
@@ -478,7 +478,7 @@ if ($WatcherEngine -eq "go") {
           ($(if ($QuarantineGeneral) { " -QuarantineGeneral" } else { "" })) +
           ($(if ($DetectOnly) { " -NoDisarm" } else { "" })) +
           ($(if ($MacroUpload) { " -MacroUpload '" + ($MacroUpload -replace "'", "''") + "'" } else { "" })) +
-          ($(if (Test-Path -LiteralPath $critRules) { " -CriticalRules '$critRules' -CriticalOut '$DataDir\critical\critical.json'" } else { "" })) + "`""
+          ($(if (-not $NoCritical) { " -CriticalRules '$critRules' -CriticalOut '$DataDir\critical\critical.json'" } else { "" })) + "`""
   $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument $taskArgs
   $trigger   = New-ScheduledTaskTrigger -AtStartup
   $principal = New-ScheduledTaskPrincipal -UserId "S-1-5-18" -LogonType ServiceAccount -RunLevel Highest
@@ -533,6 +533,7 @@ $keepParams = [ordered]@{
   WatchPath = @($WatchPath); MacroUpload = $MacroUpload; WatcherEngine = $WatcherEngine; Workers = $Workers; OssecDir = $OssecDir
   QuarantineGeneral = [bool]$QuarantineGeneral; NoAvExclusion = [bool]$NoAvExclusion; DetectOnly = [bool]$DetectOnly
   NoWazuhConfig = [bool]$NoWazuhConfig; KeepLegacy = [bool]$KeepLegacy; KeepLegacyYara = [bool]$KeepLegacyYara
+  NoCritical = [bool]$NoCritical
 }
 # UTF-8 without BOM (Write-Text): docscan-updater (Go) reads these files
 Write-Text $InstallJson ([ordered]@{ installed = $verTitle; version = $relVer; time = (Get-Date).ToString("s"); history = $hist; params = $keepParams } | ConvertTo-Json -Depth 4)
@@ -615,7 +616,7 @@ Write-Host ("  watching:   $($WatchPath -join ', ')   " + $(if ($DetectOnly) { "
 Write-Host "  results:    $DataDir\results\docscan-results.json  (log: watcher.log)"
 Write-Host "  quarantine: $DataDir\quarantine"
 Write-Host ("  macros:     $DataDir\macros  (90 days / 500 MB)" + $(if ($MacroUpload) { "; copy -> $MacroUpload" } else { "" }))
-Write-Host ("  critical:   " + $(if (Test-Path -LiteralPath $critRules) { "$critRules -> queue $DataDir\critical\critical.json" } else { "off (no critical rules)" }))
+Write-Host ("  critical:   " + $(if ($critOn) { "$critRules ($(@(Get-ChildItem -LiteralPath $critRules -File -Filter *.yar).Count) files, from the rules package) -> queue $DataDir\critical\critical.json" } elseif ($NoCritical) { "off (-NoCritical)" } else { "off (the rules package has no critical rules yet)" }))
 if ($legacyRemoved.Count) { Write-Host "  old DocScan (Wazuh active-response) fully removed" }
 if ($wazuhDone) { Write-Host "  Wazuh:      the agent reads results\docscan-results.json (json); on the manager - deploy\manager\cleanup_manager.sh" }
 elseif ($NoWazuhConfig) { Write-Host "  Wazuh:      not configured (-NoWazuhConfig)" }

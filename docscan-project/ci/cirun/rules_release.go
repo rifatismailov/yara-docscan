@@ -1,9 +1,13 @@
 package main
 
-// cirun rules-release --dir <checkout yara-docscan-rules> [--repo owner/repo] [--bump patch|minor|major] [--dry-run]
+// cirun rules-release --dir <checkout yara-docscan-rules> [--critical <checkout docscan-critical>] [--repo owner/repo]
+//                     [--bump patch|minor|major] [--dry-run]
 //
-// Підписаний реліз правил для DocScanUpdater і ручного встановлення (deploy/rules.go). Коміт має бути чистим і
-// вже на GitHub (тег ставиться на нього). Ключ підпису — release.signing_key_ref конфігу (KeePassXC).
+// ОДИН інструмент для правил: перевірка (компіляція основних правил; критичні — імена, компіляція, тести на документах
+// tests/match і tests/no-match, deploy/critical.go) і підписаний пакет DocScan-rules.zip (основні + critical/) для
+// DocScanUpdater і ручного встановлення (deploy/rules.go). --dry-run — лише перевірка й пакет, без публікації.
+// Коміт правил має бути чистим і вже на GitHub (тег ставиться на нього); checkout критичних — чистим.
+// Ключ підпису — release.signing_key_ref конфігу (KeePassXC).
 
 import (
 	"flag"
@@ -21,6 +25,8 @@ func cmdRulesRelease(args []string) int {
 	fs := flag.NewFlagSet("rules-release", flag.ExitOnError)
 	cfgPath := fs.String("config", "docscan-project/ci/config.yaml", "configuration file (release.signing_key_ref)")
 	dir := fs.String("dir", "", "checkout of the rules repository")
+	critical := fs.String("critical", "", "checkout of the critical rules repository (critical/*.yar, tests/match, tests/no-match); empty - no critical rules in the package")
+	yara := fs.String("yara", "./yara", "DocScan's yara (with the docscan module) for the critical rules check")
 	repo := fs.String("repo", "rifatismailov/yara-docscan-rules", "GitHub repository of the rules")
 	bump := fs.String("bump", "patch", "release number part to increase: patch | minor | major")
 	yarac := fs.String("yarac", "./yarac", "DocScan's yarac (with the docscan module) for the compile check")
@@ -48,21 +54,51 @@ func cmdRulesRelease(args []string) int {
 	if out, err := exec.Command("gh", "api", "repos/"+*repo+"/commits/"+sha, "-q", ".sha").CombinedOutput(); err != nil || !strings.HasPrefix(string(out), sha) {
 		die("rules-release: commit %s is not on github.com/%s yet - push it first", sha[:8], *repo)
 	}
+	critSHA := ""
+	if *critical != "" {
+		cg := func(a ...string) (string, error) {
+			out, err := exec.Command("git", append([]string{"-C", *critical}, a...)...).CombinedOutput()
+			return strings.TrimSpace(string(out)), err
+		}
+		if st, err := cg("status", "--porcelain"); err != nil || st != "" {
+			die("rules-release: %s is not a clean git checkout (commit the critical rules first):\n%s", *critical, st)
+		}
+		if critSHA, err = cg("rev-parse", "HEAD"); err != nil {
+			die("rules-release: %v", err)
+		}
+		cr, err := deploy.CheckCritical(*critical, *yara, filepath.Join(*dir, "docscan-index.yar"), os.TempDir())
+		if cr != nil {
+			fmt.Printf("[RULES] critical %s: %d files (%s), tests: %d match / %d no-match\n", critSHA[:8], len(cr.Files), strings.Join(cr.Files, ", "), cr.Match, cr.NoMatch)
+			for _, m := range cr.Missed {
+				fmt.Printf("        NOT FOUND   %s\n", m)
+			}
+			for _, m := range cr.Unwanted {
+				fmt.Printf("        FALSE ALARM %s\n", m)
+			}
+		}
+		if err != nil {
+			die("rules-release: FAIL: %v", err)
+		}
+	}
 	tag, existing, err := deploy.ReleaseTag(*repo, sha, *bump)
 	if err != nil {
 		die("rules-release: %v", err)
 	}
-	if existing {
+	if existing && !*dry {
 		fmt.Printf("[RULES] commit %s is already released as %s\n", sha[:8], tag)
+		if *critical != "" {
+			fmt.Println("[RULES] a release is made per commit of the rules repository: to release changed critical rules, commit and push the rules repository first (e.g. a line in README.md)")
+		}
 		return 0
 	}
+	// dry run on an already released commit: check and pack anyway (with its tag; nothing is published)
 	seed, err := sec.Get(cfg.Release.SigningKeyRef)
 	if err != nil {
 		die("rules-release: signing key: %v", err)
 	}
 	out, _ := filepath.Abs(filepath.Join(cfg.OutDir, "rules-release-"+tag))
 	os.RemoveAll(out)
-	r, err := deploy.PrepareRules(*dir, *repo, tag, sha, *yarac, seed, out)
+	r, err := deploy.PrepareRules(*dir, *repo, tag, sha, *yarac, seed, out, *critical, critSHA)
 	if err != nil {
 		die("rules-release: %v", err)
 	}

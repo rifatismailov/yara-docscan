@@ -124,7 +124,7 @@ func parseConfig(args []string) (*Config, error) {
 	fs.StringVar(&c.MacroUpload, "MacroUpload", "", "also POST the macro code to this collector URL")
 	fs.IntVar(&c.MacroKeepDays, "MacroKeepDays", 90, "macro store retention, days")
 	fs.IntVar(&c.MacroMaxMB, "MacroMaxMB", 500, "macro store size limit, MB")
-	fs.StringVar(&c.CriticalRules, "CriticalRules", "", "critical-information rules (.yar, E5Search); empty = off")
+	fs.StringVar(&c.CriticalRules, "CriticalRules", "", "critical-information rules: a .yar or a folder of .yar (<InstallDir>\\rules\\critical: critical\\*.yar of the rules package); empty = off")
 	fs.StringVar(&c.Whitelist, "Whitelist", "", "white list of the organisation (whitelist.json): matching files are not scanned; re-read when it changes")
 	fs.StringVar(&c.Blacklist, "Blacklist", "", "black list of the organisation (blacklist.json): matching files -> HIGH, quarantine; re-read when it changes")
 	fs.StringVar(&c.CriticalOut, "CriticalOut", "", `E5Search queue (default <OutDir>\..\critical\critical.json)`)
@@ -209,4 +209,18 @@ func exists(p string) bool { _, err := os.Stat(p); return err == nil }
 func isFile(p string) bool {
 	st, err := os.Stat(p)
 	return err == nil && st.Mode().IsRegular()
+}
+
+// hasYar — p is a folder with at least one .yar (critical\*.yar of the rules package: <InstallDir>\rules\critical)
+func hasYar(p string) bool {
+	ents, err := os.ReadDir(p)
+	if err != nil {
+		return false
+	}
+	for _, e := range ents {
+		if !e.IsDir() && strings.EqualFold(filepath.Ext(e.Name()), ".yar") && !strings.HasPrefix(e.Name(), ".") {
+			return true
+		}
+	}
+	return false
 }

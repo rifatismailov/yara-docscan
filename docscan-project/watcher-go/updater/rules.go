@@ -3,6 +3,7 @@ package main
 // Правила окремо від програми (репозиторій yara-docscan-rules). Реліз правил vX.Y.Z:
 //
 //	DocScan-rules.zip         самі правила (docscan-index.yar, docscan-policy.yar, file-index.yar, general\, maldoc\, VERSION.txt)
+//	                          і critical\*.yar — правила критичної інформації (третій прохід; watcher -CriticalRules)
 //	rules-manifest.json/.sig  підписаний маніфест (продукт docscan-rules): розмір і sha256 пакета, sha256 кожного файлу
 //	DocScan-rules-bundle.zip  ті самі три файли одним архівом — для ручного встановлення (install.ps1 -Rules <файл>)
 //
@@ -173,6 +174,44 @@ func (u *Updater) compileRules(dir string) error {
 	b, err := cmd.CombinedOutput()
 	if err != nil || !exists(out) {
 		return fmt.Errorf("yarac64: %v %s", err, strings.TrimSpace(string(b)))
+	}
+	return u.compileCritical(filepath.Join(dir, "critical"))
+}
+
+// compileCritical — critical\*.yar пакета (якщо є) компілюються разом так, як їх компілює yara64 на скануванні
+// (--critical-rules=<тека>): основні правила — одне порожнє правило, файл — пробний.
+func (u *Updater) compileCritical(dir string) error {
+	ents, _ := os.ReadDir(dir)
+	n := 0
+	for _, e := range ents {
+		if !e.IsDir() && strings.EqualFold(filepath.Ext(e.Name()), ".yar") {
+			n++
+		}
+	}
+	if n == 0 {
+		return nil
+	}
+	yara := filepath.Join(u.installDir, "bin", "yara64.exe")
+	if !exists(yara) {
+		return fmt.Errorf("%s is missing (needed to check the critical rules)", yara)
+	}
+	tmp, err := os.MkdirTemp(u.work(), "critical-test-")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(tmp)
+	empty, probe := filepath.Join(tmp, "empty.yar"), filepath.Join(tmp, "probe.txt")
+	os.WriteFile(empty, []byte("rule docscan_critical_probe { condition: false }\n"), 0o644)
+	os.WriteFile(probe, []byte("probe\r\n"), 0o644)
+	b, _ := exec.Command(yara, "-w", "--critical-rules="+dir, "--critical-out="+filepath.Join(tmp, "q.json"), empty, probe).CombinedOutput()
+	var errs []string
+	for _, l := range strings.Split(string(b), "\n") {
+		if strings.Contains(strings.ToLower(l), "error") {
+			errs = append(errs, strings.TrimSpace(l))
+		}
+	}
+	if len(errs) > 0 {
+		return fmt.Errorf("critical rules: %s", strings.Join(errs, "; "))
 	}
 	return nil
 }

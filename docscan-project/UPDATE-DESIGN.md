@@ -66,6 +66,13 @@ DocScanUpdater (`component: lists`, `updater/lists.go`): `updater.json` → `"li
 `.prev`. Для правил — `rules.mirror.url` (окреме дзеркало правил; порожньо — те саме, що для програми). Схеми —
 [LISTS-FLOW.md](LISTS-FLOW.md).
 
+**Критичні правила (2026-11-22): у тому самому пакеті правил.** Окремого пакета, маніфесту, ключа й дзеркала для
+критичних правил немає (розділ 4.4 нижче не реалізовується): `DocScan-rules.zip` містить `critical/*.yar` (скільки
+завгодно файлів) з окремого репозиторію `docscan-critical` (приватний Forgejo: `critical/`, `tests/match`,
+`tests/no-match`). Збирає і перевіряє один інструмент — `cirun rules-release --critical <checkout>`; на ПК — як усі
+правила (`<InstallDir>\rules\critical`, перевірка компіляції критичних правил перед заміною, відкат), третій
+прохід — на всіх ПК, `-NoCritical` вимикає. Див. [CRITICAL-RULES.md](CRITICAL-RULES.md), розділ 6.
+
 **Етап 2 (2026-11-19): правил у проєкті програми більше немає** — `docscan-project/rules` прибрано з git (у
 `.gitignore`); CI бере підписаний реліз правил (`cirun/rulesrc`, вхід `rules` workflow) — у робочу теку і на стенди;
 пакет програми без правил, на новому ПК `-Rules` обов'язковий. Далі: CI репозиторію правил (корпуси, expected / clean)

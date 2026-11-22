@@ -439,7 +439,7 @@ CFB — «FAT-файлова система» всередині файлу: с�
 | `docscan_list_add`, `docscan_list_has`, `docscan_obj_add` | JSON-списки (`"a","b"`) і масив `{"rule","description"}` з екрануванням і обмеженням розміру. |
 | `docscan_json_puts`, `docscan_json_evidence`, `docscan_defang` | Друк рядків у JSON; `http` → `hxxp` у доказах. |
 | `docscan_state_reset`, `docscan_copy_string` | Скинути стан (звільнити копії); скопіювати рядок з поля модуля. |
-| `critical_setup()` | Після завантаження основних правил: перевіряє `--critical-out` і `--critical-chunk`, читає файл `--critical-rules` і компілює його окремим компілятором (`yr_compiler_add_string`). |
+| `critical_setup()` | Після завантаження основних правил: перевіряє `--critical-out` і `--critical-chunk`, компілює `--critical-rules` окремим компілятором (`yr_compiler_add_string`): один файл — простір імен за замовчуванням; тека — усі `*.yar` верхнього рівня за абеткою (`critical_list`), кожен у просторі імен = ім'я файлу без `.yar`; до 256 файлів і 64 МБ разом (`critical_read`); помилка — з іменем файлу. |
 | `critical_process(file_path)` | Третій прохід для одного файлу (після скану, **до** лікування): читає файл (≤ 100 МБ; у воркері — байти й дати з `docscan_worker_data` / `docscan_worker_times`, а рядок черги йде записом `C`) → `docscan_text_extract` → `docscan_text_normalize` → `yr_rules_scan_mem` з `critical_callback` → розмір фрагментів (meta правила → `--critical-chunk` → 700/120) → SHA-256, дати файлу, якщо в документі їх немає → `docscan_critical_json` → дописує рядок у чергу під `output_mutex` і друкує `docscan-critical: queued …`. Текст документа ніде не друкується. |
 | `critical_callback` | Збирає назви правил, що спрацювали, і `e5_chunk_size` / `e5_chunk_overlap` з першого правила, де вони є. |
 | `critical_print`, `iso_utc`, `filetime_utc`, `fopen_utf8` | Друк вузьким рядком (на Windows консоль у широкому режимі — тимчасово `_O_TEXT`); дати ISO UTC; відкриття файлу за UTF-8 шляхом (`_wfopen`). |
@@ -497,8 +497,10 @@ PowerShell 5.1. Файл **лише ASCII** (усі повідомлення й 
 білий / чорний списки: `-Whitelist`, `-Blacklist` (`lists.go`: перечитування при зміні, зламаний файл — лишається
 попередній; `applyLists` до сканування: чорний sha256 → білий → чорний path / lnk_target; ціль ярлика — скан без
 лікування, `evidence.lnk_target`; формат і зіставлення — пакет `watcher-go/orglists`, спільний з updater; у записі — `list`);
-збереження макросів: `-MacroDir`, `-MacroUpload`, `-MacroKeepDays`, `-MacroMaxMB`; третій прохід: `-CriticalRules`,
-`-CriticalOut`, `-CriticalExt` (`.odt .ods .odp .txt .csv` — лише коли третій прохід увімкнений).
+збереження макросів: `-MacroDir`, `-MacroUpload`, `-MacroKeepDays`, `-MacroMaxMB`; третій прохід: `-CriticalRules`
+(файл `.yar` або тека — `<InstallDir>\rules\critical`, `critical\*.yar` пакета правил; `hasYar`; на старті перевіряється
+компіляція, помилка — `[ERROR]`, тож DocScanUpdater відкочує новий пакет правил), `-CriticalOut`, `-CriticalExt`
+(`.odt .ods .odp .txt .csv` — лише коли третій прохід увімкнений).
 
 **Стан у пам'яті:** `$pending` (події, що чекають), `$recent` (SHA256 останнього скану), `$LastScan` (час скану),
 `$LastKey` (останній запис у Wazuh), `$Retry` (+ `retry.json`), `$rescanAt/$rescanFrom` (після переповнення),
@@ -540,7 +542,7 @@ E5Search за цей запуск — повторний скан того са�
 | `Remove-LegacyArBlocks(c)` | Прибирає блоки старого active-response (`doc-scan`, `yara-scan`). |
 | `Read-Text` / `Write-Text` | Читання/запис UTF-8 без BOM (`ossec.conf`). |
 | `Step` / `Fail` | Вивід кроку / помилка з виходом. |
-| `install.ps1` (нові параметри) | `-DetectOnly` (пілот), `-NoAvExclusion`, `-MacroUpload <url>`, `-CriticalRules <файл>` (правила E5Search → `critical\`, перевірка компіляції з `--file-vars`), `-NoCritical`. |
+| `install.ps1` (нові параметри) | `-DetectOnly` (пілот), `-NoAvExclusion`, `-MacroUpload <url>`, `-NoCritical` (без третього проходу; інакше watcher отримує `-CriticalRules <InstallDir>\rules\critical` — правила йдуть у пакеті правил; стара тека `<InstallDir>\critical\` видаляється). |
 | `DocScan-Install.ps1` | Єдиний скрипт для ПК: качає `DocScan-windows-x64.zip` + `.sha256` з релізу GitHub (`releases/latest/download` або `docscan-<Version>`), звіряє SHA256, запускає `install.ps1` з пакета; `-Critical <файл / UNC / URL>` — правила E5Search (не в релізі). Реліз робить `cirun --release` (`ci/cirun/deploy/release.go`). |
 | `uninstall.ps1` | Видалення (`-Purge` — разом з результатами й карантином), прибирає `<localfile>`. |
 | `manager/cleanup_manager.sh`, `manager/local_rules.docscan.xml` | Для менеджера Wazuh: прибрати старі `<command>`/`<active-response>`; еталонний блок правил. |
@@ -582,6 +584,7 @@ E5Search за цей запуск — повторний скан того са�
 |---|---|
 | `ci/cirun/` (Go) | Коміт з перевіркою для публічного репозиторію (`gitops/git.go`, винятки — `skipChecks`), платформи `unix.go` / `windows.go`, хвилі, підсумок, push. |
 | `ci/build-test-unix.sh` | Збірка й тести на macOS / Linux: documents, critical, hostile, corpus, malware, fuzz. |
+| `ci/cirun/rules_release.go`, `deploy/rules.go`, `deploy/critical.go` | Один інструмент для правил: `cirun rules-release --dir <yara-docscan-rules> [--critical <docscan-critical>] [--dry-run]` — компіляція основних правил (yarac), критичні (`CheckCritical`: імена `critical/*.yar`, компіляція разом через `yara --critical-rules`, прогін `tests/match` і `tests/no-match` одним `yara -r`, шляхи — з черги), пакет `DocScan-rules.zip` з `critical/`, підпис, реліз. Updater ставить пакет як завжди; `compileRules` перевіряє ще й `critical\` (`compileCritical`, yara64). |
 | `watcher-go/orglists`, `watcher-go/updater/lists.go`, `listsign.go`, `listscli.go` | Списки організації: формат, `Decide`; DocScanUpdater — `lists.url` / `lists.public_keys` (підпис ключем організації, `serial` новіший, бекап `.prev`, запис `component: lists`); `docscan-updater -CheckList / -NewListKey / -SignList`. Тести — `go test ./...`, на стенді — `install_smoke.ps1`. |
 | `ci/check_verdicts.py` / `.ps1`, `ci/expected-verdicts.tsv` | Документи: вердикт, лікування, повторний скан, оригінали — проти еталона 42 зразків (`--write` — свідома зміна еталона). |
 | `ci/check_corpus.py` | Корпуси й шкідливе ПЗ: вердикти в TSV для звірки Мак ↔ Windows; `expected.txt` — обов'язкові виявлення. |
@@ -659,7 +662,7 @@ rule DS_XLM_MACROSHEET
 1. Перевірити ліцензію (без ліцензії в публічний репозиторій не беремо).
 2. `git clone` у `docscan-project/vendor-sources/<ім'я>`, записати коміт у `SOURCES`, ліцензію — у список у `build()`.
 3. Рядки в `vendor-selection.txt`: `<тека> <джерело> <шлях>` (`maldoc/<ім'я>` для документних, `general/<ім'я>` для решти).
-4. У репозиторії правил (yara-docscan-rules): `python3 tools/build_vendor_rules.py`, переглянути `vendor-report.md`; потім `cirun rules-release`.
+4. У репозиторії правил (yara-docscan-rules): `python3 tools/build_vendor_rules.py`, переглянути `vendor-report.md`; потім `cirun rules-release --critical <docscan-critical>` (з `--dry-run` — лише перевірка).
 5. Перевірка на хибні: легітимні документи + `fp_scan.ps1` на чистій Windows; шумні → `DROP` з причиною.
 
 ### 11.5 Нове поле в JSON

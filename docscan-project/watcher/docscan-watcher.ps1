@@ -41,7 +41,7 @@ param(
   [string]$MacroUpload = "",       # also upload it: POST to this collector URL (e.g. http://<server>:8080)
   [int]$MacroKeepDays  = 90,       # local retention of the macro store: older files are deleted ...
   [int]$MacroMaxMB     = 500,      # ... and the oldest go first when the store is bigger than this
-  [string]$CriticalRules = "",     # critical-information rules (.yar, from E5Search); empty = off
+  [string]$CriticalRules = "",     # critical-information rules: a .yar or a folder of .yar; empty = off
   [string]$CriticalOut = "",       # queue for E5Search (JSON Lines; default <OutDir>\..\critical\critical.json)
   # watched only with the critical check on: text formats the docscan module has nothing to say about
   [string[]]$CriticalExt = @(".odt", ".ods", ".odp", ".txt", ".csv"),

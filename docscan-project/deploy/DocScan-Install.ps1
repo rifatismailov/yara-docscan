@@ -6,17 +6,13 @@
 #   irm https://github.com/rifatismailov/yara-docscan/releases/latest/download/DocScan-Install.ps1 -OutFile $f
 #   powershell -ExecutionPolicy Bypass -File $f                                  # standard PC
 #   powershell -ExecutionPolicy Bypass -File $f -DetectOnly                      # pilot: detection and alerts only
-#   powershell -ExecutionPolicy Bypass -File $f -Critical C:\path\critical-rules.yar     # + critical-information
-#   powershell -ExecutionPolicy Bypass -File $f -Critical https://.../critical-rules.yar #   check (E5Search)
 #
 # What it does:
 #   1) downloads DocScan-windows-x64.zip and its .sha256 from the GitHub release (the latest one, or
 #      the one tagged -Version, e.g. v1.0.0) and checks the SHA256 (stops on mismatch);
 #   2) the package holds everything: bin\ (yara64.exe, yarac64.exe, VC++ runtime), rules\, watcher\,
 #      install.ps1, uninstall.ps1; it is unpacked into a temp folder;
-#   3) -Critical: the E5Search rules are NOT in the release (sensitive) - they come from the given local
-#      file / UNC path or URL (a private URL: -CriticalToken or $env:DOCSCAN_CRITICAL_TOKEN);
-#   4) runs install.ps1 from the package (it checks every file against SHA256SUMS.txt, installs to
+#   3) runs install.ps1 from the package (it checks every file against SHA256SUMS.txt, installs to
 #      C:\Program Files\DocScan, registers the Windows service "DocScan Watcher") and removes the temp files.
 # Update: the same command; a new release on GitHub = a new version for every PC that runs it.
 
@@ -24,9 +20,8 @@ param(
   [string]  $Version = "",          # e.g. v1.0.0 (or an old release 20261116-7b6f6764); empty - the latest release
   [string]  $Repo = "rifatismailov/yara-docscan",   # GitHub owner/repo with the releases
   [switch]  $DetectOnly,            # -> install.ps1 -DetectOnly (no disarm, alerts only)
-  [string]  $Critical = "",         # critical-rules.yar: local / UNC path or http(s) URL -> install.ps1 -CriticalRules
-  [string]  $CriticalToken = "",    # bearer token for a private -Critical URL (or $env:DOCSCAN_CRITICAL_TOKEN)
-  [switch]  $NoCritical,            # -> install.ps1 -NoCritical (turn the check off, remove the rules)
+  [switch]  $NoCritical,            # -> install.ps1 -NoCritical (no critical-information check on this PC; the critical
+                                    #    rules come with the rules package)
   [string]  $Whitelist = "",        # whitelist.json: local / UNC path or http(s) URL -> install.ps1 -Whitelist
   [string]  $Blacklist = "",        # blacklist.json: local / UNC path or http(s) URL -> install.ps1 -Blacklist
   [string]  $ListsToken = "",       # token for private -Whitelist / -Blacklist URLs and a closed -ListsUrl mirror (or $env:DOCSCAN_LISTS_TOKEN)
@@ -64,7 +59,6 @@ if ($Repo -notmatch '^[\w.-]+/[\w.-]+$') { Fail "-Repo must be owner/repo" }
 if ($Version -and $Version -notmatch '^(v\d+\.\d+\.\d+|\d{8}-[0-9a-f]+)$') { Fail "-Version must look like v1.0.0 (or 20261116-7b6f6764 for an old release)" }
 # release tags: vX.Y.Z; the releases before v1.0.0 were tagged docscan-<date>-<commit>
 $tag = if ($Version -match '^v') { $Version } else { "docscan-$Version" }
-if ($Critical -and $NoCritical) { Fail "-Critical and -NoCritical together" }
 if ($Whitelist -and $NoWhitelist) { Fail "-Whitelist and -NoWhitelist together" }
 if ($Blacklist -and $NoBlacklist) { Fail "-Blacklist and -NoBlacklist together" }
 
@@ -119,22 +113,6 @@ try {
   if ($ListsEveryHours -gt 0) { $p.ListsEveryHours = $ListsEveryHours }
   if ($ListsUrl -and ($ListsToken -or $env:DOCSCAN_LISTS_TOKEN)) { $p.ListsToken = $(if ($ListsToken) { $ListsToken } else { $env:DOCSCAN_LISTS_TOKEN }) }   # closed mirror
   if ($Rules)             { $p.Rules = $Rules }
-  # without -Critical / -NoCritical the rules a PC already has stay as they are
-  if ($Critical) {
-    $crit = Join-Path $work "critical-rules.yar"
-    if ($Critical -match '^https?://') {
-      $tok = if ($CriticalToken) { $CriticalToken } else { $env:DOCSCAN_CRITICAL_TOKEN }
-      $h = @{}
-      if ($tok) { $h.Authorization = "Bearer $tok" }
-      try { Invoke-WebRequest -UseBasicParsing $Critical -Headers $h -OutFile $crit }
-      catch { Fail "-Critical: could not download $Critical - $($_.Exception.Message)" }
-    } else {
-      if (-not (Test-Path -LiteralPath $Critical -PathType Leaf)) { Fail "-Critical: file not found: $Critical" }
-      Copy-Item -LiteralPath $Critical $crit
-    }
-    if ((Get-Item $crit).Length -eq 0) { Fail "-Critical: the rules file is empty" }
-    $p.CriticalRules = $crit
-  }
 
   # white / black lists: without -Whitelist / -Blacklist the lists a PC already has stay (install.ps1 checks the format)
   foreach ($l in @(@{ Src = $Whitelist; Key = "Whitelist"; File = "whitelist.json" }, @{ Src = $Blacklist; Key = "Blacklist"; File = "blacklist.json" })) {

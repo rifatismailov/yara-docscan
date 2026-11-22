@@ -79,6 +79,16 @@ if (-not (Test-Path $uc)) { Fail "no $uc" } else { "updater.json: mode " + (Get-
 $ij = "$env:ProgramData\DocScan\install.json"
 if (-not (Test-Path $ij)) { Fail "no $ij" } else { $j = Get-Content $ij -Raw | ConvertFrom-Json; "install.json: " + $j.installed + ", DetectOnly " + $j.params.DetectOnly + ", WatchPath " + ($j.params.WatchPath -join ";") }
 Start-Sleep 3
+# critical rules come with the rules package (rules\critical\*.yar): when the package has them, the watcher runs the check
+$critN = @(Get-ChildItem "$env:ProgramW6432\DocScan\rules\critical\*.yar" -EA SilentlyContinue).Count
+$wl0 = "$env:ProgramData\DocScan\results\watcher.log"
+$critLine = ""
+for ($t = 0; $t -lt 90 -and -not $critLine; $t += 3) {   # the line comes after the rules are compiled at start
+  if (Test-Path $wl0) { $critLine = [string](Get-Content $wl0 -Encoding UTF8 | Select-String "critical: (rules|off)" | Select -Last 1) }
+  if (-not $critLine) { Start-Sleep 3 }
+}
+if ($critN -and $critLine -notmatch 'critical: rules') { Fail "the rules package has $critN critical .yar, but the watcher says: $critLine" }
+else { "critical: $critN file(s) in the rules package - $($critLine -replace '^.*?(critical: )', '$1')" }
 $ul = "$env:ProgramData\DocScan\results\updater.log"
 if (Test-Path $ul) { "updater.log: " + (Get-Content $ul -Tail 1) } else { Fail "no $ul - the updater did not start" }
 

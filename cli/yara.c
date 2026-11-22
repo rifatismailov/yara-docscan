@@ -315,9 +315,10 @@ args_option_t options[] = {
         0,
         _T("critical-rules"),
         &critical_rules_arg,
-        _T("critical-information rules (.yar), matched against the document")
-        _T(" text; a match appends the text as JSON to --critical-out"),
-        _T("FILE")),
+        _T("critical-information rules: a .yar file or a folder of .yar files,")
+        _T(" matched against the document text; a match appends the text as")
+        _T(" JSON to --critical-out"),
+        _T("FILE|DIR")),
 
     OPT_STRING(
         0,
@@ -2256,6 +2257,129 @@ static void critical_process(const char_t* file_path)
   free(json);
 }
 
+// --critical-rules: one .yar file, or a folder whose *.yar files (top level, sorted by name) are compiled
+// together - each file in its own namespace (its name without .yar), so two organisations' files may use the
+// same rule names. Other files in the folder (VERSION.txt, critical-manifest.json, ...) are ignored.
+#define CRITICAL_MAX_FILES 256
+#define CRITICAL_MAX_BYTES (64u * 1024 * 1024)
+
+static FILE* critical_fopen(const char* path)
+{
+#if defined(_WIN32)
+  return fopen_utf8(path, L"rb");
+#else
+  return fopen(path, "rb");
+#endif
+}
+
+// whole file -> NUL-terminated buffer (caller frees); NULL - cannot read / too large (*total over the limit)
+static char* critical_read(const char* path, size_t* total)
+{
+  FILE* fh = critical_fopen(path);
+  if (fh == NULL)
+    return NULL;
+  char* src = NULL;
+  size_t n = 0, cap = 0;
+  for (;;)
+  {
+    if (n + 4096 + 1 > cap)
+    {
+      cap = cap ? cap * 2 : 65536;
+      char* ns = (char*) realloc(src, cap);
+      if (ns == NULL || *total + cap > 2 * (size_t) CRITICAL_MAX_BYTES)
+      {
+        free(ns ? ns : src);
+        fclose(fh);
+        return NULL;
+      }
+      src = ns;
+    }
+    size_t r = fread(src + n, 1, 4096, fh);
+    n += r;
+    if (r < 4096)
+      break;
+  }
+  fclose(fh);
+  src[n] = '\0';
+  *total += n;
+  if (*total > CRITICAL_MAX_BYTES)
+  {
+    free(src);
+    return NULL;
+  }
+  return src;
+}
+
+static int critical_is_yar(const char* name)
+{
+  size_t l = strlen(name);
+  return l > 4 && name[0] != '.' && (strcmp(name + l - 4, ".yar") == 0 || strcmp(name + l - 4, ".YAR") == 0);
+}
+
+static int critical_cmp(const void* a, const void* b)
+{
+  return strcmp(*(const char* const*) a, *(const char* const*) b);
+}
+
+// folder -> sorted file names (UTF-8) of its *.yar; -1 - not a folder
+static int critical_list(const char* dir, char** names, int max)
+{
+  int n = 0;
+#if defined(_WIN32)
+  wchar_t w[4096 + 4];
+  if (MultiByteToWideChar(CP_UTF8, 0, dir, -1, w, 4096) == 0)
+    return -1;
+  DWORD at = GetFileAttributesW(w);
+  if (at == INVALID_FILE_ATTRIBUTES || !(at & FILE_ATTRIBUTE_DIRECTORY))
+    return -1;
+  wcscat(w, L"\\*");
+  WIN32_FIND_DATAW fd;
+  HANDLE h = FindFirstFileW(w, &fd);
+  if (h == INVALID_HANDLE_VALUE)
+    return 0;
+  do
+  {
+    if (fd.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT))
+      continue;
+    char u[1024];
+    if (WideCharToMultiByte(CP_UTF8, 0, fd.cFileName, -1, u, sizeof(u), NULL, NULL) == 0 ||
+        !critical_is_yar(u))
+      continue;
+    if (n < max)
+      names[n] = strdup(u);
+    n++;
+  } while (FindNextFileW(h, &fd));
+  FindClose(h);
+#else
+  struct stat st;
+  if (stat(dir, &st) != 0 || !S_ISDIR(st.st_mode))
+    return -1;
+  DIR* dp = opendir(dir);
+  if (dp == NULL)
+    return 0;
+  struct dirent* de;
+  char full[4096 + 1024];
+  while ((de = readdir(dp)) != NULL)
+  {
+    snprintf(full, sizeof(full), "%s/%s", dir, de->d_name);
+    if (!critical_is_yar(de->d_name) || lstat(full, &st) != 0 || !S_ISREG(st.st_mode))
+      continue;
+    if (n < max)
+      names[n] = strdup(de->d_name);
+    n++;
+  }
+  closedir(dp);
+#endif
+  if (n > max)
+  {
+    for (int i = 0; i < max; i++)
+      free(names[i]);
+    return -2;
+  }
+  qsort(names, n, sizeof(char*), critical_cmp);
+  return n;
+}
+
 // Compile --critical-rules (a separate rule set: it scans text, not files).
 static int critical_setup(void)
 {
@@ -2279,52 +2403,74 @@ static int critical_setup(void)
     critical_chunk_size = a;
     critical_chunk_overlap = b;
   }
-#if defined(_WIN32)
-  FILE* fh = fopen_utf8(critical_rules_utf8, L"rb");
-#else
-  FILE* fh = fopen(critical_rules_utf8, "rb");
-#endif
-  if (fh == NULL)
+
+  char* names[CRITICAL_MAX_FILES];
+  int nf = critical_list(critical_rules_utf8, names, CRITICAL_MAX_FILES);
+  if (nf == -2)
   {
-    fprintf(stderr, "error: could not open --critical-rules file\n");
+    fprintf(stderr, "error: --critical-rules folder has more than %d .yar files\n", CRITICAL_MAX_FILES);
     return 0;
   }
-  char* src = NULL;
-  size_t n = 0, cap = 0;
-  for (;;)
+  if (nf == 0)
   {
-    if (n + 4096 + 1 > cap)
-    {
-      cap = cap ? cap * 2 : 65536;
-      char* ns = (char*) realloc(src, cap);
-      if (ns == NULL || cap > 64u * 1024 * 1024)
-      {
-        free(ns ? ns : src);
-        fclose(fh);
-        return 0;
-      }
-      src = ns;
-    }
-    size_t r = fread(src + n, 1, 4096, fh);
-    n += r;
-    if (r < 4096)
-      break;
+    fprintf(stderr, "error: --critical-rules folder has no .yar files\n");
+    return 0;
   }
-  fclose(fh);
-  src[n] = '\0';
 
   YR_COMPILER* c = NULL;
   int ok = 0;
+  size_t total = 0;
   if (yr_compiler_create(&c) == ERROR_SUCCESS)
   {
     COMPILER_RESULTS cr = {0, 0};
     yr_compiler_set_callback(c, print_compiler_error, &cr);
-    if (yr_compiler_add_string(c, src, NULL) == 0 && cr.errors == 0 &&
-        yr_compiler_get_rules(c, &critical_rules) == ERROR_SUCCESS)
-      ok = 1;
+    ok = 1;
+    if (nf < 0)  // one file (the default namespace, as before)
+    {
+      char* src = critical_read(critical_rules_utf8, &total);
+      if (src == NULL)
+      {
+        fprintf(stderr, "error: could not open --critical-rules file\n");
+        ok = 0;
+      }
+      else
+      {
+        if (yr_compiler_add_string(c, src, NULL) != 0 || cr.errors != 0)
+          ok = 0;
+        free(src);
+      }
+    }
+    else
+    {
+      for (int i = 0; i < nf && ok; i++)
+      {
+        char path[4096 + 1024];
+        char ns[1024];
+        snprintf(path, sizeof(path), "%s/%s", critical_rules_utf8, names[i]);
+        snprintf(ns, sizeof(ns), "%.*s", (int) (strlen(names[i]) - 4), names[i]);
+        char* src = critical_read(path, &total);
+        if (src == NULL)
+        {
+          fprintf(stderr, "error: could not read --critical-rules file %s (or the folder is over %u MB)\n",
+                  names[i], CRITICAL_MAX_BYTES >> 20);
+          ok = 0;
+          break;
+        }
+        int before = cr.errors;
+        if (yr_compiler_add_string(c, src, ns) != 0 || cr.errors != before)
+        {
+          fprintf(stderr, "error: in --critical-rules file %s\n", names[i]);
+          ok = 0;
+        }
+        free(src);
+      }
+    }
+    if (ok && yr_compiler_get_rules(c, &critical_rules) != ERROR_SUCCESS)
+      ok = 0;
     yr_compiler_destroy(c);
   }
-  free(src);
+  for (int i = 0; i < nf; i++)
+    free(names[i]);
   if (!ok)
     fprintf(stderr, "error: --critical-rules do not compile\n");
   return ok;

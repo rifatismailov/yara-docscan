@@ -3,7 +3,7 @@
 
 DocScan стежить за новими файлами, перевіряє документи (макроси, DDE, віддалені шаблони, вкладені об'єкти…)
 і vendor-правилами, лікує заражені документи, зберігає код макросів і пише результат для агента Wazuh.
-На вибраних ПК (юрист, бухгалтер, кадровик) — ще й ставить документи з критичною інформацією в чергу E5Search.
+Документи з критичною інформацією (правила critical\ пакета правил) ставить у чергу E5Search.
 
 1. З релізу GitHub (PowerShell від адміністратора)
 --------------------------------------------------
@@ -12,8 +12,6 @@ DocScan стежить за новими файлами, перевіряє до
      irm https://github.com/rifatismailov/yara-docscan/releases/latest/download/DocScan-Install.ps1 -OutFile $f
      powershell -ExecutionPolicy Bypass -File $f                          # звичайний ПК (детект + лікування)
      powershell -ExecutionPolicy Bypass -File $f -DetectOnly              # пілот: лише детект і алерти
-     powershell -ExecutionPolicy Bypass -File $f -Critical <файл|URL>     # ПК юриста / бухгалтера / кадровика
-                                                                          # (+ третій прохід, черга E5Search)
    Ті самі команди й оновлюють: береться останній реліз (конкретний - -Version 20261116-7b6f6764).
    Успіх - рядок "Done." у кінці.
 
@@ -21,8 +19,9 @@ DocScan стежить за новими файлами, перевіряє до
      DocScan-windows-x64.zip + .sha256   пакет: bin\ (yara64.exe, yarac64.exe, рантайм VC++), rules\, watcher\,
                                          install.ps1, uninstall.ps1, SHA256SUMS.txt, VERSION.txt
      DocScan-Install.ps1                 качає пакет, звіряє SHA256, запускає install.ps1 з пакета
-   Правила E5Search (critical-rules.yar) у реліз НЕ входять (чутливі): -Critical бере їх з локального файлу,
-   UNC-шляху або URL (приватний URL - -CriticalToken або змінна DOCSCAN_CRITICAL_TOKEN).
+   Правила критичної інформації (третій прохід, черга E5Search) - у тому самому пакеті правил DocScan-rules.zip,
+   тека critical\ (скільки завгодно .yar): ставляться й оновлюються разом з правилами на ВСІХ ПК; -NoCritical
+   вимикає третій прохід на ПК. Як писати й випускати - docscan-project/CRITICAL-RULES.md.
    ПК потрібен доступ до github.com і objects.githubusercontent.com (TLS 1.2).
    Білий / чорний списки організації: -Whitelist / -Blacklist <файл | UNC | URL> (приватний URL - -ListsToken або
    DOCSCAN_LISTS_TOKEN), -NoWhitelist / -NoBlacklist; щоденно з дзеркала - -ListsUrl + -ListsKey. Див. нижче.
@@ -40,8 +39,8 @@ DocScan стежить за новими файлами, перевіряє до
      -DetectOnly                         пілот: файли НЕ змінюються й не переносяться в карантин
                                          (увімкнути лікування — запустити install.ps1 ще раз без -DetectOnly)
      -MacroUpload http://<сервер>:8080   копії коду макросів на сервер (POST)
-     -CriticalRules <файл.yar>           третій прохід: правила E5Search -> C:\Program Files\DocScan\critical\
-     -NoCritical                         вимкнути третій прохід і видалити його правила
+     -NoCritical                         вимкнути третій прохід на цьому ПК (критичні правила - у пакеті правил,
+                                         rules\critical\; без цього ключа третій прохід працює на всіх ПК)
      -Whitelist / -Blacklist <файл.json> білий / чорний списки -> C:\ProgramData\DocScan\lists\ (див. нижче)
      -NoWhitelist / -NoBlacklist         прибрати список
      -ListsUrl <https://...|\\сервер\шара>  дзеркало організації з підписаними списками (щодня); -ListsToken - для закритого;
@@ -60,7 +59,6 @@ DocScan стежить за новими файлами, перевіряє до
      -UpdateMarker <файл>                mode marker: файл, який пише агент (за замовчуванням ...\update\update.json)
      -UpdateEveryHours 6                 github / mirror: як часто перевіряти
      -UpdateWindow 22:00-06:00           ставити оновлення лише в цей час
-   Без -CriticalRules уже встановлені правила E5Search лишаються (звичайне оновлення їх не прибирає).
 
    Білий і чорний списки (C:\ProgramData\DocScan\lists\whitelist.json, blacklist.json). Організація веде їх сама.
    Watcher звіряє з ними кожен новий файл ДО сканування:
@@ -149,7 +147,7 @@ DocScan стежить за новими файлами, перевіряє до
 
 5. Після встановлення
 ---------------------
-   програма:    C:\Program Files\DocScan  (bin\yara64.exe, rules\, watcher\, critical\ — лише з третім проходом)
+   програма:    C:\Program Files\DocScan  (bin\yara64.exe, rules\ — з rules\critical\*.yar для третього проходу, watcher\)
    результати:  C:\ProgramData\DocScan\results\docscan-results.json   (JSON, рядок на файл — для Wazuh)
                 C:\ProgramData\DocScan\results\watcher.log          (лог для людини)
    карантин:    C:\ProgramData\DocScan\quarantine                   (оригінали вилікуваних / видалених файлів)

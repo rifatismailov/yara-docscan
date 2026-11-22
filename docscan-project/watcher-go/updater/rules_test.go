@@ -188,3 +188,30 @@ func TestInstallRulesFile(t *testing.T) {
 		t.Fatalf("installed changed to %q", e.u.installedRules())
 	}
 }
+
+// critical\*.yar of a rules package: compiled together by yara64 (here: the yara built in the repository root)
+func TestCompileCritical(t *testing.T) {
+	yara, _ := filepath.Abs("../../../yara")
+	if st, err := os.Stat(yara); err != nil || !st.Mode().IsRegular() {
+		t.Skip("no ./yara in the repository root")
+	}
+	e, _ := newEnv(t, "https://unused.invalid/", "v1.0.0")
+	os.MkdirAll(filepath.Join(e.u.installDir, "bin"), 0o755)
+	if err := os.Symlink(yara, filepath.Join(e.u.installDir, "bin", "yara64.exe")); err != nil {
+		t.Skip(err)
+	}
+	os.MkdirAll(e.u.work(), 0o755)
+	dir := t.TempDir()
+	if err := e.u.compileCritical(filepath.Join(dir, "none")); err != nil {
+		t.Fatalf("no critical folder: %v", err)
+	}
+	os.WriteFile(filepath.Join(dir, "zsu.yar"), []byte(`rule a { strings: $x = "abc" condition: $x }`), 0o644)
+	os.WriteFile(filepath.Join(dir, "bank.yar"), []byte(`rule a { condition: false }`), 0o644) // same name, another file: own namespace
+	if err := e.u.compileCritical(dir); err != nil {
+		t.Fatalf("good set: %v", err)
+	}
+	os.WriteFile(filepath.Join(dir, "keys.yar"), []byte(`rule k { condition: nonsense }`), 0o644)
+	if err := e.u.compileCritical(dir); err == nil || !strings.Contains(err.Error(), "keys.yar") {
+		t.Fatalf("broken file: %v", err)
+	}
+}

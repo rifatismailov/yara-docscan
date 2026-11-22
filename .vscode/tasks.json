@@ -7,6 +7,22 @@
   "version": "2.0.0",
   "tasks": [
     {
+      // rules (detection + critical) - ONE tool: checks everything and builds DocScan-rules.zip with critical/;
+      // checkouts: ~/yara-docscan-rules (detection rules) and ~/docscan-critical (critical rules + tests)
+      "label": "Rules: check (all rule tests + package, nothing published)",
+      "type": "shell",
+      "command": "go run -C docscan-project/ci/cirun . rules-release --dir ${userHome}/yara-docscan-rules --critical ${userHome}/docscan-critical --yara ${workspaceFolder}/yara --yarac ${workspaceFolder}/yarac --config ${workspaceFolder}/docscan-project/ci/config.yaml --dry-run",
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true },
+      "problemMatcher": []
+    },
+    {
+      "label": "Rules: release (checks again, then the signed DocScan-rules.zip release)",
+      "type": "shell",
+      "command": "go run -C docscan-project/ci/cirun . rules-release --dir ${userHome}/yara-docscan-rules --critical ${userHome}/docscan-critical --yara ${workspaceFolder}/yara --yarac ${workspaceFolder}/yarac --config ${workspaceFolder}/docscan-project/ci/config.yaml",
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true },
+      "problemMatcher": []
+    },
+    {
       "label": "DocScan CI",
       "type": "shell",
       "command": "go run -C docscan-project/ci/cirun .",

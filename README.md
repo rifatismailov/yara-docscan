@@ -15,8 +15,8 @@ reports the attack vector, the evidence and a verdict. One `yara64.exe` run per 
 1. **Pass 1 — detection.** The module parses the document and exposes facts; the policy rules decide.
 2. **Pass 2 — vendor rules over what was unpacked:** the decompressed VBA code and the embedded parts
    (`.rels`, OLE objects and package payloads, ActiveX, macro sheets, altChunk, RTF objects).
-3. **Pass 3 — critical information** (optional, selected PCs): if the document **text** contains phrases
-   from the E5Search rules, the full text is split into fragments and queued as JSON for the E5Search
+3. **Pass 3 — critical information** (every PC; `-NoCritical` turns it off): if the document **text** matches
+   the critical rules (`critical/*.yar` of the rules package), the full text is split into fragments and queued as JSON for the E5Search
    service. YARA gives no verdict here.
 4. **Disarm** the document in place (backup first), then one JSON line per file for a SIEM.
 
@@ -74,7 +74,7 @@ write our own signatures.
 | `--docscan-backup-dir=DIR` | Backups and quarantined files go to `DIR` (otherwise `<file>.docscan-bak`) |
 | `--docscan-extract=FILE` | Writes the decompressed VBA to `FILE` (the watcher keeps it as the macro store) |
 | `--file-vars` | THOR/LOKI external variables (`filename`, `filepath`, `extension`, `filetype`, `owner`) per file; implied by `--docscan-json` |
-| `--critical-rules=FILE` `--critical-out=FILE` `[--critical-chunk=700,120]` | Pass 3: match `FILE` rules against the document text; on a match append one JSON line (fragments + metadata) to the queue file |
+| `--critical-rules=FILE\|DIR` `--critical-out=FILE` `[--critical-chunk=700,120]` | Pass 3: match the rules (one `.yar`, or every `*.yar` of a folder compiled together, each file in its own namespace) against the document text; on a match append one JSON line (fragments + metadata) to the queue file |
 | `--docscan-confine-check` | Windows: test the sandbox (the worker must not be able to write, read private files or start a process); `RESULT: CONFINED` |
 | `--docscan-no-sandbox` | Windows, diagnostics: parse in-process (job object and removed privileges only) |
 
@@ -109,9 +109,14 @@ $r = "$env:TEMP\DocScan-rules-bundle.zip"
 irm https://github.com/rifatismailov/yara-docscan-rules/releases/latest/download/DocScan-rules-bundle.zip -OutFile $r
 powershell -ExecutionPolicy Bypass -File $f -Rules $r                       # normal PC
 powershell -ExecutionPolicy Bypass -File $f -Rules $r -DetectOnly           # pilot: detection and alerts only
-powershell -ExecutionPolicy Bypass -File $f -Rules $r -Critical <file or URL>   # + pass 3 (critical-information rules, not in the release)
 powershell -ExecutionPolicy Bypass -File $f -Rules $r -Whitelist <file> -Blacklist <file>   # + the organisation's lists
 ```
+
+Critical-information rules (pass 3) are written by each organisation for itself: how to decide what is critical and
+how to write the rules - [CRITICAL-RULES.md](docscan-project/CRITICAL-RULES.md) (Ukrainian). They travel in the same rules
+package as the detection rules: `critical/*.yar` of `DocScan-rules.zip` (any number of files), built and tested by one
+tool - `cirun rules-release --dir <rules> --critical <critical rules repository>` - and installed on every PC by
+DocScanUpdater (`-NoCritical` turns pass 3 off on a PC).
 
 The installer verifies the package and the signed rules, adds Defender exclusions, configures the Wazuh agent and
 registers the Windows services "DocScan Watcher" (`DocScanWatcher`: watches files, runs yara64) and `DocScanUpdater`

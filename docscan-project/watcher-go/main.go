@@ -154,14 +154,14 @@ func start(c *Config, stop <-chan os.Signal) int {
 		w.genSet[e] = true
 	}
 	if c.CriticalRules != "" {
-		if isFile(c.CriticalRules) {
+		if isFile(c.CriticalRules) || hasYar(c.CriticalRules) {
 			os.MkdirAll(filepath.Dir(c.CriticalOut), 0o755)
 			w.criticalOn = true
 			for _, e := range c.CriticalExt {
 				w.docSet[e] = true
 			}
 		} else {
-			w.log.Log("WARN", "critical rules not found: %s - critical check off", c.CriticalRules)
+			w.log.Log("INFO", "no critical rules in %s - critical check off (they come with the rules package: critical\\*.yar)", c.CriticalRules)
 		}
 	}
 	w.loadMacroSent()
@@ -209,6 +209,24 @@ func (w *Watcher) prepareRules() error {
 	}
 	if len(errs) > 0 {
 		return fmt.Errorf("the rules do not compile: %s - %s", c.Rules, strings.Join(errs, " "))
+	}
+	// critical-information rules (a .yar or a folder of .yar): compiled by yara64 on every document scan - a broken
+	// set would silently turn the check off, so it is an error here too (DocScanUpdater then rolls the new set back)
+	if w.criticalOn {
+		q := filepath.Join(c.OutDir, "probe-critical.json")
+		os.WriteFile(probe, []byte("probe\r\n"), 0o644)
+		out, _ := execCmd(c.Yara, "-w", "--file-vars", "--critical-rules="+c.CriticalRules, "--critical-out="+q, c.Rules, probe).CombinedOutput()
+		os.Remove(probe)
+		os.Remove(q)
+		var cerrs []string
+		for _, l := range strings.Split(string(out), "\n") {
+			if strings.Contains(strings.ToLower(l), "error") {
+				cerrs = append(cerrs, strings.TrimSpace(l))
+			}
+		}
+		if len(cerrs) > 0 {
+			return fmt.Errorf("the critical rules do not compile: %s - %s", c.CriticalRules, strings.Join(cerrs, " "))
+		}
 	}
 	w.ruleArgs = []string{c.Rules}
 	compiled := filepath.Join(c.OutDir, "rules.yarc")

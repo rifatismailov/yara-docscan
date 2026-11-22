@@ -2,7 +2,8 @@ package deploy
 
 // Реліз правил (репозиторій yara-docscan-rules): cirun rules-release --dir <його checkout>.
 //
-//	DocScan-rules.zip         правила (усе з репозиторію, крім tools/, README.md, .git) + VERSION.txt
+//	DocScan-rules.zip         правила (усе з репозиторію, крім tools/, README.md, .git) + critical/ (правила критичної
+//	                          інформації з окремого репозиторію, critical.go) + VERSION.txt
 //	rules-manifest.json/.sig  підписаний маніфест (продукт docscan-rules) — для DocScanUpdater
 //	DocScan-rules-bundle.zip  ці три файли одним архівом — для ручного встановлення (install.ps1 -Rules)
 //
@@ -16,6 +17,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -43,7 +45,8 @@ func skipRules(rel string) bool {
 
 // PrepareRules: компіляція (yarac — наш, з модулем docscan), пакет з VERSION.txt, підписаний маніфест, пакет для
 // ручного встановлення — у outDir.
-func PrepareRules(rulesDir, repo, tag, commit, yarac, seedB64, outDir string) (*RulesRelease, error) {
+// critical — checkout репозиторію критичних правил ("" — пакет без critical/); critCommit — його коміт (для VERSION.txt).
+func PrepareRules(rulesDir, repo, tag, commit, yarac, seedB64, outDir, critical, critCommit string) (*RulesRelease, error) {
 	idx := filepath.Join(rulesDir, "docscan-index.yar")
 	if _, err := os.Stat(idx); err != nil {
 		return nil, fmt.Errorf("%s: no docscan-index.yar - not a DocScan rules repository", rulesDir)
@@ -56,8 +59,23 @@ func PrepareRules(rulesDir, repo, tag, commit, yarac, seedB64, outDir string) (*
 		return nil, fmt.Errorf("the rules do not compile (%s): %s", yarac, strings.TrimSpace(string(out)))
 	}
 	r := &RulesRelease{Repo: repo, Tag: tag, Commit: commit, Dir: outDir}
+	extra := map[string]string{}
+	crit := ""
+	if critical != "" {
+		if _, err := os.Stat(filepath.Join(rulesDir, "critical")); err == nil {
+			return nil, fmt.Errorf("%s has its own critical/ - the critical rules come only from %s", rulesDir, critical)
+		}
+		names, err := CriticalFiles(filepath.Join(critical, "critical"))
+		if err != nil {
+			return nil, err
+		}
+		for _, n := range names {
+			extra["critical/"+n] = filepath.Join(critical, "critical", n)
+		}
+		crit = fmt.Sprintf(", critical %s: %d files", short(critCommit), len(names))
+	}
 	pkg := filepath.Join(outDir, RulesPkgAsset)
-	if err := zipRules(rulesDir, pkg, fmt.Sprintf("DocScan rules %s (commit %s, %s)\r\n", tag, short(commit), time.Now().UTC().Format("2006-01-02"))); err != nil {
+	if err := zipRules(rulesDir, pkg, fmt.Sprintf("DocScan rules %s (commit %s%s, %s)\r\n", tag, short(commit), crit, time.Now().UTC().Format("2006-01-02")), extra); err != nil {
 		return nil, err
 	}
 	if r.PkgSHA, err = fileSHA(pkg); err != nil {
@@ -89,8 +107,8 @@ func short(c string) string {
 	return c
 }
 
-// zipRules — усі файли правил (імена з "/") + VERSION.txt.
-func zipRules(dir, dst, version string) error {
+// zipRules — усі файли правил (імена з "/") + extra (ім'я в пакеті -> файл) + VERSION.txt.
+func zipRules(dir, dst, version string, extra map[string]string) error {
 	f, err := os.Create(dst)
 	if err != nil {
 		return err
@@ -119,6 +137,16 @@ func zipRules(dir, dst, version string) error {
 	})
 	if err != nil {
 		return err
+	}
+	var names []string
+	for n := range extra {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	for _, n := range names {
+		if err := addFile(w, n, extra[n]); err != nil {
+			return err
+		}
 	}
 	o, err := w.CreateHeader(&zip.FileHeader{Name: "VERSION.txt", Method: zip.Deflate, Modified: time.Now()})
 	if err != nil {
