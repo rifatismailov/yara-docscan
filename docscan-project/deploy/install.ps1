@@ -35,7 +35,9 @@
 #   8) the update service "DocScan Updater" (DocScanUpdater, updater\docscan-updater.exe): how it updates is in
 #      <DataDir>\update\updater.json, written from -UpdateMode (github | mirror | marker | off), -UpdateMirror,
 #      -ListsUrl / -ListsKey / -ListsEveryHours (the organisation's signed white / black lists),
-#      -UpdateMarker, -UpdateEveryHours, -UpdateWindow (only when given, or on the first install: github). It installs
+#      -UpdateMarker, -UpdateEveryHours, -UpdateWindow (only when given, or on the first install: github); or the whole
+#      file at once: -UpdateConfig <updater.json: file, UNC or URL> (the organisation's mirror, keys, lists), checked by
+#      docscan-updater -CheckConfig; -Update* / -Lists* given next to it change it. It installs
 #      only releases signed by the DocScan CI, never an older version, and rolls back when the new one does not start.
 #   9) the web interface "DocScan Web" (DocScanWeb, web\docscan-web.exe): https://127.0.0.1:<-WebPort 8741>/, HTTPS with
 #      a certificate made here and trusted by Windows (only 127.0.0.1 / localhost, not a CA), user admin with a
@@ -70,6 +72,7 @@ param(
   [switch]  $NoWazuhConfig,       # do not touch the agent's ossec.conf and do not restart WazuhSvc
   [ValidateSet("", "github", "mirror", "marker", "off")]
   [string]  $UpdateMode = "",     # updates: github (default on a new install) | mirror | marker | off; empty - keep updater.json
+  [string]  $UpdateConfig = "",   # a ready updater.json (file, UNC or URL): replaces the PC's one; -Update* / -Lists* change it
   [string]  $UpdateMirror = "",   # mode mirror: folder with the release files (https://... or \\server\share\docscan)
   [string]  $UpdateMarker = "",   # mode marker: the file an agent writes (default <DataDir>\update\update.json)
   [double]  $UpdateEveryHours = 0, # github / mirror: how often to check (default 6)
@@ -129,6 +132,24 @@ if ($Reuse) {
   }
   $WatchPath = @($WatchPath)
   Write-Host "==> -Reuse: parameters of the install of $($prevInstall.installed)" -ForegroundColor Cyan
+}
+
+# -UpdateConfig: read and check it BEFORE anything changes on the PC (step 8 writes it); the package's updater checks
+# it the same way the service will (unknown or misspelled keys, bad mode, bad keys)
+$UpdCfgObj = $null
+if ($UpdateConfig) {
+  try {
+    $raw = if ($UpdateConfig -match '^https?://') { (Invoke-WebRequest -UseBasicParsing $UpdateConfig -TimeoutSec 60).Content } else { Get-Content -LiteralPath $UpdateConfig -Raw }
+    $UpdCfgObj = $raw | ConvertFrom-Json
+  } catch { Fail "-UpdateConfig ${UpdateConfig}: cannot read it as JSON - $($_.Exception.Message)" }
+  $pkgUpd = Join-Path $Pkg "updater\docscan-updater.exe"
+  if (Test-Path -LiteralPath $pkgUpd) {
+    $chk = Join-Path $env:TEMP ("docscan-updater-check-" + [guid]::NewGuid() + ".json")
+    [IO.File]::WriteAllText($chk, $raw, (New-Object Text.UTF8Encoding($false)))
+    $co = @(& $pkgUpd -CheckConfig $chk 2>&1 | % { "$_" }); $rc = $LASTEXITCODE
+    Remove-Item -LiteralPath $chk -Force -EA SilentlyContinue
+    if ($rc) { Fail "-UpdateConfig ${UpdateConfig}: docscan-updater -CheckConfig - $($co -join ' ')" }
+  }
 }
 
 # ---- agent ossec.conf (text edits: the file has several <ossec_config> blocks, it is not one XML document) ----
@@ -577,13 +598,15 @@ $updExe = "$InstallDir\updater\docscan-updater.exe"
 $updDir = "$DataDir\update"
 $updCfg = "$updDir\updater.json"
 New-Item -ItemType Directory -Force $updDir | Out-Null
-$cfgGiven = $UpdateMode -or $UpdateMirror -or $UpdateMarker -or $UpdateEveryHours -gt 0 -or $UpdateWindow -or $ListsUrl -or $ListsKey.Count -or $ListsEveryHours -gt 0 -or $ListsToken
+$cfgGiven = $UpdateConfig -or $UpdateMode -or $UpdateMirror -or $UpdateMarker -or $UpdateEveryHours -gt 0 -or $UpdateWindow -or $ListsUrl -or $ListsKey.Count -or $ListsEveryHours -gt 0 -or $ListsToken
 if ($cfgGiven -or -not (Test-Path -LiteralPath $updCfg)) {
   $c = [ordered]@{ mode = "github"; check_every_hours = 6; github = @{ repo = "rifatismailov/yara-docscan" }; mirror = @{ url = "" }
                    marker = @{ file = "$updDir\update.json" }; window = ""; extra_public_keys = @()
                    rules = @{ off = $false; github = @{ repo = "rifatismailov/yara-docscan-rules" }; mirror = @{ url = "" } }
                    lists = @{ url = ""; check_every_hours = 24; public_keys = @() } }
-  if (Test-Path -LiteralPath $updCfg) {   # given parameters change the existing config, the rest stays
+  if ($UpdCfgObj) {   # the organisation's ready updater.json (read and checked at the start) replaces the PC's one
+    foreach ($pr in $UpdCfgObj.PSObject.Properties) { $c[$pr.Name] = $pr.Value }
+  } elseif (Test-Path -LiteralPath $updCfg) {   # given parameters change the existing config, the rest stays
     try { $o = Get-Content -LiteralPath $updCfg -Raw | ConvertFrom-Json; foreach ($k in @($c.Keys)) { if ($null -ne $o.$k) { $c[$k] = $o.$k } } } catch { }
   }
   if ($UpdateMode) { $c.mode = $UpdateMode }
@@ -605,7 +628,14 @@ if ($cfgGiven -or -not (Test-Path -LiteralPath $updCfg)) {
     $c.lists = $l
   }
   if ($c.mode -eq "mirror" -and -not $c.mirror.url) { Fail "-UpdateMode mirror needs -UpdateMirror <folder with the release files>" }
-  Write-Text $updCfg ($c | ConvertTo-Json -Depth 4)
+  if ($UpdCfgObj -and (Test-Path -LiteralPath $updExe)) {   # the result too (with -Update* / -Lists* given next to it)
+    $chk = "$updCfg.check"
+    Write-Text $chk ($c | ConvertTo-Json -Depth 6)
+    $co = @(& $updExe -CheckConfig $chk 2>&1 | % { "$_" }); $rc = $LASTEXITCODE
+    Remove-Item -LiteralPath $chk -Force -EA SilentlyContinue
+    if ($rc) { Fail "-UpdateConfig ${UpdateConfig}: docscan-updater -CheckConfig - $($co -join ' ')" }
+  }
+  Write-Text $updCfg ($c | ConvertTo-Json -Depth 6)
 }
 $updMode = try { (Get-Content -LiteralPath $updCfg -Raw | ConvertFrom-Json).mode } catch { "github" }
 $listsUrlNow = try { [string](Get-Content -LiteralPath $updCfg -Raw | ConvertFrom-Json).lists.url } catch { "" }

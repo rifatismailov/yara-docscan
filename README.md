@@ -121,8 +121,8 @@ DocScanUpdater (`-NoCritical` turns pass 3 off on a PC).
 
 The installer verifies the package and the signed rules, adds Defender exclusions, configures the Wazuh agent and
 registers the Windows services "DocScan Watcher" (`DocScanWatcher`: watches files, runs yara64) and `DocScanUpdater`
-(program, rules and lists updates; mode `github` | `mirror` | `marker` | `off`, set with `-UpdateMode` and kept per
-organisation in `updater.json`; design: [UPDATE-DESIGN.md](docscan-project/UPDATE-DESIGN.md), Ukrainian).
+(program, rules and lists updates; mode `github` | `mirror` | `marker` | `off`, set with `-UpdateMode`, or the
+organisation's whole `updater.json` at once with `-UpdateConfig <file | URL>`; design: [UPDATE-DESIGN.md](docscan-project/UPDATE-DESIGN.md), Ukrainian).
 
 The organisation's **white list** (`whitelist.json`: files not scanned) and **black list** (`blacklist.json`: HIGH and
 quarantine before any scan) name files by path mask, by the network folder a shortcut points to, or by sha256; the

@@ -62,6 +62,15 @@ DocScan стежить за новими файлами, перевіряє до
      -UpdateMarker <файл>                mode marker: файл, який пише агент (за замовчуванням ...\update\update.json)
      -UpdateEveryHours 6                 github / mirror: як часто перевіряти
      -UpdateWindow 22:00-06:00           ставити оновлення лише в цей час
+     -UpdateConfig <updater.json|URL>    увесь конфіг оновлень організації одним файлом (дзеркало, ключі, списки);
+                                         перевіряється (docscan-updater -CheckConfig) ДО будь-яких змін на ПК;
+                                         -Update* / -Lists* поруч змінюють його. Приклад файлу:
+                                           { "mode": "mirror",
+                                             "mirror": { "url": "https://<дзеркало>/docscan" },
+                                             "rules":  { "mirror": { "url": "https://<дзеркало>/rules" } },
+                                             "extra_public_keys": [ "ed25519:<ключ організації для правил>" ],
+                                             "lists":  { "url": "https://<дзеркало>/lists",
+                                                         "public_keys": [ "ed25519:<ключ списків>" ] } }
 
    Білий і чорний списки (C:\ProgramData\DocScan\lists\whitelist.json, blacklist.json). Організація веде їх сама.
    Watcher звіряє з ними кожен новий файл ДО сканування:

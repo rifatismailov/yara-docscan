@@ -37,6 +37,7 @@ param(
   [int]     $Workers = 0,           # -> install.ps1 -Workers (fixed number of parallel scans; 0 = automatic)
   # updates (service DocScanUpdater, see install.ps1): -> install.ps1 -UpdateMode / -UpdateMirror / ...
   [string]  $UpdateMode = "",       # github (default) | mirror | marker | off
+  [string]  $UpdateConfig = "",     # a ready updater.json of the organisation (file, UNC or URL) -> install.ps1 -UpdateConfig
   [string]  $UpdateMirror = "",     # mode mirror: folder with the release files (https://... or \\server\share)
   [string]  $UpdateMarker = "",     # mode marker: the file an agent writes
   [double]  $UpdateEveryHours = 0,  # github / mirror: check interval (default 6)
@@ -107,6 +108,7 @@ try {
   if ($WatcherEngine)     { $p.WatcherEngine = $WatcherEngine }
   if ($Workers -gt 0)     { $p.Workers = $Workers }
   if ($UpdateMode)        { $p.UpdateMode = $UpdateMode }
+  if ($UpdateConfig)      { $p.UpdateConfig = $(if ($UpdateConfig -match '^https?://') { $UpdateConfig } else { (Resolve-Path -LiteralPath $UpdateConfig).Path }) }
   if ($UpdateMirror)      { $p.UpdateMirror = $UpdateMirror }
   if ($UpdateMarker)      { $p.UpdateMarker = $UpdateMarker }
   if ($UpdateEveryHours -gt 0) { $p.UpdateEveryHours = $UpdateEveryHours }

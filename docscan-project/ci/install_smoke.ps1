@@ -58,7 +58,10 @@ Remove-Item "$env:ProgramData\DocScan\web\auth.json", "$env:ProgramData\DocScan\
 # install: an update if DocScan is already there; watch only the test inbox. Updates: mode marker - the update
 # service runs (checked below) but does nothing without a marker; github would "update" this CI build (no vX.Y.Z)
 # to the latest release in the middle of the test
-& powershell -NoProfile -ExecutionPolicy Bypass -Command "& '$Work\pkg\install.ps1' -WatchPath '$inbox' -NoWazuhConfig -DetectOnly -UpdateMode marker -Whitelist '$wl' -Blacklist '$bl' -ListsUrl '$orgDir' -ListsKey '$orgPub'$(if ($Rules) { " -Rules '$Rules'" })" 2>&1 | % { "  $_" }
+# the update config comes as one ready updater.json (-UpdateConfig, the way an organisation sets its mirror and keys)
+$ucfg = "$Work\updater-org.json"
+[IO.File]::WriteAllText($ucfg, (@{ mode = "marker"; lists = @{ url = $orgDir; public_keys = @($orgPub) } } | ConvertTo-Json -Depth 4))
+& powershell -NoProfile -ExecutionPolicy Bypass -Command "& '$Work\pkg\install.ps1' -WatchPath '$inbox' -NoWazuhConfig -DetectOnly -UpdateConfig '$ucfg' -Whitelist '$wl' -Blacklist '$bl'$(if ($Rules) { " -Rules '$Rules'" })" 2>&1 | % { "  $_" }
 if ($LASTEXITCODE) { "FAIL: install.ps1 exit $LASTEXITCODE"; exit 1 }
 # the watcher is the Windows service DocScanWatcher: automatic, LocalSystem, restart after a failure, the Go exe
 $sv = Get-CimInstance Win32_Service -Filter "Name='DocScanWatcher'"
@@ -77,7 +80,18 @@ else {
   if ($us.State -ne "Running" -or $us.StartMode -ne "Auto" -or $us.StartName -ne "LocalSystem") { Fail "DocScanUpdater must run automatically as LocalSystem" }
 }
 $uc = "$env:ProgramData\DocScan\update\updater.json"
-if (-not (Test-Path $uc)) { Fail "no $uc" } else { "updater.json: mode " + (Get-Content $uc -Raw | ConvertFrom-Json).mode }
+if (-not (Test-Path $uc)) { Fail "no $uc" } else {
+  $uo = Get-Content $uc -Raw | ConvertFrom-Json
+  "updater.json: mode " + $uo.mode + ", lists " + $uo.lists.url
+  if ($uo.mode -ne "marker" -or $uo.lists.url -ne $orgDir -or @($uo.lists.public_keys)[0] -ne $orgPub) { Fail "updater.json is not the one given with -UpdateConfig" }
+}
+# a broken -UpdateConfig (unknown key) is refused at the start, before anything changes (docscan-updater -CheckConfig);
+# the services keep running
+$badCfg = "$Work\updater-bad.json"; [IO.File]::WriteAllText($badCfg, '{"mode": "marker", "lists_url": "typo"}')
+$bo = & powershell -NoProfile -ExecutionPolicy Bypass -Command "& '$Work\pkg\install.ps1' -Reuse -UpdateConfig '$badCfg' -NoStart" 2>&1 | % { "$_" }
+if (-not $LASTEXITCODE) { Fail "install.ps1 accepted an updater.json with an unknown key" } else { "bad -UpdateConfig refused: " + (@($bo | ? { $_ -match 'CheckConfig' })[0]) }
+if ((Get-Service DocScanWatcher).Status -ne "Running") { Fail "a refused -UpdateConfig stopped DocScanWatcher" }
+if ((Get-Content $uc -Raw | ConvertFrom-Json).mode -ne "marker") { Fail "a refused -UpdateConfig changed updater.json" }
 $ij = "$env:ProgramData\DocScan\install.json"
 if (-not (Test-Path $ij)) { Fail "no $ij" } else { $j = Get-Content $ij -Raw | ConvertFrom-Json; "install.json: " + $j.installed + ", DetectOnly " + $j.params.DetectOnly + ", WatchPath " + ($j.params.WatchPath -join ";") }
 # the web interface: service DocScanWeb, a trusted certificate for 127.0.0.1 (no -SkipCertificateCheck: Windows must

@@ -11,7 +11,8 @@ yara-docscan), **правила** (окремий репозиторій yara-do
 
 - **Служба `DocScanUpdater`** (`watcher-go/updater`, `updater\docscan-updater.exe` у пакеті) — ставить
   `install.ps1`, як і `DocScanWatcher` (автозапуск, SYSTEM, перезапуск після збою).
-- **Як оновлюватися — конфіг `C:\ProgramData\DocScan\update\updater.json`** (пише інсталятор з `-UpdateMode`,
+- **Як оновлюватися — конфіг `C:\ProgramData\DocScan\update\updater.json`** (пише інсталятор з `-UpdateConfig <готовий updater.json організації>` — увесь файл одразу, перевірений
+  `docscan-updater -CheckConfig` до будь-яких змін на ПК, — або з `-UpdateMode`,
   `-UpdateMirror`, `-UpdateMarker`, `-UpdateEveryHours`, `-UpdateWindow`, `-ListsUrl` / `-ListsKey` /
   `-ListsEveryHours` / `-ListsToken`; лише коли їх задано, або на першому встановленні — `github`; далі можна
   правити, потім `Restart-Service DocScanUpdater`; доступ лише SYSTEM + адміністратори). Кожна організація вибирає

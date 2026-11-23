@@ -102,18 +102,29 @@ func Fetch(version, cacheDir string) (*Rules, error) {
 	if err != nil {
 		return nil, fmt.Errorf("rules: %w", err)
 	}
-	tmp := dir + ".tmp"
-	os.RemoveAll(tmp)
-	if err := os.MkdirAll(tmp, 0o755); err != nil {
+	// своя тимчасова тека на процес: завдання конвеєра (win11 і ubuntu паралельно) ділять один кеш $ART/rules, і
+	// спільна "<версія>.tmp" ламалась — одне завдання видаляло теку, в яку саме писало інше
+	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
 		return nil, err
 	}
+	tmp, err := os.MkdirTemp(cacheDir, m.Version+".tmp-")
+	if err != nil {
+		return nil, err
+	}
+	defer os.RemoveAll(tmp)
 	for n, c := range map[string][]byte{ManifestName: data, SigName: sig, PkgName: pkg, BundleName: bundle} {
 		if err := os.WriteFile(filepath.Join(tmp, n), c, 0o644); err != nil {
 			return nil, err
 		}
 	}
+	if r, err := load(dir); err == nil { // інше завдання встигло раніше — той самий підписаний реліз
+		return r, nil
+	}
 	os.RemoveAll(dir)
 	if err := os.Rename(tmp, dir); err != nil {
+		if r, lerr := load(dir); lerr == nil { // перейменувало інше завдання між RemoveAll і Rename
+			return r, nil
+		}
 		return nil, err
 	}
 	return load(dir)
