@@ -89,7 +89,9 @@ if (-not (Test-Path $uc)) { Fail "no $uc" } else {
 # the services keep running
 $badCfg = "$Work\updater-bad.json"; [IO.File]::WriteAllText($badCfg, '{"mode": "marker", "lists_url": "typo"}')
 $bo = & powershell -NoProfile -ExecutionPolicy Bypass -Command "& '$Work\pkg\install.ps1' -Reuse -UpdateConfig '$badCfg' -NoStart" 2>&1 | % { "$_" }
-if (-not $LASTEXITCODE) { Fail "install.ps1 accepted an updater.json with an unknown key" } else { "bad -UpdateConfig refused: " + (@($bo | ? { $_ -match 'CheckConfig' })[0]) }
+if (-not $LASTEXITCODE) { Fail "install.ps1 accepted an updater.json with an unknown key" }
+elseif (-not ($bo -match 'CheckConfig.*lists_url')) { Fail "bad -UpdateConfig refused, but not by the config check: $(($bo | Select -Last 3) -join ' | ')" }
+else { "bad -UpdateConfig refused: " + (@($bo -match 'CheckConfig')[0]).Trim() }
 if ((Get-Service DocScanWatcher).Status -ne "Running") { Fail "a refused -UpdateConfig stopped DocScanWatcher" }
 if ((Get-Content $uc -Raw | ConvertFrom-Json).mode -ne "marker") { Fail "a refused -UpdateConfig changed updater.json" }
 $ij = "$env:ProgramData\DocScan\install.json"

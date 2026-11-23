@@ -146,7 +146,9 @@ if ($UpdateConfig) {
   if (Test-Path -LiteralPath $pkgUpd) {
     $chk = Join-Path $env:TEMP ("docscan-updater-check-" + [guid]::NewGuid() + ".json")
     [IO.File]::WriteAllText($chk, $raw, (New-Object Text.UTF8Encoding($false)))
+    $eap = $ErrorActionPreference; $ErrorActionPreference = "Continue"   # the updater's stderr is its answer, not an exception
     $co = @(& $pkgUpd -CheckConfig $chk 2>&1 | % { "$_" }); $rc = $LASTEXITCODE
+    $ErrorActionPreference = $eap
     Remove-Item -LiteralPath $chk -Force -EA SilentlyContinue
     if ($rc) { Fail "-UpdateConfig ${UpdateConfig}: docscan-updater -CheckConfig - $($co -join ' ')" }
   }
@@ -267,8 +269,8 @@ $bundleRules = Test-Path "$InstallDir\rules\VERSION.txt"
 $pkgRules = Test-Path (Join-Path $Pkg "rules\docscan-index.yar")
 $rulesFrom = if ($Rules) { "bundle" } elseif ($bundleRules) { "kept" } elseif ($pkgRules) { "package" } else { "" }
 if (-not $rulesFrom) { Fail "no rules: this package has none and none are installed - give the rules bundle: -Rules <DocScan-rules-bundle.zip | URL> (a yara-docscan-rules release)" }
-foreach ($d in "bin", "rules", "watcher", "updater") {
-  if (-not (Test-Path (Join-Path $Pkg $d))) { continue }   # updater\: packages from v1.0.x on
+foreach ($d in "bin", "rules", "watcher", "updater", "web") {
+  if (-not (Test-Path (Join-Path $Pkg $d))) { continue }   # updater\: packages from v1.0.x on; web\: with the web interface
   if ($d -eq "rules" -and $rulesFrom -ne "package") { continue }
   Remove-Item "$InstallDir\$d" -Recurse -Force -EA SilentlyContinue
   Copy-Item (Join-Path $Pkg $d) "$InstallDir\$d" -Recurse
@@ -631,7 +633,9 @@ if ($cfgGiven -or -not (Test-Path -LiteralPath $updCfg)) {
   if ($UpdCfgObj -and (Test-Path -LiteralPath $updExe)) {   # the result too (with -Update* / -Lists* given next to it)
     $chk = "$updCfg.check"
     Write-Text $chk ($c | ConvertTo-Json -Depth 6)
+    $eap = $ErrorActionPreference; $ErrorActionPreference = "Continue"
     $co = @(& $updExe -CheckConfig $chk 2>&1 | % { "$_" }); $rc = $LASTEXITCODE
+    $ErrorActionPreference = $eap
     Remove-Item -LiteralPath $chk -Force -EA SilentlyContinue
     if ($rc) { Fail "-UpdateConfig ${UpdateConfig}: docscan-updater -CheckConfig - $($co -join ' ')" }
   }
