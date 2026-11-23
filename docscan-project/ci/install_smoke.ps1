@@ -53,6 +53,8 @@ Copy-Item $wl "$orgDir\whitelist.json"
 $signOut = & $du -SignList "$orgDir\whitelist.json" -Kind white -Key "$Work\org-lists.key" 2>&1 | % { "$_" }
 if ($LASTEXITCODE) { Fail "-SignList: $signOut" } else { "org lists: $signOut" }
 
+# a run that failed before its uninstall left the web password: start from a fresh one (a new temporary password)
+Remove-Item "$env:ProgramData\DocScan\web\auth.json", "$env:ProgramData\DocScan\web\initial-password.txt" -Force -EA SilentlyContinue
 # install: an update if DocScan is already there; watch only the test inbox. Updates: mode marker - the update
 # service runs (checked below) but does nothing without a marker; github would "update" this CI build (no vX.Y.Z)
 # to the latest release in the middle of the test
@@ -78,6 +80,42 @@ $uc = "$env:ProgramData\DocScan\update\updater.json"
 if (-not (Test-Path $uc)) { Fail "no $uc" } else { "updater.json: mode " + (Get-Content $uc -Raw | ConvertFrom-Json).mode }
 $ij = "$env:ProgramData\DocScan\install.json"
 if (-not (Test-Path $ij)) { Fail "no $ij" } else { $j = Get-Content $ij -Raw | ConvertFrom-Json; "install.json: " + $j.installed + ", DetectOnly " + $j.params.DetectOnly + ", WatchPath " + ($j.params.WatchPath -join ";") }
+# the web interface: service DocScanWeb, a trusted certificate for 127.0.0.1 (no -SkipCertificateCheck: Windows must
+# trust it), the temporary password for Administrators only, sign-in -> forced password change, the audit record
+$wsv = Get-CimInstance Win32_Service -Filter "Name='DocScanWeb'"
+$webDir = "$env:ProgramData\DocScan\web"
+if (-not $wsv) { Fail "no service DocScanWeb" }
+else {
+  "web: " + $wsv.State + ", start " + $wsv.StartMode + ", account " + $wsv.StartName
+  if ($wsv.State -ne "Running" -or $wsv.StartMode -ne "Auto" -or $wsv.StartName -ne "LocalSystem") { Fail "DocScanWeb must run automatically as LocalSystem" }
+  $wc = @(Get-ChildItem Cert:\LocalMachine\Root | ? { $_.Subject -like "CN=DocScan Web 127.0.0.1*" })
+  if ($wc.Count -ne 1) { Fail "web: $($wc.Count) DocScan certificates in the trusted root store (expected 1)" }
+  # by SID (group names depend on the Windows language): only SYSTEM (S-1-5-18) and Administrators (S-1-5-32-544)
+  $sids = @((Get-Acl $webDir).Access | % { try { $_.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value } catch { "$($_.IdentityReference)" } } | Sort-Object -Unique)
+  $other = @($sids | ? { $_ -ne "S-1-5-18" -and $_ -ne "S-1-5-32-544" })
+  if ($other.Count) { Fail "web: $webDir is open to $($other -join ', ') (only SYSTEM and Administrators)" }
+  $pwLine = @(Get-Content "$webDir\initial-password.txt" -EA SilentlyContinue | ? { $_ -match '^password:\s+(\S+)' })
+  if (-not $pwLine) { Fail "web: no initial-password.txt with a password" }
+  else {
+    $pw0 = ($pwLine[0] -replace '^password:\s+', '').Trim()
+    [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+    try {
+      $u = "https://127.0.0.1:8741"
+      $r = Invoke-WebRequest -UseBasicParsing "$u/login" -SessionVariable ws -TimeoutSec 15
+      $pre = [regex]::Match($r.Content, 'name="pre" value="([^"]+)"').Groups[1].Value
+      $r = Invoke-WebRequest -UseBasicParsing "$u/login" -WebSession $ws -Method Post -Body @{ pre = $pre; next = "/"; name = "admin"; password = $pw0 } -TimeoutSec 15
+      $csrf = [regex]::Match($r.Content, 'name="csrf" value="([^"]+)"').Groups[1].Value
+      if (-not $csrf -or $r.Content -notmatch 'name="new2"') { Fail "web: after the sign-in with the temporary password the password form did not come" }
+      $nw = "smoke-" + [guid]::NewGuid().ToString("N")
+      $r = Invoke-WebRequest -UseBasicParsing "$u/password" -WebSession $ws -Method Post -Body @{ csrf = $csrf; old = $pw0; new = $nw; new2 = $nw } -TimeoutSec 15
+      if ($r.Content -notmatch 'href="/detections"') { Fail "web: no status page after the password change" }
+      if (Test-Path "$webDir\initial-password.txt") { Fail "web: initial-password.txt still there after the password change" }
+      if (-not (Select-String -Path $results -Pattern '"action":"password-changed"' -Quiet)) { Fail "web: no audit record for Wazuh" }
+      "web: https://127.0.0.1:8741 trusted HTTPS, sign-in, forced password change, audit record - ok"
+    } catch { Fail "web: $($_.Exception.Message)" }
+  }
+}
+
 Start-Sleep 3
 # critical rules come with the rules package (rules\critical\*.yar): when the package has them, the watcher runs the check
 $critN = @(Get-ChildItem "$env:ProgramW6432\DocScan\rules\critical\*.yar" -EA SilentlyContinue).Count
@@ -178,7 +216,8 @@ if (Test-Path $log) { "--- watcher.log (tail)"; Get-Content $log -Tail 6 | % { "
 
 # remove DocScan again: the stand stays clean for the next run
 & powershell -NoProfile -ExecutionPolicy Bypass -File "$env:ProgramW6432\DocScan\uninstall.ps1" -Purge 2>&1 | % { "  $_" }
+if (@(Get-ChildItem Cert:\LocalMachine\Root | ? { $_.Subject -like "CN=DocScan Web 127.0.0.1*" }).Count) { Fail "uninstall left the web certificate in the trusted root store" }
 Remove-Item $Work -Recurse -Force -EA SilentlyContinue
 if ($failed) { "RESULT: FAIL"; exit 1 }
-"RESULT: OK ($($samples.Count) samples, Go watcher as a service, restart after a crash)"
+"RESULT: OK ($($samples.Count) samples, Go watcher as a service, restart after a crash, web interface)"
 exit 0

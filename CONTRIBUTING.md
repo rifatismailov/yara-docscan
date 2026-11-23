@@ -28,13 +28,18 @@ Ground rules:
   module plus a rule in `docscan-policy.yar` of [yara-docscan-rules](https://github.com/rifatismailov/yara-docscan-rules), not a hard-coded verdict in C.
 - **We do not write our own vendor YARA signatures.** Third-party rules come only from public sources
   with a clear license, through `tools/build_vendor_rules.py` of [yara-docscan-rules](https://github.com/rifatismailov/yara-docscan-rules) (pinned commits,
-  per-rule filter, every drop recorded with a reason). Do not edit generated files under
-  `rules/general/` and `rules/maldoc/` by hand.
+  per-rule filter, every drop recorded with a reason). Do not edit the generated `general/` and
+  `maldoc/` folders of that repository by hand. Critical-information rules (pass 3) are written by each
+  organisation for itself ([`docscan-project/CRITICAL-RULES.md`](docscan-project/CRITICAL-RULES.md), Ukrainian)
+  and are not part of this repository.
 - **Untrusted input.** Every parser reads attacker-controlled bytes: bounds-check every read, cap every
   loop and allocation, keep large structures off the stack (Windows main-thread stack is 1 MB).
-- **Tests.** Run the regression (`run_tests.ps1` on Windows or the loop in `CODE-GUIDE.md` §10) and, for
+- **Tests.** Run the regression (`docscan-project/test-range/run_tests.ps1` on Windows,
+  `sh docscan-project/ci/build-test-unix.sh` on macOS / Linux, or the loop in `CODE-GUIDE.md` §10) and, for
   parser changes, the libFuzzer targets (`docscan-project/fuzz/build.sh`). Add an inert sample to
-  `docscan-project/test-range/gen_test_range.py` for a new detection.
+  `docscan-project/test-range/gen_test_range.py` for a new detection and update
+  `docscan-project/ci/expected-verdicts.tsv` deliberately (`check_verdicts.py --write`). The tests expect
+  the rules in `docscan-project/rules/` (git-ignored): `cirun` puts a release of yara-docscan-rules there.
 - **Builds.** A new `.c` file goes into `Makefile.am` and the three `windows/vs20*/libyara/libyara.vcxproj`
   (keep their CRLF line endings).
 - **Documentation.** Update `SCAN-FLOW.md` and `SCAN-FLOW.en.md` (both languages) with the change.

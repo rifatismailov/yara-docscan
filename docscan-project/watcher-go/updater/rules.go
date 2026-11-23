@@ -131,9 +131,12 @@ func (u *Updater) checkRules(r *Request, marker bool, now time.Time) Outcome {
 		o.Status = "done"
 		return o
 	}
+	note := u.applyLocalPolicy(dir)
 	status, msg := u.swapRules(dir, true)
 	if status != "success" {
 		u.markFailed("rules:"+m.Version, now)
+	} else if note != "" {
+		msg += "; " + note
 	}
 	u.writeRecord(RecordUpdate{Status: status, Component: "rules", From: from, To: m.Version, Mode: u.cfg.Mode, Source: kind, RequestID: r.RequestID, Message: msg})
 	u.pruneRules(m.Version)
@@ -398,9 +401,13 @@ func (u *Updater) installRulesFile(src string) (string, error) {
 	if err := u.compileRules(dir); err != nil {
 		return "", fmt.Errorf("rules %s do not compile: %w", m.Version, err)
 	}
+	note := u.applyLocalPolicy(dir)
 	if st, msg := u.swapRules(dir, false); st != "success" {
 		return "", fmt.Errorf("%s", msg)
 	}
 	u.pruneRules(m.Version)
-	return fmt.Sprintf("rules %s (signed by key %s, %d files)", m.Version, keyID, len(m.Files)), nil
+	if note != "" {
+		note = "; " + note
+	}
+	return fmt.Sprintf("rules %s (signed by key %s, %d files)%s", m.Version, keyID, len(m.Files), note), nil
 }

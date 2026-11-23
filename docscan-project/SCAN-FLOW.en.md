@@ -4,11 +4,14 @@
 
 A fork of YARA 4.6.0 with a custom **`docscan`** module: it detects weaponised documents, runs vendor
 rules over the extracted macro and embedded parts, disarms the document and reports the result as JSON;
-on selected PCs it also queues documents with critical information for analysis by the E5Search service.
-All of it lives in **one binary**, `yara64.exe`. On top of it, a **watcher** automatically scans new files on
-the system, keeps the macro code and writes the result for Wazuh.
+it also (on every PC unless `-NoCritical` is set) queues documents with critical information for analysis by the
+E5Search service. All of it lives in **one binary**, `yara64.exe`. On top of it, a **watcher** automatically scans
+new files on the system, keeps the macro code and writes the result for Wazuh, and an **updater** (service
+`DocScanUpdater`) updates the program, the rules and the organisation's lists.
 
-> This is the single project document. The previous implementation (PowerShell `doc-scan.ps1` for
+> This is the main project document; separate topics — [`CODE-GUIDE.md`](CODE-GUIDE.md) (code),
+> [`CRITICAL-RULES.md`](CRITICAL-RULES.md) (how to write critical rules), [`LISTS-FLOW.md`](LISTS-FLOW.md) (white and
+> black lists), [`UPDATE-DESIGN.md`](UPDATE-DESIGN.md) (updates). The previous implementation (PowerShell `doc-scan.ps1` for
 > Wazuh active-response, based on Mandiant scripts) is retired and deleted; its logic was ported to C.
 
 **Contents**
@@ -40,7 +43,7 @@ For a document that appears on the system, DocScan must:
    objects; break `\objupdate`; delete a malicious LNK). The original goes to a backup.
 4. **Report** — one JSON line per file, collected by the Wazuh agent (`docscan-results.json`).
 5. **Keep the macro code** of every document with VBA — locally and as a copy on a server (§12.3, field `macro`).
-6. **Third pass** (lawyer, accountant, HR PCs only): if the document text contains phrases from the E5Search
+6. **Third pass** (on every PC unless `-NoCritical` is set): if the document text contains phrases from the E5Search
    rules, put the full text into the `critical.json` queue for the E5Search service (§15). YARA gives no verdict here.
 
 Principles:
@@ -99,12 +102,17 @@ in one process — the same flow, just without the broker.
 
 ```mermaid
 flowchart TD
-    FS([New file in the system]) --> W[docscan-watcher.ps1 · SYSTEM<br/>FileSystemWatcher]
+    FS([New file in the system]) --> W[watcher · SYSTEM<br/>docscan-watcher.exe Go, service DocScanWatcher]
     W --> CAT{extension}
-    CAT -->|Office / RTF / PDF / LNK<br/>+ odt ods odp txt csv on third-pass PCs| DOC[document]
-    CAT -->|exe dll ps1 js hta zip iso ...| GEN[general]
+    CAT -->|Office / RTF / PDF / LNK<br/>+ odt ods odp txt csv with the third pass| LST
+    CAT -->|exe dll ps1 js hta zip iso ...| LST
     CAT -->|other| IGN([ignored])
-    DOC --> Y[yara64 -w --docscan-json --docscan-disarm<br/>--docscan-extract macros<br/>+ --critical-rules / --critical-out on third-pass PCs]
+    LST{organisation lists<br/>whitelist / blacklist} -->|black| BL([HIGH, quarantine])
+    LST -->|white| WL([not scanned, INFO])
+    LST -->|not listed| SPLIT{category}
+    SPLIT --> DOC[document]
+    SPLIT --> GEN[general]
+    DOC --> Y[yara64 -w --docscan-json --docscan-disarm<br/>--docscan-extract macros<br/>+ --critical-rules / --critical-out with the third pass]
     GEN --> Y2[yara64 -w --docscan-json]
     Y & Y2 --> B[BROKER · SYSTEM<br/>parses nothing<br/>remembers the file size and time]
     B -->|starts itself as the worker:<br/>the same arguments + pipe| WK
@@ -158,7 +166,10 @@ flowchart TD
 ### The same as text
 
 ```
- new file ──► watcher (SYSTEM) ──► yara64 -w --docscan-json [--docscan-disarm] [--docscan-extract] [--critical-*] -C rules.yarc <file>
+ new file ──► watcher (SYSTEM) ──► organisation lists (black → HIGH + quarantine, white → not scanned)
+                                     │ not listed
+                                     ▼
+                                   yara64 -w --docscan-json [--docscan-disarm] [--docscan-extract] [--critical-*] -C rules.yarc <file>
                                      │
                      BROKER (SYSTEM, Windows): parses nothing; starts itself as the worker
                                      │  yara64 --docscan-worker=<pipe> <the same arguments>
@@ -172,7 +183,7 @@ flowchart TD
      │            │ docscan-index.yar rules on the file                                     │
      │   POLICY (meta.severity) · vendor rules on the file · PASS 2 (VBA, parts[])          │
      │            └──► {JSON} ─► stdout                     vba_code ─► record X            │
-     │   PASS 3 (only the lawyer / accountant / HR PCs): text ─► E5Search rules             │
+     │   PASS 3 (every PC unless -NoCritical): text ─► critical rules (critical\*.yar)      │
      │            match ─► fragments + JSON ─► record C                                     │
      │   DISARM — plan only: action + cured bytes in memory ─► record D                     │
      └───────────────────────────────┬─────────────────────────────────────────────────────┘
@@ -221,13 +232,18 @@ cli/docscan_sandbox.{c,h}           SANDBOX (Windows): broker / worker, tokens, 
 
 docscan-project/
   SCAN-FLOW.md / SCAN-FLOW.en.md    this document (Ukrainian / English)
-  rules/
+  CODE-GUIDE.md, CRITICAL-RULES.md, LISTS-FLOW.md, UPDATE-DESIGN.md   code; critical rules; lists; updates
+  rules/                            NOT in git (.gitignore): the yara-docscan-rules release cirun puts here (§6.2)
     docscan-policy.yar              POLICY: what is HIGH/MEDIUM, finding names, what to disarm
     docscan.yar                     include docscan-policy.yar (our detection only)
     docscan-index.yar               docscan-policy.yar + file-index.yar (detection + vendor + Layer 2)
     file-index.yar                  vendor rules (on the file and on the decompressed VBA)
     general/, maldoc/               GENERATED: 8068 vendor rules from public sources, 1654 files (§6.2)
-  watcher/docscan-watcher.ps1       auto-scan of new files → results\docscan-results.json
+    critical/*.yar                  critical-information rules (third pass, §15)
+  watcher-go/                       the Go watcher (docscan-watcher.exe, service DocScanWatcher) — the default;
+                                    the organisation's white / black lists (lists.go, orglists/)
+  watcher-go/updater/               docscan-updater.exe (service DocScanUpdater): program, rules, lists
+  watcher/docscan-watcher.ps1       fallback PowerShell watcher (install.ps1 -WatcherEngine ps)
   deploy/                           deployment package: build_package.ps1, install.ps1, uninstall.ps1, README.txt,
                                     DocScan-Install.ps1 (install from the GitHub release), manager/ (Wazuh)
   fuzz/                             libFuzzer: 2 fuzzers, dictionary, corpus, build.sh, build_windows.ps1, regressions/ (8)
@@ -498,7 +514,7 @@ memory (`mz_zip_writer_init_heap`) and written by our `write_file` — miniz's f
 | `--docscan-confine-check` | `docscan_worker_confine_check` + `confine_lines` | Windows: test of the sandbox (§4.11). After the lockdown the worker tries to read a private file (the broker creates it readable only by SYSTEM and Administrators — like a document in someone else's profile; the path is in `DOCSCAN_PROBE_SECRET`), write to `%TEMP%` and `C:\ProgramData`, create a key under `HKLM\SOFTWARE`, read `HKLM\SAM`, start `cmd.exe` — **all must be blocked** (reading its own exe is only reported: the worker may read world-readable files), integrity untrusted, ≤ 1 privilege; the broker: job object, privileges removed, `cmd.exe` blocked. `RESULT: CONFINED` (exit 0). CI step `confine` on every Windows machine |
 | `--docscan-no-sandbox` | `docscan_no_sandbox` | Windows, diagnostics: parse in this process (only the job object + removed privileges, as before the sandbox) |
 | `--docscan-worker=PIPE` | `docscan_worker_arg` | **internal**: how the broker starts the worker (handle number of the result pipe); never called by hand |
-| `--critical-rules=FILE` | `critical_rules` | third pass: the E5Search rules (a separate set, compiled at start), matched against the document **text** (§15) |
+| `--critical-rules=FILE\|DIR` | `critical_rules` | third pass: the critical rules (a separate set, compiled at start), matched against the document **text** (§15). A folder — every top-level `*.yar` is compiled together, each file in its own namespace (the file name without `.yar`); at most 256 files / 64 MB |
 | `--critical-out=FILE` | `critical_out_utf8` | the queue: a match → one JSON line (schema 2.0) appended to FILE; `--critical-rules` without it is an error |
 | `--critical-chunk=SIZE,OVERLAP` | `critical_chunk_size/overlap` | fragment size (default 700,120; limits 200..1500 and 0..size/2); rule `meta` takes priority |
 | `--file-vars` (also implied by `--docscan-json`) | `file_vars` | THOR/LOKI external variables: `filename` (name), `filepath` (absolute directory), `extension` (`.exe`, lower case), `filetype` (`EXE`/`ELF`/`MACH-O`/`MDMP`/`ZIP`/`RAR`/`7Z`/`RTF`/`PDF`/`OLE` by magic; `VBS`/`BATCH`/`PowerShell`/`Python`/`PHP`/`JSP`/`ASP`/`JS`/`HTA` by extension), `owner` (empty). Declared empty at compile time and set per file (`file_vars_set` in `scan_file`), so signature-base rules such as `EXE_cloaked_as_TXT` work as in THOR. For `-C`: compile with `-d filename= -d filepath= -d extension= -d filetype= -d owner=` |
@@ -536,7 +552,7 @@ the JSON is printed at `SCAN_FINISHED`, when everything is known.
 | `do_disarm(file_path, ds)` | `docscan_disarm` + the line `docscan-disarm: <path> -> <action>`; on Windows Unicode — wide→UTF-8. In the worker — `docscan_disarm_plan` over the bytes in memory and record `D` (the broker prints the line). |
 | `file_vars_set(scanner, path, head, head_len)` | THOR/LOKI variables for the file; `filetype` from the first bytes `head` (in the worker the file is already in memory and is not opened again). |
 | `docscan_worker_warmup()` | Worker, before the lockdown: runs a `hash.*` rule once so OpenSSL initialises while file access still works. |
-| `critical_setup()` | Checks `--critical-out`/`--critical-chunk`, reads and compiles `--critical-rules` with a separate compiler. |
+| `critical_setup()` | Checks `--critical-out`/`--critical-chunk`, reads and compiles `--critical-rules` (a file, or the folder's `*.yar`, each in its own namespace) with a separate compiler. |
 | `critical_process(file_path)` | Third pass: the file (≤ 100 MB) → `docscan_text_extract` → the search copy → `yr_rules_scan_mem` over it → fragments + JSON → a line in the queue (under `output_mutex`) and `docscan-critical: queued fragments=N rules=…` on stdout. Skipped — `docscan-critical: skipped (<reason>)` on stderr. |
 | `critical_callback(...)` | Names of the matched rules and `e5_chunk_size`/`e5_chunk_overlap` from the first rule that has them. |
 
@@ -737,7 +753,7 @@ PDF: 2 HIGHs on pdf.js test files made exactly for `/Launch` and `launchURL` —
 
 ### 6.2 Rule files
 
-> **The rules now live in the separate repository [yara-docscan-rules](https://github.com/rifatismailov/yara-docscan-rules)** (signed releases; not in git of this project). `rules/…` below are paths in it; in the project working tree cirun puts the release of a run into `docscan-project/rules/`.
+> **The rules now live in the separate repository [yara-docscan-rules](https://github.com/rifatismailov/yara-docscan-rules)** (signed releases; not in git of this project, `docscan-project/rules` is in `.gitignore`). `rules/…` below are paths in it; in the project working tree cirun puts the release of a run into `docscan-project/rules/`. A rules release: `DocScan-rules.zip` + `rules-manifest.json`/`.sig` + `DocScan-rules-bundle.zip`; `DocScan-rules.zip` also holds `critical/*.yar` — the third-pass critical rules (§15). **Since v1.0.6 the program package has no rules**: a new PC needs `install.ps1 -Rules <bundle | URL>` (or `DocScan-Install.ps1 -Rules …`); afterwards the `DocScanUpdater` service updates the rules.
 
 | File | Purpose | Contents |
 |---|---|---|
@@ -877,7 +893,7 @@ and InQuest/yara-rules (MIT, 25 files; `GlowSpark_Downloader` does not compile �
 No ready rules exist for `.odt/.ods/.odp`, `.scf`, `.library-ms`, `.chm` and `.mht/.mhtml` (the only rule,
 `Office_as_MHTML`, dates from 2015 and was dropped as old) — the watcher does **not** scan these extensions for
 malware (to be added when rules appear; delivr-to/detections and Nick Carr's gist have no license). Exception —
-third-pass PCs: there `.odt .ods .odp .txt .csv` are scanned for their text (§15). Check of the new sources: 476 benign documents — 0.
+the third pass on (by default on every PC): then `.odt .ods .odp .txt .csv` are scanned for their text (§15). Check of the new sources: 476 benign documents — 0.
 
 Rules for index files:
 - `include` paths **use `/`**, relative to the index file or absolute (YARA treats `\` as an escape).
@@ -892,6 +908,18 @@ Rules for index files:
 > PowerShell watcher scanned nothing for hours (cause and numbers in that document). The release now ships it
 > (`install.ps1` registers `watcher\docscan-watcher.exe`); the PowerShell version described below stays in the
 > package as a fallback (`install.ps1 -WatcherEngine ps`) with the same options and record format.
+> Only the Go watcher applies the **organisation's white and black lists** (`C:\ProgramData\DocScan\lists\whitelist.json` /
+> `blacklist.json`, entries `path` / `lnk_target` / `sha256`) **before** the scan: black → HIGH and quarantine, white → the
+> file is not scanned (INFO). The lists are set by `install.ps1 -Whitelist / -Blacklist` or updated by the
+> `DocScanUpdater` service (component `lists`, signed with the organisation key). Diagrams — [`LISTS-FLOW.md`](LISTS-FLOW.md).
+> **On-demand and removable-media scan** (Go watcher only, `scanjob.go`; started from the web interface page «Сканування»
+> or `docscan-watcher.exe -ScanDocs | -ScanPath`). What it covers:
+> - documents on the chosen local disks;
+> - a removable or non-system disk, all files (a new USB stick on its own, `usb_scan`);
+> - folders and files picked in the browser.
+>
+> The action is report only, cure, or delete the threats (after a confirmation). In program and system folders it is always report only.
+> There is deliberately no full scan of every file. Details — [watcher-go/README.en.md](watcher-go/README.en.md), web — [`WEB-DESIGN.md`](WEB-DESIGN.md).
 
 `docscan-project/watcher/docscan-watcher.ps1` (PowerShell 5.1, ASCII-only file, English messages). **One `yara64` run per file.**
 Rules are compiled **once at start** (`yarac64.exe` next to `yara64.exe` → `<OutDir>\rules.yarc`), then every
@@ -904,7 +932,7 @@ No `yarac64.exe` or the compile fails — a WARN in the log and scans from the `
 |---|---|---|
 | `document` | doc dot docx docm dotx dotm, xls xlt xlsx xlsm xltx xltm xlsb, ppt pps pot pptx pptm potx potm ppsx ppsm, **xla xlam ppa ppam**, rtf, pdf, lnk, **one, iqy slk** | `yara64 -w --docscan-json [--docscan-disarm] --docscan-extract=<macros>\extract.tmp [--critical-rules --critical-out] -C rules.yarc` |
 | `general` | exe dll sys scr cpl ocx com msi, **xll**, ps1 psm1 vbs vbe js jse wsf wsh hta bat cmd jar, **msc, url, svg htm html**, zip rar 7z iso img vhd vhdx | the same without `--docscan-disarm` (vendor rules; document rules only in the JSON) |
-| `document`, third-pass PCs only | **odt ods odp txt csv** (`-CriticalExt`) | the same + `--critical-rules/--critical-out` |
+| `document`, only with the third pass on | **odt ods odp txt csv** (`-CriticalExt`) | the same + `--critical-rules/--critical-out` |
 | other | — | ignored |
 
 - **Record verdict:** the verdict from the JSON (policy); if there are `yara_file_matches` (for `document`
@@ -974,7 +1002,8 @@ with a vendor-rule match → quarantine), `-MaxSizeMB` (100), `-SettleSeconds` (
 `-RescanCooldown` (60), `-DisarmRetryMinutes` (60), `-DisarmNoticeHours` (24), `-MaxLogMB` (50) and `-KeepLogs` (5) — rotation of `docscan-results.json` and `watcher.log`
 (`file` → `file.1` … `file.5`), `-DocExt`, `-GenExt`, `-ExcludePattern`.
 Macro code: `-MacroDir` (`<OutDir>\..\macros`), `-MacroUpload` (collector URL, empty — local only),
-`-MacroKeepDays` (90), `-MacroMaxMB` (500). Third pass: `-CriticalRules` (the E5Search rules file, empty — off),
+`-MacroKeepDays` (90), `-MacroMaxMB` (500). Third pass: `-CriticalRules` (a `.yar` file or a folder of `*.yar`; `install.ps1` passes
+`<InstallDir>\rules\critical`; empty — off),
 `-CriticalOut` (`<OutDir>\..\critical\critical.json`), `-CriticalExt` (`.odt .ods .odp .txt .csv` — added to
 `document` only with the third pass on).
 
@@ -1000,7 +1029,7 @@ Start-ScheduledTask docscan-watcher          # Stop-ScheduledTask docscan-watche
 - `results\docscan-results.json` — UTF-8, one JSON object per line:
   ```json
   {"timestamp":"2026-11-02T13:24:36.205+02:00","source":"docscan","host":"WIN-TEST","event":"Created",
-   "category":"document","docfile":{"path":"C:\\...\\Rakhunok_2026_315368.docm","name":"Rakhunok_2026_315368.docm",
+   "category":"document","docfile":{"path":"C:\\...\\Rakhunok_2026_NNNNNN.docm","name":"Rakhunok_2026_NNNNNN.docm",
    "ext":".docm","size":1924,"sha256":"822f99e6…"},"verdict":"HIGH",
    "docscan":{"ftype":"ooxml","findings":["MACRO_PRESENT","MACRO_SUSPICIOUS","MACRO_AUTOEXEC","MACRO_NETWORK"],
               "verdict":"HIGH","evidence":{"vba_evidence":"powershell | WScript.Shell | …"},
@@ -1010,7 +1039,7 @@ Start-ScheduledTask docscan-watcher          # Stop-ScheduledTask docscan-watche
    "macro":{"file":"C:\\ProgramData\\DocScan\\macros\\822f99e6….vba.txt","size":555,"uploaded":true},
    "critical":null,"errors":[]}
   ```
-  On a third-pass PC, for a queued document: `"critical":{"queued":true,"fragments":2,"rules":["crit_markings"]}`.
+  With the third pass on, for a queued document: `"critical":{"queued":true,"fragments":2,"rules":["crit_markings"]}`.
 - `C:\ProgramData\DocScan\macros\` — macro code (§12.3, field `macro`); `C:\ProgramData\DocScan\critical\critical.json`
   — the E5Search queue (§15).
 - `results\watcher.log` — human-readable log. Follow it live:
@@ -1023,10 +1052,12 @@ Start-ScheduledTask docscan-watcher          # Stop-ScheduledTask docscan-watche
 
 | File | What it does |
 |---|---|
-| `build_package.ps1` | on the build machine: `DocScan-<version>.zip` = `bin\yara64.exe` + `vcruntime140*.dll` (yara64 is built with `/MD`; the UCRT ships with Windows 10/11) + `rules\` + `watcher\` + scripts + `VERSION.txt` + `SHA256SUMS.txt` |
-| `install.ps1` | on the target as administrator: verifies SHA256 → copies to `C:\Program Files\DocScan` → `C:\ProgramData\DocScan\{results,quarantine}` accessible only to SYSTEM + Administrators → **removes the old implementation completely** (Wazuh active-response: `doc-scan.ps1`, `doc-scan.cmd`, `tmp\docscan`, the old YARA `active-response\bin\yara` + `yara-scan.*`; the old quarantine is moved to `quarantine\legacy\`; other ARs are left alone; `-KeepLegacy`/`-KeepLegacyYara` to keep them) → **Wazuh agent**: `ossec.conf` (backed up) — removes doc-scan/yara-scan `<command>`/`<active-response>`, adds a json `<localfile>` for `results\docscan-results.json`, restarts `WazuhSvc`; rolled back if the agent rejects it → self-test (yara64, rule compilation, a test JSON) → Windows service **"DocScan Watcher"** (`DocScanWatcher`, `watcher\docscan-watcher.exe`, Go; `-Workers N` — a fixed number of parallel scans, automatic otherwise): automatic start with Windows, as SYSTEM, restarted by Windows after a failure (10 s / 10 s / 60 s), events in the System log; `-WatcherEngine ps` — the old PowerShell script run by the scheduled task "DocScan Watcher" → starts it and checks the watcher came up. Re-running = upgrade (previous rules → `rules.prev\`). Parameters: `-WatchPath`, `-InstallDir`, `-DataDir`, `-QuarantineGeneral`, `-NoStart`, `-NoAvExclusion` (do not add the Microsoft Defender exclusions for `C:\Program Files\DocScan` and `C:\ProgramData\DocScan`, otherwise added before the files are copied; `uninstall.ps1` removes the program exclusion, the data one with `-Purge`; ESET — a warning only, exclusions via an ESET PROTECT policy), `-DetectOnly` (pilot: the watcher runs with `-NoDisarm` — detection and alerts only, files are not changed), `-MacroUpload <url>` (macro code copies to a collector), `-CriticalRules <file>` (third pass: the E5Search rules → `C:\Program Files\DocScan\critical\`, compile check; without it the installed rules stay), `-NoCritical` (turn the third pass off and remove the rules) |
-| `DocScan-Install.ps1` | **the only script for a PC**, install and update from the **GitHub release** (no deployment servers): downloads `DocScan-windows-x64.zip` and `.sha256` from the latest release (`releases/latest/download/…`, no GitHub API) or from the release `-Version` (`v1.0.0`; old releases — `20261116-7b6f6764`) → checks SHA256 → extracts → runs the package `install.ps1` in-process (`-DetectOnly`, `-WatchPath`, `-NoAvExclusion`, `-QuarantineGeneral`, `-MacroUpload <url>`, `-NoCritical`, `-WatcherEngine`, `-Workers` are passed through) → removes temp files. `-Critical <file / UNC / URL>` — the E5Search rules (not in the release: sensitive); a private URL — `-CriticalToken` or `$env:DOCSCAN_CRITICAL_TOKEN`. TLS 1.2 is enabled explicitly (PowerShell 5.1). New version: `cirun --release` (number `vX.Y.Z`, last part +1; `--bump minor/major`) |
-| `uninstall.ps1` | stops and deletes the service (and the task of older versions), the watcher process, deletes the program; `-Purge` also removes results and quarantine. Does not bring the old implementation back |
+| `build_package.ps1` | on the build machine: `DocScan-<version>.zip` = `bin\yara64.exe` + `yarac64.exe` + `vcruntime140*.dll` (yara64 is built with `/MD`; the UCRT ships with Windows 10/11) + `watcher\` (`docscan-watcher.exe` + the fallback `docscan-watcher.ps1`) + `updater\docscan-updater.exe` + scripts + `VERSION.txt` + `SHA256SUMS.txt`. **No rules in the package** (since v1.0.6) — they come from the yara-docscan-rules releases (§6.2) |
+| `install.ps1` | on the target as administrator: verifies SHA256 → copies to `C:\Program Files\DocScan` → `C:\ProgramData\DocScan\{results,quarantine}` accessible only to SYSTEM + Administrators → **removes the old implementation completely** (Wazuh active-response: `doc-scan.ps1`, `doc-scan.cmd`, `tmp\docscan`, the old YARA `active-response\bin\yara` + `yara-scan.*`; the old quarantine is moved to `quarantine\legacy\`; other ARs are left alone; `-KeepLegacy`/`-KeepLegacyYara` to keep them) → **Wazuh agent**: `ossec.conf` (backed up) — removes doc-scan/yara-scan `<command>`/`<active-response>`, adds a json `<localfile>` for `results\docscan-results.json`, restarts `WazuhSvc`; rolled back if the agent rejects it → self-test (yara64, rule compilation, a test JSON) → Windows service **"DocScan Watcher"** (`DocScanWatcher`, `watcher\docscan-watcher.exe`, Go; `-Workers N` — a fixed number of parallel scans, automatic otherwise): automatic start with Windows, as SYSTEM, restarted by Windows after a failure (10 s / 10 s / 60 s), events in the System log; `-WatcherEngine ps` — the old PowerShell script run by the scheduled task "DocScan Watcher" → starts it and checks the watcher came up → service **"DocScan Updater"** (`DocScanUpdater`, `updater\docscan-updater.exe`; settings — `C:\ProgramData\DocScan\update\updater.json` from `-UpdateMode github | mirror | marker | off`, `-UpdateMirror`, `-UpdateMarker`, `-UpdateEveryHours`, `-UpdateWindow`, `-ListsUrl` / `-ListsKey` / `-ListsEveryHours` / `-ListsToken`). Re-running = upgrade (previous rules → `rules.prev\`); the parameters of every install are kept in `C:\ProgramData\DocScan\install.json` (`-Reuse` repeats them — that is how the updater runs `install.ps1`). **Rules:** `-Rules <DocScan-rules-bundle.zip | URL | folder with rules-manifest.json/.sig + DocScan-rules.zip>` — a signed yara-docscan-rules release, verified and installed by `docscan-updater.exe`; without `-Rules` the rules a PC already has from a bundle (`rules\VERSION.txt`) stay; no rules at all — the install stops and points to `-Rules`. **Organisation lists:** `-Whitelist` / `-Blacklist <file>` → `C:\ProgramData\DocScan\lists\`, `-NoWhitelist` / `-NoBlacklist` — remove. Parameters: `-WatchPath`, `-InstallDir`, `-DataDir`, `-QuarantineGeneral`, `-NoStart`, `-NoAvExclusion` (do not add the Microsoft Defender exclusions for `C:\Program Files\DocScan` and `C:\ProgramData\DocScan`, otherwise added before the files are copied; `uninstall.ps1` removes the program exclusion, the data one with `-Purge`; ESET — a warning only, exclusions via an ESET PROTECT policy), `-DetectOnly` (pilot: the watcher runs with `-NoDisarm` — detection and alerts only, files are not changed), `-MacroUpload <url>` (macro code copies to a collector), `-NoCritical` (turn the third pass off on this PC; otherwise the watcher gets `-CriticalRules <InstallDir>\rules\critical` — the critical rules of the rules package — and `install.ps1` checks that they compile; the old `<InstallDir>\critical\` folder of earlier versions is deleted) |
+| `DocScan-Install.ps1` | **the only script for a PC**, install and update from the **GitHub release**: downloads `DocScan-windows-x64.zip` and `.sha256` from the latest release (`releases/latest/download/…`, no GitHub API) or from the release `-Version` (`v1.0.0`; old releases — `20261116-7b6f6764`) → checks SHA256 → extracts → runs the package `install.ps1` in-process (`-DetectOnly`, `-WatchPath`, `-NoAvExclusion`, `-QuarantineGeneral`, `-MacroUpload <url>`, `-NoCritical`, `-WatcherEngine`, `-Workers`, `-Rules <bundle / UNC / URL>`, `-Whitelist` / `-Blacklist` / `-NoWhitelist` / `-NoBlacklist`, `-UpdateMode` / `-UpdateMirror` / `-UpdateMarker` / `-UpdateEveryHours` / `-UpdateWindow`, `-ListsUrl` / `-ListsKey` / `-ListsEveryHours` are passed through; `-ListsToken` or `$env:DOCSCAN_LISTS_TOKEN` — for private list URLs) → removes temp files. TLS 1.2 is enabled explicitly (PowerShell 5.1). New version: `cirun --release` (number `vX.Y.Z`, last part +1; `--bump minor/major`) |
+| `uninstall.ps1` | stops and deletes the `DocScanUpdater`, `DocScanWatcher` and `DocScanWeb` services (and removes the web certificate it made trusted) (and the task of older versions), the watcher and updater processes, deletes the program; `-Purge` also removes results and quarantine. Does not bring the old implementation back |
+| `watcher-go/updater/` → `updater\docscan-updater.exe` | service **`DocScanUpdater`**: modes `github` / `mirror` / `marker` / `off`, components `program`, `rules`, `lists`; installs only what the CI signed (lists — with the organisation key), never an older version; a new version that does not start is rolled back. Compiles the rules before swapping them, `critical\` included, with `yara64`. Details — [`UPDATE-DESIGN.md`](UPDATE-DESIGN.md) |
+| `watcher-go/web/` → `web\docscan-web.exe` | service **`DocScanWeb`** (SYSTEM), the PC administrator's web interface, only `https://127.0.0.1:8741/` (`install.ps1 -WebPort`, `-NoWeb` — none). HTTPS with a certificate made at install and trusted in Windows (127.0.0.1 / localhost only, not a CA); login `admin` with a generated password (first sign-in changes it; `docscan-web.exe -ResetPassword`). Pages: state, detections (with what was found in the document), mode and black-list pause, updates, local exceptions, quarantine (restore / delete), local policy, macros, on-demand and USB scan with a folder browser. It only writes settings and request files — the watcher and the updater do the work; every action is an `Admin` record in `docscan-results.json` → Wazuh. Design — [`WEB-DESIGN.md`](WEB-DESIGN.md) |
 | `README.txt` | administrator instructions (shipped in the package) |
 | `manager/cleanup_manager.sh` | **on the Wazuh manager** (root): backs up `ossec.conf`, removes doc-scan/yara-scan `<active-response>`/`<command>`, rules separately: the `manager/local_rules.docscan.xml` block into `local_rules.xml` (section 12.2), `wazuh-analysisd -t`, restarts only then; `--dry-run` shows the changes |
 
@@ -1034,22 +1065,25 @@ Start-ScheduledTask docscan-watcher          # Stop-ScheduledTask docscan-watche
 # build the package (after building yara64.exe with MSBuild):
 powershell -ExecutionPolicy Bypass -File docscan-project\deploy\build_package.ps1
 # on every machine (unzip, PowerShell as administrator):
-powershell -ExecutionPolicy Bypass -File .\install.ps1                     # watches C:\Users
-powershell -ExecutionPolicy Bypass -File .\install.ps1 -WatchPath 'C:\Users','D:\Shares'
-# or from the GitHub release (everything: program, rules, watcher, scripts):
+powershell -ExecutionPolicy Bypass -File .\install.ps1 -Rules .\DocScan-rules-bundle.zip   # new PC: watches C:\Users
+powershell -ExecutionPolicy Bypass -File .\install.ps1 -WatchPath 'C:\Users','D:\Shares'     # update: the rules stay
+# or from the GitHub release (program, watcher, updater, scripts; rules — -Rules from a yara-docscan-rules release):
 [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12   # GitHub needs TLS 1.2
 $f = "$env:TEMP\DocScan-Install.ps1"
 irm https://github.com/rifatismailov/yara-docscan/releases/latest/download/DocScan-Install.ps1 -OutFile $f
-powershell -ExecutionPolicy Bypass -File $f                                   # a normal PC
-powershell -ExecutionPolicy Bypass -File $f -DetectOnly                       # pilot: detection only
-powershell -ExecutionPolicy Bypass -File $f -Critical D:\e5\critical-rules.yar  # lawyer / accountant / HR PC (+ third pass; file, UNC or URL)
+$rb = "https://github.com/rifatismailov/yara-docscan-rules/releases/latest/download/DocScan-rules-bundle.zip"
+powershell -ExecutionPolicy Bypass -File $f -Rules $rb                        # new PC (with the third pass)
+powershell -ExecutionPolicy Bypass -File $f                                   # update: the rules are there, DocScanUpdater updates them
+powershell -ExecutionPolicy Bypass -File $f -Rules $rb -DetectOnly            # pilot: detection only
+powershell -ExecutionPolicy Bypass -File $f -Rules $rb -NoCritical            # no third pass on this PC
 ```
 Verified on Windows 10 (2026-11-04): install, disarm right after start, upgrade, refusal of a tampered package,
 uninstall with `-Purge`; complete removal of the old implementation on a mock Wazuh agent (all traces removed,
 old quarantine moved, an unrelated AR left intact).
 After rollout remove the `<command>`/`<active-response>` for `doc-scan` and `yara-scan` on the Wazuh manager. The startup trigger is registered (`MSFT_TaskBootTrigger`); the start after a reboot was tested on Windows 11
 (2026-11-06). Installation via `irm | iex` (normal, pilot, with the third pass) and from a 32-bit PowerShell was tested 2026-11-06…07. Since 2026-11-16 DocScan is distributed only as GitHub
-releases (`DocScan-Install.ps1`); installing the program from a release was tested on Windows 11 (2026-11-16).
+releases (`DocScan-Install.ps1`); installing the program from a release was tested on Windows 11 (2026-11-16). Since v1.0.6 the rules come as a
+separate yara-docscan-rules release (`-Rules`), updated by `DocScanUpdater`.
 
 ## 8. Running — cheat sheet
 
@@ -1068,7 +1102,7 @@ $r   = "C:\docscan-build\yara\docscan-project\rules"
 | Which policy rules matched | `& $y -w $r\docscan-policy.yar <file>` |
 | See every module fact | `& $y -D $r\docscan.yar <file>` |
 | Extract VBA to a file | `& $y --docscan-extract=vba.out $r\docscan.yar <file>` |
-| Third pass: queue for E5Search if a phrase is found | `& $y -w --docscan-json --critical-rules=critical-rules.yar --critical-out=C:\docscan-build\critical.json $r\docscan-index.yar <file>` |
+| Third pass: queue for E5Search if a phrase is found | `& $y -w --docscan-json --critical-rules=$r\critical --critical-out=C:\docscan-build\critical.json $r\docscan-index.yar <file>` |
 | Change what counts as HIGH / what gets disarmed | edit `docscan-policy.yar` (§6.1) |
 | Regression test | `powershell -ExecutionPolicy Bypass -File ...\test-range\run_tests.ps1 -Yara $y -Samples ...\test-samples -Rules $r\docscan-index.yar` |
 | Auto-scan new files | §7 |
@@ -1132,13 +1166,13 @@ then `autoreconf` + `configure` (macOS).
 
 | File | Vector | Expected (findings, verdict) |
 |---|---|---|
-| `Dogovir_postachannya_315368.docx` | Remote template in `word/_rels/settings.xml.rels` | REMOTE_TEMPLATE, HIGH, `template_url` |
-| `Akt_zvirky_315368.docx` | Follina, `ms-msdt:/id PCWDiagnostic … IEX(IWR …/f.ps1)` | PROTOCOL_HANDLER, HIGH |
-| `Vypyska_bank_315368.docx` | `DDEAUTO cmd.exe /c powershell …` | DDE_AUTO, HIGH, `dde_command` |
-| `Rakhunok_2026_315368.docm` | VBA AutoOpen/Document_Open + powershell/Shell/DownloadFile | MACRO_SUSPICIOUS + MACRO_PRESENT, HIGH |
-| `Pretenziya_315368.rtf` | `\objupdate` + `\objdata` | RTF_OBJUPDATE, HIGH |
-| `Platizhka_315368.pdf` | `/OpenAction` + `/JavaScript` | PDF_JS_AUTO, HIGH |
-| `Rakhunok-faktura_315368.pdf.lnk` | LNK → powershell -w Hidden IEX DownloadString | LNK_URL_ARGS + LNK_OBFUSCATED + LNK_LOLBIN, HIGH |
+| `Dogovir_postachannya_NNNNNN.docx` | Remote template in `word/_rels/settings.xml.rels` | REMOTE_TEMPLATE, HIGH, `template_url` |
+| `Akt_zvirky_NNNNNN.docx` | Follina, `ms-msdt:/id PCWDiagnostic … IEX(IWR …/f.ps1)` | PROTOCOL_HANDLER, HIGH |
+| `Vypyska_bank_NNNNNN.docx` | `DDEAUTO cmd.exe /c powershell …` | DDE_AUTO, HIGH, `dde_command` |
+| `Rakhunok_2026_NNNNNN.docm` | VBA AutoOpen/Document_Open + powershell/Shell/DownloadFile | MACRO_SUSPICIOUS + MACRO_PRESENT, HIGH |
+| `Pretenziya_NNNNNN.rtf` | `\objupdate` + `\objdata` | RTF_OBJUPDATE, HIGH |
+| `Platizhka_NNNNNN.pdf` | `/OpenAction` + `/JavaScript` | PDF_JS_AUTO, HIGH |
+| `Rakhunok-faktura_NNNNNN.pdf.lnk` | LNK → powershell -w Hidden IEX DownloadString | LNK_URL_ARGS + LNK_OBFUSCATED + LNK_LOLBIN, HIGH |
 
 `generated/` — safe test range (`gen_test_range.py`, some from `gen_range.ps1`; inert macros, URLs to
 `malware-test.local` / `docscan-test.invalid`). **Reference — `docscan-project/ci/expected-verdicts.tsv`**; CI
@@ -1223,8 +1257,9 @@ customer's real samples, malware, corpora (from the file server); `check_watcher
 `docscan-results.json` records against the references. Details — `ci/README.md`.
 
 The corpora and the malware are not in git: the Mac packs them into the private Forgejo package registry, the VM
-downloads them and deletes them after the tests. The E5Search corpus and rules (third pass) are not part of CI —
-they were checked separately (§10 "Verification history").
+downloads them and deletes them after the tests. The E5Search corpus (third pass) is not part of CI — it was
+checked separately (§10 "Verification history"). The critical rules are checked by `cirun rules-release --critical
+<docscan-critical>` when the rules package is built (compilation + `tests/match`, `tests/no-match`, §15).
 
 ### Fuzzing (libFuzzer)
 
@@ -1302,7 +1337,7 @@ python3 docscan-project/test-critical/run_tests.py --yara ./yara           # Win
   **reboot**: the task started by itself, `rules.yarc` recompiled, scanning works after the start.
   Found and fixed: since `0511a241` `yara64.exe` died on Windows before doing anything (`STATUS_STACK_OVERFLOW`:
   `THREAD_ARGS[YR_MAX_THREADS]` on the `main` stack > 1 MB) — now on the heap.
-- Third pass (2026-11-07, Windows 11 VM, MSVC, package `20261107-b9083062`, full install with `-CriticalRules`):
+- Third pass (2026-11-07, Windows 11 VM, MSVC, package `20261107-b9083062`, full install with `-CriticalRules` — a parameter of that version, now removed):
   the E5Search corpus, 69 `.md` → 372 documents in 8 formats — queued 186/208 positives, 0/164 negatives, every JSON
   valid, fragments = the reference; through the watcher — the same in 261 s. "Compote" (180 corpus documents with
   inert first/second-pass vectors, disarm on) — 0 failures: verdicts, disarm (incl. quarantine) and the original text
@@ -1334,10 +1369,10 @@ Access from the Mac — WinRM (HTTP 5985, NTLM). To enable on a new machine (Pow
 ```powershell
 Enable-PSRemoting -Force -SkipNetworkProfileCheck
 Set-ItemProperty HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System -Name LocalAccountTokenFilterPolicy -Value 1 -Type DWord
-New-NetFirewallRule -Name WinRM-From-Mac -DisplayName "WinRM from Mac" -Protocol TCP -LocalPort 5985 -RemoteAddress 192.168.0.0/16 -Action Allow -Profile Any
+New-NetFirewallRule -Name WinRM-From-Mac -DisplayName "WinRM from Mac" -Protocol TCP -LocalPort 5985 -RemoteAddress <subnet> -Action Allow -Profile Any
 ```
 The VM is not on the Mac's subnet: traffic goes through NAT routers, so the firewall sees the
-router's address rather than the Mac's IP — hence the rule allows `192.168.0.0/16`.
+router's address rather than the Mac's IP — hence the rule allows the whole routers' subnet (`<subnet>`).
 
 ---
 
@@ -1454,8 +1489,8 @@ for every counted vendor match + rules on the macro code + "action: <disarm>" (�
 `--docscan-extract`; the code (before disarm) goes to `C:\ProgramData\DocScan\macros\<document sha256>.vba.txt`:
 a header (VBA comment lines, UTF-8: host, path, sha256, findings, time), then the code in the project code page
 (usually 1251). One file per document content. Retention: `-MacroKeepDays` 90 / `-MacroMaxMB` 500 (oldest first),
-checked hourly. `-MacroUpload <url>` — a copy is POSTed to a collector (`DocScan-Install.ps1` uses the server it
-installs from; `-NoMacroUpload` turns it off); sent files are listed in `macros\sent.txt` (one sha256 per line), failed uploads are
+checked hourly. `-MacroUpload <url>` — a copy is POSTed to a collector (`install.ps1` / `DocScan-Install.ps1
+-MacroUpload <url>`; without it the code stays on the PC only); sent files are listed in `macros\sent.txt` (one sha256 per line), failed uploads are
 retried hourly. The folder is inside the Defender exclusion (otherwise it would delete malicious macro texts).
 Document analysis: `docscan.{ftype, findings[], findings_text[], verdict, evidence.{template_url, dde_command,
 vba_evidence, lnk_target, lnk_args}, yara_matches[], yara_file_matches[], yara_doc_matches[], yara_info_matches[],
@@ -1527,7 +1562,7 @@ agent's `ossec.log` (`localfile` not picked up).
 - FileSystemWatcher buffer overflow (thousands of files at once) → events are lost; after 60 s the watcher
   rescans files changed since then (walking `-WatchPath` takes a while on big profiles).
 - `.odt/.ods/.odp`, `.scf`, `.library-ms`, `.chm`, `.mht/.mhtml` are not scanned for malware — no ready rules
-  (`.odt .ods .odp .txt .csv` are scanned only for their text on third-pass PCs).
+  (`.odt .ods .odp .txt .csv` are scanned only for their text when the third pass is on).
   `GrimResource` (`.msc`) is labelled INFO by its author — the match is in `yara_info_matches`, no alert.
 - The quarantine folder (`-BackupDir`) grows without limit — clean it manually or with a retention job.
 - The collector on the server (`~/collected`) does not clean macro copies — watch the disk space.
@@ -1554,7 +1589,7 @@ git push docscan feature/docscan-module
 
 **Never published** (`.gitignore`): `docscan-project/test-samples/provided/` (live customer samples,
 internal C2), `attack-vectors`, `docscan-project/vendor-sources/` (rule source clones), `.claude/`,
-`docscan-project/test-range/samples/`, `docscan-project/test-range/range/` (generator output), `docscan-project/fuzz/external/`, `docscan-project/dist/`, `docscan-project/ci/config.yaml` (internal addresses), `ci-out/`, `*.docscan-bak`, `*.docscan-tmp`. Also kept out of the repository: real malware (`~/docscan-ci/malware`), the E5Search corpus and rules. The upstream rule
+`docscan-project/test-range/samples/`, `docscan-project/test-range/range/` (generator output), `docscan-project/fuzz/external/`, `docscan-project/dist/`, `docscan-project/ci/config.yaml` (internal addresses), `docscan-project/rules/` (the rules are a separate repository, yara-docscan-rules, §6.2), `ci-out/`, `*.docscan-bak`, `*.docscan-tmp`. Also kept out of the repository: real malware (`~/docscan-ci/malware`), the E5Search corpus and the sources of the critical rules (private repository `docscan-critical`, §15). The upstream rule
 `test-*[^.c]` hides the `test-range`/`test-samples` folders — `.gitignore` re-includes them explicitly.
 The repository is public: before every commit cirun checks that there are no internal IPs, host names or credentials (ci/README.md); only a commit after a green CI run reaches GitHub.
 
@@ -1575,11 +1610,13 @@ of each rule is in its `meta` (`license_url`): DRL 1.1 (SEKOIA, cod3nym, dr4k0ni
 
 ## 15. Third pass — critical information (E5Search)
 
-YARA is only a quick pre-filter here: it looks for the E5Search phrases in the document **text** and, on a match,
+YARA is only a quick pre-filter here: it looks for the phrases of the critical rules in the document **text** and, on a match,
 puts the full text into a queue. E5Search gives the verdict; another watcher sends the documents to it.
 
 - **Call** (the watcher adds it for category `document`, in the same yara64 run as `--docscan-json`):
-  `yara64 --critical-rules=<critical-rules.yar> --critical-out=<critical.json> [--critical-chunk=700,120] ...`
+  `yara64 --critical-rules=<InstallDir>\rules\critical --critical-out=<critical.json> [--critical-chunk=700,120] ...`
+  (`--critical-rules` is a `.yar` file or a folder: every top-level `*.yar` is compiled together, each file in its own
+  namespace — the file name without `.yar`; at most 256 files / 64 MB).
 - **Text**: `.docx .xlsx .pptx`, `.odt .ods .odp`, `.doc .xls .ppt`, `.rtf`, `.txt .csv` (UTF-8 / UTF-16 with BOM /
   Windows-1251). PDF, images and the rest: `docscan-critical: skipped (...)` on stderr, nothing is written. Plain
   text (no Markdown), paragraphs by `\n`; metadata from `docProps/core.xml`, ODF `meta.xml`, OLE
@@ -1596,12 +1633,20 @@ puts the full text into a queue. E5Search gives the verdict; another watcher sen
   only (full document texts).
 - **Output**: `docscan-critical: queued fragments=N rules=a,b` on stdout; the document text is never printed. No
   special exit codes. The Wazuh record only gets `critical: {queued, fragments, rules}`.
-- **Selected PCs only** (lawyer, accountant, HR). With the third pass on, the watcher also watches
-  `.odt .ods .odp .txt .csv` (`-CriticalExt`); other PCs do not. The third pass is off by default. It is turned on by
-  `DocScan-Install.ps1 -Critical <file / UNC / URL>`: the rules file comes from there (it is not in the GitHub
-  release), `install.ps1` puts it into `C:\Program Files\DocScan\critical\` and checks that it
-  compiles. A normal update (without `-Critical`) keeps the installed rules as they are; `-NoCritical` turns the
-  check off and removes the rules. The rules are not in the package or the repository: an E5Search requirement.
+- **On every PC.** The critical rules are part of the rules package: `critical/*.yar` in `DocScan-rules.zip` (any
+  number of files), on the PC — `<InstallDir>\rules\critical\*.yar`; they are updated with the rest of the rules by
+  the `DocScanUpdater` service. `install.ps1` passes the watcher `-CriticalRules <InstallDir>\rules\critical` and
+  checks that the rules compile; `-NoCritical` (`install.ps1` / `DocScan-Install.ps1`) turns the third pass off on this
+  PC. With the third pass on, the watcher also watches `.odt .ods .odp .txt .csv` (`-CriticalExt`). The installer
+  deletes the old `<InstallDir>\critical\` folder (`critical-rules.yar` of earlier versions); the parameters
+  `install.ps1 -CriticalRules` and `DocScan-Install.ps1 -Critical / -CriticalToken` no longer exist.
+- **Compile check.** At start the watcher checks that the critical rules compile (an error → `[ERROR]` in the log; the
+  updater then rolls back a new rules package). The updater, installing a rules package, also compiles `critical\`
+  with `yara64` before the swap.
+- **Where the rules come from.** Sources — the private repository `docscan-critical` (`critical/`, `tests/match`,
+  `tests/no-match`). One command builds and tests the whole rules package (main rules + `critical/`):
+  `cirun rules-release --dir <yara-docscan-rules> --critical <docscan-critical> [--dry-run]`. How to write critical
+  rules — [`CRITICAL-RULES.md`](CRITICAL-RULES.md).
 - **Once per content**: the watcher queues the same document (sha256) once per run (rescans - a disarm retry of an
   open file, DisarmPending, a copy in another folder - do not duplicate it); a changed version is queued again.
 - **Limits**: text up to 16 MB (≈ 8,000 pages; the rest is cut, a phrase beyond it is not found); file up to 100 MB;

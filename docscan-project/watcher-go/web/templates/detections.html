@@ -1,0 +1,95 @@
+{{define "detections"}}{{template "head" .}}
+{{with .Data}}
+<h1>{{if .Admin}}Дії у веб-інтерфейсі{{else}}Виявлення{{end}}</h1>
+<form method="get" action="/detections" class="row filters">
+  {{if .Admin}}<input type="hidden" name="admin" value="1">{{else}}
+  <label class="lbl">рівень <select name="verdict">
+    <option value="" {{if eq .Verdict ""}}selected{{end}}>виявлення (без INFO)</option>
+    <option {{if eq .Verdict "HIGH"}}selected{{end}}>HIGH</option>
+    <option {{if eq .Verdict "MEDIUM"}}selected{{end}}>MEDIUM</option>
+    <option {{if eq .Verdict "LOW"}}selected{{end}}>LOW</option>
+    <option {{if eq .Verdict "INFO"}}selected{{end}}>INFO</option>
+    <option {{if eq .Verdict "SKIPPED"}}selected{{end}}>SKIPPED</option>
+    <option value="all" {{if eq .Verdict "all"}}selected{{end}}>усі</option>
+  </select></label>{{end}}
+  <label class="lbl">за <select name="days">
+    <option value="" {{if eq .Days ""}}selected{{end}}>весь час</option>
+    <option value="1" {{if eq .Days "1"}}selected{{end}}>24 год</option>
+    <option value="7" {{if eq .Days "7"}}selected{{end}}>7 днів</option>
+    <option value="30" {{if eq .Days "30"}}selected{{end}}>30 днів</option>
+  </select></label>
+  <label class="lbl">шлях / текст / sha256 <input name="q" value="{{.Text}}" placeholder="Downloads, AnyDesk ..."></label>
+  {{if not .Admin}}<label class="lbl">правило <input name="rule" value="{{.Rule}}" placeholder="MACRO_AUTOEXEC"></label>{{end}}
+  <button>Показати</button>
+  {{if .Admin}}<a href="/detections">← виявлення</a>{{else}}<a href="/detections?admin=1">дії у веб →</a>{{end}}
+</form>
+<p class="hint">Знайдено {{.Total}}{{if gt .Pages 1}} · сторінка {{add .Page 1}} з {{.Pages}}{{end}}. Найновіші — зверху.</p>
+{{if .TopRules}}<p class="tags">правила на цій сторінці:
+{{range .TopRules}}<a class="tag" href="/detections?rule={{q .K}}&verdict=all">{{.K}} <i>{{.N}}</i></a> {{end}}</p>{{end}}
+<table>
+{{if .Admin}}<tr><th>час</th><th>хто</th><th>дія</th><th>подробиці</th></tr>
+{{range .Recs}}<tr><td class="nowrap">{{ts .Time}}</td><td>{{.AdminUser}}</td><td>{{.AdminAction}}</td><td class="hint">{{.Summary}}</td></tr>{{end}}
+{{else}}<tr><th>час</th><th>рівень</th><th>файл</th><th>що знайдено</th><th>дія</th></tr>
+{{range .Recs}}<tr>
+<td class="nowrap"><a href="/record?f={{.File}}&o={{.Off}}">{{ts .Time}}</a></td>
+<td><span class="v v-{{.Verdict}}">{{.Verdict}}</span></td>
+<td class="path"><a href="/record?f={{.File}}&o={{.Off}}">{{.Path}}</a>{{if .List}}<br><span class="hint">список: {{.List}}{{if .ListComment}} — {{.ListComment}}{{end}}</span>{{end}}</td>
+<td>{{range .Rules}}<a class="tag" href="/detections?rule={{q .}}&verdict=all">{{.}}</a> {{end}}{{if and (not .Rules) .Summary}}<span class="hint">{{short .Summary 160}}</span>{{end}}</td>
+<td>{{.Disarm}}</td></tr>{{end}}
+{{end}}
+</table>
+{{if gt .Pages 1}}<p class="row">
+{{if gt .Page 0}}<a href="/detections?verdict={{q .Verdict}}&days={{q .Days}}&q={{q .Text}}&rule={{q .Rule}}{{if .Admin}}&admin=1{{end}}&page={{add .Page -1}}">‹ новіші</a>{{end}}
+{{if lt (add .Page 1) .Pages}}<a href="/detections?verdict={{q .Verdict}}&days={{q .Days}}&q={{q .Text}}&rule={{q .Rule}}{{if .Admin}}&admin=1{{end}}&page={{add .Page 1}}">старіші ›</a>{{end}}
+</p>{{end}}
+{{end}}
+{{template "foot" .}}{{end}}
+
+{{define "record"}}{{template "head" .}}
+{{with .Data}}{{with .Rec}}
+<h1><span class="v v-{{.Verdict}}">{{.Verdict}}</span> {{.Name}}</h1>
+<table class="kv">
+<tr><th>час</th><td>{{ts .Time}}</td></tr>
+<tr><th>подія</th><td>{{.Event}}</td></tr>
+<tr><th>шлях</th><td class="path">{{.Path}}</td></tr>
+<tr><th>sha256</th><td><code>{{.SHA}}</code></td></tr>
+{{if .List}}<tr><th>список</th><td>{{.List}}{{if .ListComment}} — {{.ListComment}}{{end}}</td></tr>{{end}}
+{{if .Rules}}<tr><th>правила / знахідки</th><td>{{range .Rules}}<a class="tag" href="/detections?rule={{q .}}&verdict=all">{{.}}</a> {{end}}</td></tr>{{end}}
+<tr><th>дія</th><td>{{if .Disarm}}{{.Disarm}}{{else}}—{{end}}</td></tr>
+{{if and .Path (ne .Event "Admin")}}<tr><th></th><td>
+{{if eq .Disarm "quarantined"}}<a class="pill amber" href="/exceptions?f={{.File}}&o={{.Off}}">✚ Додати у виключення і повернути файл</a>
+{{else if eq .Verdict "HIGH" "MEDIUM" "LOW"}}<a class="pill" href="/exceptions?f={{.File}}&o={{.Off}}">✚ Додати у виключення</a>{{end}}
+</td></tr>{{end}}
+{{if .Summary}}<tr><th>опис</th><td>{{.Summary}}</td></tr>{{end}}
+</table>
+{{end}}
+{{with .Doc}}
+<h2>Документ{{if .Ftype}} · {{.Ftype}}{{end}}</h2>
+{{if .Findings}}<table><tr><th>знахідка</th><th>рівень</th><th>що це</th><th>дія</th><th>MITRE</th></tr>
+{{range .Findings}}<tr><td><a class="tag" href="/detections?rule={{q .Name}}&verdict=all">{{.Name}}</a></td><td>{{if .Severity}}<span class="v v-{{.Severity}}">{{.Severity}}</span>{{end}}</td>
+<td>{{.Text}}</td><td>{{.Disarm}}</td><td>{{.Mitre}}</td></tr>{{end}}</table>{{end}}
+{{if .Evidence}}<h3>Докази</h3><table class="kv">{{range .Evidence}}<tr><th>{{.Label}}</th><td class="path"><code>{{.Value}}</code></td></tr>{{end}}</table>{{end}}
+{{if .Rules}}<h3>Правила YARA</h3><table><tr><th>правило</th><th>де спрацювало</th><th>опис</th></tr>
+{{range .Rules}}<tr><td><a class="tag" href="/detections?rule={{q .Rule}}&verdict=all">{{.Rule}}</a></td><td>{{.Where}}</td><td class="hint">{{.Desc}}</td></tr>{{end}}</table>{{end}}
+{{if .MacroSHA}}<p><a class="pill amber" href="/macro?sha={{.MacroSHA}}">{ } Код макросів документа ({{mb .MacroSize}})</a></p>{{end}}
+{{if .Critical}}<p class="warn">Критична інформація: документ поставлено в чергу (правила: {{.Critical}}).</p>{{end}}
+{{end}}
+<h2>Запис повністю (як у Wazuh)</h2>
+<pre class="json">{{.JSON}}</pre>
+{{end}}
+<p><a href="/detections">← до списку</a></p>
+{{template "foot" .}}{{end}}
+
+{{define "logs"}}{{template "head" .}}
+{{with .Data}}
+<h1>Журнали</h1>
+<form method="get" action="/logs" class="row filters">
+  <label class="lbl">журнал <select name="which">{{$w := .Which}}{{range .Files}}<option {{if eq . $w}}selected{{end}}>{{.}}</option>{{end}}</select></label>
+  <label class="lbl">текст <input name="q" value="{{.Text}}" placeholder="ERROR, lists:, HIGH ..."></label>
+  <button>Показати</button>
+</form>
+<p class="hint">Останні 500 рядків, найновіші — зверху.</p>
+<pre class="log">{{range .Lines}}{{.}}
+{{end}}</pre>
+{{end}}
+{{template "foot" .}}{{end}}

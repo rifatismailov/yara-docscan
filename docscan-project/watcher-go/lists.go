@@ -11,6 +11,7 @@ package main
 // Ціль ярлика (lnk_target) знає лише модуль docscan: якщо в списках є такі записи, ярлик спершу сканується БЕЗ
 // лікування, ціль береться зі звіту (evidence.lnk_target). Файли списків перечитуються, щойно змінились (перезапуск
 // не потрібен); зламаний файл не застосовується — лишається попередня справна версія, у watcher.log — ERROR.
+// Після кожної зміни списків і при старті — прохід по файлах, що ВЖЕ лежать під масками чорного списку (sweep.go).
 
 import (
 	"os"
@@ -29,19 +30,81 @@ type listFile struct {
 	ok         *orglists.List // остання справна версія
 }
 
-// Lists — обидва списки; nil — списків немає (watcher без -Whitelist / -Blacklist).
+// Lists — обидва списки; nil — списків немає (watcher без -Whitelist / -Blacklist). Поруч зі списками з дзеркала
+// організації — ЛОКАЛЬНІ списки цього ПК (whitelist.local.json / blacklist.local.json; веде веб-інтерфейс, напр.
+// «виключення» для своєї програми): застосовуються разом, дзеркало їх не перезаписує.
 type Lists struct {
-	mu           sync.Mutex
-	white, black listFile
-	log          *Logger
-	checked      time.Time
+	mu             sync.Mutex
+	white, black   listFile
+	lwhite, lblack listFile // локальні
+	mw, mb         *orglists.List
+	nw, nb         int // скільки записів з дзеркала на початку mw / mb (решта — локальні)
+	log            *Logger
+	checked        time.Time
+	gen            int // +1 за кожну зміну списків: після неї — прохід по наявних файлах (sweep.go)
+}
+
+// localPath — whitelist.json -> whitelist.local.json (та сама тека).
+func localPath(p string) string {
+	if p == "" {
+		return ""
+	}
+	return strings.TrimSuffix(p, ".json") + ".local.json"
+}
+
+// merge — записи дзеркала, потім локальні (nil, якщо обох немає).
+func merge(m, loc *orglists.List) (*orglists.List, int) {
+	if loc == nil || len(loc.Entries) == 0 {
+		if m == nil {
+			return nil, 0
+		}
+		return m, len(m.Entries)
+	}
+	out := &orglists.List{Schema: orglists.Schema}
+	n := 0
+	if m != nil {
+		out.Serial, out.Entries, n = m.Serial, append(out.Entries, m.Entries...), len(m.Entries)
+	}
+	out.Entries = append(out.Entries, loc.Entries...)
+	return out, n
+}
+
+// source — запис списку list ("white" / "black") з номером i у злитому списку: "mirror" або "local"; і його номер
+// у своєму файлі.
+func (l *Lists) source(list string, i int) (string, int) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	n := l.nw
+	if list == "black" {
+		n = l.nb
+	}
+	if i < n {
+		return "mirror", i
+	}
+	return "local", i - n
+}
+
+// bump — новий прохід по наявних файлах (режим чи пауза чорного списку змінились: settings.go).
+func (l *Lists) bump() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.gen++
+}
+
+// generation — поточні списки і номер їхньої версії.
+func (l *Lists) generation() (white, black *orglists.List, gen int) {
+	white, black = l.get()
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return white, black, l.gen
 }
 
 func newLists(white, black string, log *Logger) *Lists {
 	if white == "" && black == "" {
 		return nil
 	}
-	l := &Lists{white: listFile{kind: "white", path: white}, black: listFile{kind: "black", path: black}, log: log}
+	l := &Lists{white: listFile{kind: "white", path: white}, black: listFile{kind: "black", path: black},
+		lwhite: listFile{kind: "white", path: localPath(white)}, lblack: listFile{kind: "black", path: localPath(black)}, log: log}
 	l.get()
 	return l
 }
@@ -55,11 +118,16 @@ func (l *Lists) get() (white, black *orglists.List) {
 	defer l.mu.Unlock()
 	if time.Since(l.checked) >= 2*time.Second {
 		l.checked = time.Now()
-		for _, f := range []*listFile{&l.white, &l.black} {
+		g := l.gen
+		for _, f := range []*listFile{&l.white, &l.black, &l.lwhite, &l.lblack} {
 			l.reload(f)
 		}
+		if g != l.gen || l.mw == nil && l.mb == nil {
+			l.mw, l.nw = merge(l.white.ok, l.lwhite.ok)
+			l.mb, l.nb = merge(l.black.ok, l.lblack.ok)
+		}
 	}
-	return l.white.ok, l.black.ok
+	return l.mw, l.mb
 }
 
 func (l *Lists) reload(f *listFile) {
@@ -70,6 +138,7 @@ func (l *Lists) reload(f *listFile) {
 	if err != nil || !st.Mode().IsRegular() {
 		if f.known { // список прибрали (install.ps1 -NoWhitelist / -NoBlacklist)
 			f.known, f.ok = false, nil
+			l.gen++
 			l.log.Log("INFO", "lists: %s removed", f.path)
 		}
 		return
@@ -83,6 +152,7 @@ func (l *Lists) reload(f *listFile) {
 		var lst *orglists.List
 		if lst, err = orglists.Parse(b, f.kind); err == nil {
 			f.ok = lst
+			l.gen++
 			l.log.Log("INFO", "lists: %s - %d entries (serial %d)", f.path, len(lst.Entries), lst.Serial)
 			return
 		}
@@ -96,11 +166,13 @@ func (l *Lists) reload(f *listFile) {
 
 // ListHit — запис списку, що вирішив долю файлу (у записі для Wazuh: "list").
 type ListHit struct {
-	List      string `json:"list"`  // white | black
-	Entry     int    `json:"entry"` // номер запису (з 0)
-	By        string `json:"by"`    // які поля збіглися: path, lnk_target, sha256
+	List      string `json:"list"`             // white | black
+	Source    string `json:"source,omitempty"` // mirror (список організації) | local (цього ПК, веб-інтерфейс)
+	Entry     int    `json:"entry"`            // номер запису (з 0) у своєму файлі
+	By        string `json:"by"`               // які поля збіглися: path, lnk_target, sha256
 	Comment   string `json:"comment,omitempty"`
 	LnkTarget string `json:"lnk_target,omitempty"` // ціль ярлика, якщо її перевіряли
+	Paused    string `json:"paused,omitempty"`     // чорний список на паузі до (settings.json)
 }
 
 // applyLists — списки ДО сканування. true — файл вирішено списком (сканування не потрібне).
@@ -133,15 +205,20 @@ func (w *Watcher) applyLists(r *Record, path, sha string, wk *worker) bool {
 	if d.Entry.SHA256 != "" {
 		by = append(by, "sha256")
 	}
-	r.List = &ListHit{List: d.List, Entry: d.Index, By: strings.Join(by, "+"), Comment: d.Entry.Comment, LnkTarget: d.Target}
+	src, idx := w.lists.source(d.List, d.Index)
+	r.List = &ListHit{List: d.List, Source: src, Entry: idx, By: strings.Join(by, "+"), Comment: d.Entry.Comment, LnkTarget: d.Target}
 	if d.Action == "allow" {
 		r.Verdict = "INFO"
 		return true
 	}
 	r.Verdict = "HIGH"
+	paused, until := w.blackPaused(time.Now())
 	switch {
-	case w.c.NoDisarm:
+	case w.noDisarmFor(r):
 		r.Disarm = "detect-only"
+	case paused: // settings.json: the black list is paused (web interface) - reported, not quarantined
+		r.Disarm = "paused"
+		r.List.Paused = until
 	default:
 		if err := quarantine(path, w.c.BackupDir); err != nil {
 			r.Errors = append(r.Errors, "quarantine failed: "+err.Error())

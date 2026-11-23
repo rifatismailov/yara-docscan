@@ -11,8 +11,8 @@
 //	                                     запускає install.ps1 з пакета
 //
 // Імена активів однакові в усіх релізах, тож .../releases/latest/download/<ім'я> - завжди найновіший
-// (без GitHub API і його ліміту 60 запитів на годину з однієї адреси). Правила E5Search (critical) у
-// реліз НЕ потрапляють: їх дають інсталятору окремо (-Critical <файл або URL>).
+// (без GitHub API і його ліміту 60 запитів на годину з однієї адреси). Правил (і критичних теж) у пакеті програми
+// немає: вони в пакеті правил (yara-docscan-rules, critical/*.yar), -Rules.
 package deploy
 
 import (
@@ -118,7 +118,7 @@ func repack(src, dst, title string) error {
 	defer f.Close()
 	w := zip.NewWriter(f)
 	need := map[string]bool{"bin/yara64.exe": false, "install.ps1": false, "SHA256SUMS.txt": false, "VERSION.txt": false,
-		"watcher/docscan-watcher.exe": false, "watcher/docscan-watcher.ps1": false, "updater/docscan-updater.exe": false}
+		"watcher/docscan-watcher.exe": false, "watcher/docscan-watcher.ps1": false, "updater/docscan-updater.exe": false, "web/docscan-web.exe": false}
 	read := func(e *zip.File) ([]byte, error) {
 		r, err := e.Open()
 		if err != nil {
@@ -199,7 +199,7 @@ func (r *Release) Publish(sha string, say func(string, ...any)) error {
 		"    $r = \"<path or URL of DocScan-rules-bundle.zip>\"   # e.g. https://github.com/rifatismailov/yara-docscan-rules/releases/latest/download/DocScan-rules-bundle.zip\n"+
 		"    powershell -ExecutionPolicy Bypass -File $f -Rules $r                 # standard PC\n"+
 		"    powershell -ExecutionPolicy Bypass -File $f -Rules $r -DetectOnly     # pilot: detection and alerts only\n"+
-		"    powershell -ExecutionPolicy Bypass -File $f -Rules $r -Critical <file or URL of critical-rules.yar>\n\n"+
+		"    powershell -ExecutionPolicy Bypass -File $f -Rules $r -NoCritical     # without pass 3 (critical information)\n\n"+
 		"An update of an installed PC needs no -Rules (the installed rules stay; the DocScanUpdater service updates them). "+
 		"Do not run it with irm | iex: the script ends with exit and would close the window.\n\n"+
 		"%s: yara64.exe, yarac64.exe, VC++ runtime, watcher, updater, install.ps1 / uninstall.ps1. "+

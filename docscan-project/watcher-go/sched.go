@@ -10,6 +10,8 @@ package main
 //            during the copy). Newest first still helps with the first files of each folder.
 //   bulk   - mass copies (a folder copied, an archive unpacked, a sync): one FIFO per user profile, served
 //            round-robin, so one user's 100 000 files do not stall everybody else's
+//   scan   - files of an on-demand / USB scan (scanjob.go), only when nothing above waits: scanHi (a USB stick, a
+//            given path) before scanLo (the full scan of the local disks)
 
 import (
 	"strings"
@@ -36,13 +38,46 @@ type sched struct {
 	rr    int
 	nBulk int
 	dirs  map[string]*dirWin
+
+	scanHi, scanLo []job
 }
 
 func newSched(roots []string) *sched {
 	return &sched{roots: roots, bulk: map[string][]job{}, dirs: map[string]*dirWin{}}
 }
 
-func (s *sched) len() int { return len(s.retry) + len(s.fresh) + s.nBulk }
+func (s *sched) len() int { return len(s.retry) + len(s.fresh) + s.nBulk + s.scanLen() }
+
+func (s *sched) scanLen() int { return len(s.scanHi) + len(s.scanLo) }
+
+func (s *sched) addScan(j job, full bool) {
+	if full {
+		s.scanLo = append(s.scanLo, j)
+	} else {
+		s.scanHi = append(s.scanHi, j)
+	}
+}
+
+// dropScan - a scan was stopped: its files leave the queue (returns their paths)
+func (s *sched) dropScan(id string) []string {
+	var gone []string
+	keep := func(q []job) []job {
+		o := q[:0]
+		for _, j := range q {
+			if j.scan == id {
+				gone = append(gone, j.path)
+			} else {
+				o = append(o, j)
+			}
+		}
+		for i := len(o); i < len(q); i++ {
+			q[i] = job{}
+		}
+		return o
+	}
+	s.scanHi, s.scanLo = keep(s.scanHi), keep(s.scanLo)
+	return gone
+}
 
 // isBulk counts the file in its folder's and its branch's windows
 func (s *sched) isBulk(p string, now time.Time) bool {
@@ -130,6 +165,12 @@ func (s *sched) next() (job, bool) {
 	if len(s.order) > 0 {
 		return s.bulk[s.order[s.rr%len(s.order)]][0], true
 	}
+	if len(s.scanHi) > 0 {
+		return s.scanHi[0], true
+	}
+	if len(s.scanLo) > 0 {
+		return s.scanLo[0], true
+	}
 	return job{}, false
 }
 
@@ -157,5 +198,11 @@ func (s *sched) pop() {
 			s.bulk[u] = q
 			s.rr = i + 1
 		}
+	case len(s.scanHi) > 0:
+		s.scanHi[0] = job{}
+		s.scanHi = s.scanHi[1:]
+	case len(s.scanLo) > 0:
+		s.scanLo[0] = job{}
+		s.scanLo = s.scanLo[1:]
 	}
 }

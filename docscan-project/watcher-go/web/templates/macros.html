@@ -1,0 +1,29 @@
+{{define "macros"}}{{template "head" .}}
+{{with .Data}}
+<h1>Макроси</h1>
+<p class="hint">{{.Dir}} — код VBA кожного документа з макросами, який перевірив DocScan (зберігається 90 днів / до 500 МБ).
+Ім'я файлу — sha256 документа.</p>
+{{if .Items}}<table><tr><th>коли</th><th>документ</th><th>рівень</th><th>розмір коду</th></tr>
+{{range .Items}}<tr><td class="nowrap">{{ts .Time}}</td>
+<td class="path"><a href="/macro?sha={{.SHA}}">{{with .Rec}}{{.Path}}{{else}}{{short .SHA 16}}{{end}}</a>{{with .Rec}}<br><span class="hint">{{range .Rules}}{{.}} {{end}}</span>{{end}}</td>
+<td>{{with .Rec}}<span class="v v-{{.Verdict}}">{{.Verdict}}</span>{{end}}</td><td>{{mb .Size}}</td></tr>{{end}}
+</table>{{else}}<p class="hint">Збережених макросів немає.</p>{{end}}
+{{end}}
+{{template "foot" .}}{{end}}
+
+{{define "macro"}}{{template "head" .}}
+{{with .Data}}
+<h1>Код макросів</h1>
+<table class="kv">
+<tr><th>документ (sha256)</th><td><code>{{.SHA}}</code></td></tr>
+<tr><th>збережено</th><td>{{ts .Time}} · {{mb .Size}}{{if .Truncate}} · <b class="amber">показано перші 2 МБ</b>{{end}}</td></tr>
+<tr><th>підозрілих рядків</th><td>{{if .Hits}}<b class="amber">{{.Hits}}</b>{{else}}0{{end}} {{range .Words}}<span class="tag">{{.K}} <i>{{.N}}</i></span> {{end}}</td></tr>
+</table>
+{{if .Recs}}<h3>Де траплявся цей документ</h3><table>{{range .Recs}}<tr><td class="nowrap"><a href="/record?f={{.File}}&o={{.Off}}">{{ts .Time}}</a></td><td><span class="v v-{{.Verdict}}">{{.Verdict}}</span></td><td class="path">{{.Path}}</td><td>{{.Disarm}}</td></tr>{{end}}</table>{{end}}
+<p class="hint">Підсвічено: автозапуск, запуск програм (Shell, WScript, PowerShell…), мережа (завантаження), робота з файлами,
+обфускація (Chr, StrReverse, Base64), виклики WinAPI. Це підказка, не вердикт — вердикт дає політика DocScan.</p>
+<pre class="code">{{range .Lines}}<span class="ln{{if .Hit}} hit{{end}}"><i>{{.N}}</i>{{.Text}}</span>
+{{end}}</pre>
+{{end}}
+<p><a href="/macros">← усі макроси</a></p>
+{{template "foot" .}}{{end}}

@@ -59,7 +59,7 @@ platforms:
       known_hosts: ~/.ssh/known_hosts    # the host key is always checked: connect once by hand first
     workdir: /home/ci/docscan
 
-tests:                    # test files outside git, on every platform with full_tests (not on 216)
+tests:                    # test files outside git, on every platform with full_tests (not on a workstation stand)
   enabled: true
   corpus_dirs:            # only the document files are taken (doc/xls/ppt/rtf/pdf/lnk/one/...)
     - docscan-project/fuzz/external   # fuzz/fetch_corpus.sh: POI, pdf.js, plaso, LibreOffice, LNK, Tika, oletools
@@ -92,7 +92,7 @@ forgejo:                  # OPTIONAL extra after the push: mirror sync and commi
     commit_status: true   # commit statuses cirun/<platform> in Forgejo
 
 # DocScan is distributed ONLY as GitHub releases (no deployment servers): cirun --release (green + pushed
-# run) -> release docscan-<version> with DocScan-windows-x64.zip (+ .sha256) and DocScan-Install.ps1.
+# run) -> release vX.Y.Z with DocScan-windows-x64.zip (+ .sha256) and DocScan-Install.ps1.
 # Needs the gh CLI logged in on this Mac (gh auth login).
 release:
   repo: ""              # owner/repo; empty - from the push remote URL

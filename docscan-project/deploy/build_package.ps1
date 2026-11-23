@@ -55,6 +55,15 @@ if (-not (Test-Path $updExe)) {
 }
 New-Item -ItemType Directory -Force "$stage\updater" | Out-Null
 Copy-Item $updExe "$stage\updater\"
+# web interface: docscan-web.exe (service DocScanWeb, https://127.0.0.1:8741/) - built by cirun next to the watcher, or here with Go
+$webExe = "$Repo\docscan-project\watcher-go\web\docscan-web.exe"
+if (-not (Test-Path $webExe)) {
+  if (-not (Get-Command go -EA SilentlyContinue)) { throw "$webExe is missing and Go is not installed" }
+  Push-Location "$Repo\docscan-project\watcher-go"
+  try { $env:CGO_ENABLED = "0"; & go build -trimpath "-ldflags=-s -w" -o web\docscan-web.exe .\web; if ($LASTEXITCODE) { throw "go build (web) failed" } } finally { Pop-Location }
+}
+New-Item -ItemType Directory -Force "$stage\web" | Out-Null
+Copy-Item $webExe "$stage\web\"
 Copy-Item "$Repo\docscan-project\watcher\docscan-watcher.ps1" "$stage\watcher\"
 foreach ($f in "install.ps1", "uninstall.ps1", "README.txt") { Copy-Item "$Repo\docscan-project\deploy\$f" $stage }
 # for the Wazuh administrator: manager cleanup script + rule block (not used on workstations)

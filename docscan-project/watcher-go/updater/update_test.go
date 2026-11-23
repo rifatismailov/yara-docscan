@@ -272,3 +272,32 @@ func TestMarkerAndConfig(t *testing.T) {
 		t.Fatal("window over midnight")
 	}
 }
+
+// -CheckConfig (the web interface checks updater.json with it before replacing the file)
+func TestCheckConfigFile(t *testing.T) {
+	dir := t.TempDir()
+	key := "ed25519:2vfxMxxGiMm8CVAnXqC173tSP3FKFOS2tMIn8YBTM5k="
+	for name, c := range map[string]struct {
+		json string
+		ok   bool
+	}{
+		"good":          {`{"mode":"mirror","mirror":{"url":"https://example.org/r"},"lists":{"url":"https://example.org/l","public_keys":["` + key + `"]},"extra_public_keys":["` + key + `"]}`, true},
+		"bom":           {"\ufeff" + `{"mode":"github"}`, true},
+		"unknown field": {`{"mode":"github","mirorr":{"url":"x"}}`, false},
+		"bad mode":      {`{"mode":"sometimes"}`, false},
+		"mirror no url": {`{"mode":"mirror"}`, false},
+		"lists no key":  {`{"mode":"off","lists":{"url":"https://example.org/l"}}`, false},
+		"bad key":       {`{"mode":"off","extra_public_keys":["ed25519:abc"]}`, false},
+		"bad window":    {`{"mode":"github","window":"night"}`, false},
+		"not json":      {`mode = github`, false},
+	} {
+		p := filepath.Join(dir, "u.json")
+		os.WriteFile(p, []byte(c.json), 0o644)
+		if err := checkConfigFile(p, dir); (err == nil) != c.ok {
+			t.Errorf("%s: ok=%v, err=%v", name, c.ok, err)
+		}
+	}
+	if checkConfigFile(filepath.Join(dir, "missing.json"), dir) == nil {
+		t.Error("a missing file must be an error")
+	}
+}

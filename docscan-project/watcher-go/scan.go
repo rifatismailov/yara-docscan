@@ -57,11 +57,22 @@ type Record struct {
 	Macro           *MacroInfo      `json:"macro,omitempty"`
 	Critical        *CritInfo       `json:"critical,omitempty"`
 	List            *ListHit        `json:"list,omitempty"` // decided by the white / black list (lists.go)
+	Scan            string          `json:"scan,omitempty"` // id of the on-demand / USB scan (scanjob.go)
 	Summary         string          `json:"summary"`        // for the Wazuh alert description
 	Errors          []string        `json:"errors"`
 
-	ds *dsResult `json:"-"`
+	ds     *dsResult `json:"-"`
+	detect bool      `json:"-"` // this file: report only (scanOpts.detect)
 }
+
+// scanOpts - a file of an on-demand / USB scan (scanjob.go): the cache of clean files, report only
+type scanOpts struct {
+	scan   string
+	detect bool
+}
+
+// noDisarmFor - report only for this record: the whole DocScan in detect-only mode, or this scan / medium
+func (w *Watcher) noDisarmFor(r *Record) bool { return r.detect || w.noDisarm() }
 
 // the parts of the docscan JSON the watcher needs (the whole object goes into the record as it is)
 type dsResult struct {
@@ -121,6 +132,19 @@ func waitFileReady(p string, timeout time.Duration) string {
 		time.Sleep(500 * time.Millisecond)
 	}
 	return "timeout"
+}
+
+// openOnce - can the file be read now (on-demand scan): ready | gone | locked:<error>
+func openOnce(p string) string {
+	f, err := os.Open(p)
+	if err != nil {
+		if !isFile(p) {
+			return "gone"
+		}
+		return "locked:" + err.Error()
+	}
+	f.Close()
+	return "ready"
 }
 
 var (
@@ -292,9 +316,14 @@ func (w *Watcher) summary(r *Record) string {
 
 // scanFile: one file, the PowerShell watcher's Scan-File. Runs in a worker; shared state (critical queue,
 // macro store) is guarded inside the helpers. Returns nil when the file is gone before the scan.
-func (w *Watcher) scanFile(path, evt string, wk *worker) *Record {
+func (w *Watcher) scanFile(path, evt string, wk *worker, o scanOpts) *Record {
 	cat := w.category(path)
-	state := waitFileReady(path, w.c.ReadyTimeout)
+	var state string
+	if o.scan != "" {
+		state = openOnce(path) // a file already on the disk: nobody is writing it, no 0.5 s+ wait per file
+	} else {
+		state = waitFileReady(path, w.c.ReadyTimeout)
+	}
 	if state == "gone" {
 		w.log.Log("WARN", "gone before scan: %s", path)
 		return nil
@@ -303,10 +332,16 @@ func (w *Watcher) scanFile(path, evt string, wk *worker) *Record {
 	r := &Record{
 		Timestamp: nowStamp(), Source: "docscan", Host: w.host, Event: evt, Category: cat,
 		DocFile: DocFile{Path: path, Name: filepath.Base(path), Ext: ext},
-		Verdict: "INFO", YaraFileMatches: []string{}, Errors: []string{},
+		Verdict: "INFO", YaraFileMatches: []string{}, Errors: []string{}, Scan: o.scan, detect: o.detect,
 	}
 	if state == "timeout" {
 		r.Errors = append(r.Errors, fmt.Sprintf("file still being written after %ds", int(w.c.ReadyTimeout.Seconds())))
+	}
+	if strings.HasPrefix(state, "locked:") { // on-demand scan: held by the system (pagefile.sys) or another program
+		r.Errors = append(r.Errors, "cannot open: "+strings.TrimPrefix(state, "locked:"))
+		r.Verdict = "ERROR"
+		r.Summary = w.summary(r)
+		return r
 	}
 	func() {
 		st, err := os.Stat(path)
@@ -317,6 +352,11 @@ func (w *Watcher) scanFile(path, evt string, wk *worker) *Record {
 		size := st.Size()
 		r.DocFile.Size = &size
 		if size > int64(w.c.MaxSizeMB)*1024*1024 {
+			// too big to scan, but the lists by path / shortcut target still apply (a banned installer of 200 MB
+			// must not slip through); sha256 entries need the hash - not computed for such files
+			if w.applyLists(r, path, "", wk) {
+				return
+			}
 			r.Verdict = "SKIPPED"
 			r.Errors = append(r.Errors, fmt.Sprintf("size > %dMB", w.c.MaxSizeMB))
 			return
@@ -331,6 +371,10 @@ func (w *Watcher) scanFile(path, evt string, wk *worker) *Record {
 		if w.applyLists(r, path, sha, wk) {
 			return
 		}
+		if o.scan != "" && w.cache.has(sha) { // on-demand / USB scan: already found clean with these rules
+			r.Verdict = "CACHED"
+			return
+		}
 
 		// vendor rules see the bytes BEFORE disarm: yara collects the matches before --docscan-disarm.
 		// The same content goes to the E5Search queue once (disarm retries / DisarmPending rescan it).
@@ -340,7 +384,7 @@ func (w *Watcher) scanFile(path, evt string, wk *worker) *Record {
 		// critical-information check does not (it is for documents themselves)
 		isZip := ext == ".zip"
 		doc := cat == "document"
-		so := w.invokeScan(path, !w.c.NoDisarm && (doc || isZip), doc || isZip, critNew && doc, wk.macroTmp, wk.critTmp)
+		so := w.invokeScan(path, !w.noDisarmFor(r) && (doc || isZip), doc || isZip, critNew && doc, wk.macroTmp, wk.critTmp)
 		r.Errors = append(r.Errors, so.errors...)
 		if critNew && so.ds == nil && so.critical == nil {
 			w.critRelease(sha) // yara64 did not run properly: the check did not happen
@@ -383,7 +427,7 @@ func (w *Watcher) scanFile(path, evt string, wk *worker) *Record {
 			}
 		}
 		// general file matching vendor rules: optional quarantine (copy -> BackupDir, the original is deleted)
-		if w.c.QuarantineGeneral && !w.c.NoDisarm && cat == "general" && len(r.YaraFileMatches) > 0 {
+		if w.c.QuarantineGeneral && !w.noDisarmFor(r) && cat == "general" && len(r.YaraFileMatches) > 0 {
 			if err := quarantine(path, w.c.BackupDir); err != nil {
 				r.Errors = append(r.Errors, "quarantine failed: "+err.Error())
 				r.Disarm = "failed:quarantine"

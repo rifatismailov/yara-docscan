@@ -10,8 +10,22 @@ watcher описано в її §7.
 **Стан (2026-11-18):** Go-watcher перевірено на тестовому термінальному сервері, і тепер він іде в пакеті:
 ▷ (cirun) збирає `docscan-watcher.exe` з коміту, що тестується (крос-збірка на Маку, `go vet` + `go test`),
 `build_package.ps1` кладе його в `watcher\`, а `install.ps1` реєструє його як службу Windows «DocScan Watcher» (`DocScanWatcher`: автозапуск, SYSTEM, перезапуск
-після збою; `service_windows.go`).
+після збою; [winsvc/](winsvc/)).
 PowerShell-watcher лишається в пакеті як запасний: `install.ps1 -WatcherEngine ps`.
+
+**Що змінилось після цього (стан 2026-11-22):**
+- **Правил у пакеті програми немає** (з v1.0.6): вони — окремий пакет (репозиторій `yara-docscan-rules`),
+  новий ПК ставить їх `install.ps1 -Rules`, далі оновлює служба DocScanUpdater ([updater/](updater/)). Якщо
+  правил ще немає, watcher не падає, а чекає: у журналі WARN `waiting for rules: ...`, перевірка раз на 15 с.
+- **Правила критичної інформації** — теж у пакеті правил (`critical\*.yar`, скільки завгодно файлів;
+  на ПК — `<InstallDir>\rules\critical\`). `install.ps1` передає watcher-у `-CriticalRules <InstallDir>\rules\critical`
+  (якщо не `-NoCritical`). `-CriticalRules` приймає файл `.yar` або теку з `.yar`; на старті watcher перевіряє,
+  що вони компілюються (інакше `[ERROR]` і вихід — updater відкочує новий набір). Тека без `.yar` — INFO
+  `no critical rules in ... - critical check off`.
+- **Білий і чорний списки організації** — `-Whitelist` / `-Blacklist` (`whitelist.json` / `blacklist.json`,
+  записи `path` / `lnk_target` / `sha256`, формат — [orglists/](orglists/)); застосовуються до сканування
+  ([lists.go](lists.go)), перечитуються, щойно файл змінився. При старті й після зміни списків — прохід по
+  файлах, що вже лежать під масками чорного списку ([sweep.go](sweep.go)).
 
 **Зміст**
 1. [Коротко](#1-коротко)
@@ -166,6 +180,36 @@ ReadDirectoryChangesW (кожна тека -WatchPath, рекурсивно, б�
 - втрачені події (переповнення буфера ядра або переповнений внутрішній канал) → через хвилину обхід тек
   і сканування файлів, змінених з того моменту (як і раніше, `rescan after overflow`).
 
+**Скан на вимогу і знімні носії** ([scanjob.go](scanjob.go)) — файли, що вже лежать на диску:
+- `docs` — ДОКУМЕНТИ на вибраних локальних дисках (без USB і без виключень); `path` — тека, файл (будь-якого
+  типу), знімний або не системний диск (`D:\`), але не цілий системний диск; `usb` — флешка, USB-диск чи SD-картка;
+- дія: лише повідомити (`-ScanDetect`) | лікувати — документ знешкоджується, інше в карантин (без прапорця) |
+  видалити (`-ScanDelete`): HIGH-файл видаляється без копії (у вебі — після сторінки підтвердження), MEDIUM — лише
+  повідомлення; у програмних теках і на носіях лише для читання — завжди лише повідомлення;
+- у вебі — провідник `/scan/browse` ([web/browse.go](web/browse.go)): диски → теки → файли, галочками вибрати що сканувати;
+- повного скану всіх файлів немає навмисно: на перевірці на Mac він прибрав у карантин zip-шаблони всередині
+  встановленої IDE (хибне спрацювання ARCHIVE_SCRIPT) і зламав підпис програми — на Windows так само ламав би
+  програми в `C:\Program Files`;
+- системні й програмні теки (`sysDir`: `C:\Windows`, `Program Files`, `Program Files (x86)`,
+  `ProgramData\Microsoft`, кошик, `System Volume Information`, `AppData\Local\Programs`; на Mac `/Applications`,
+  `/System`, `Library`, `*.app`): скан документів їх не обходить, а файл у них будь-який скан лише повідомляє,
+  навіть у повному режимі;
+- USB визначається за шиною пристрою ([drives/](drives/), `IOCTL_STORAGE_QUERY_PROPERTY`), тож і зовнішній
+  диск, який Windows показує як локальний. Опитування дисків раз на 5 с: новий носій → авто-скан
+  (`settings.json` `usb_scan`: `off` / `detect` / `full`, без поля — як режим DocScan); носії, що були під
+  час старту служби, самі не скануються; вилучили носій → його скан зупиняється; носій лише для читання →
+  тільки повідомлення;
+- запуск: веб (сторінка «Сканування») або `docscan-watcher.exe -ScanDocs | -ScanPath E:\ [-ScanDetect | -ScanDelete] [-Wait]`,
+  `-ScanStatus`, `-ScanCancel <id>|all`. Обидва лише кладуть запит у `C:\ProgramData\DocScan\scan\request-<id>.json`
+  (тека — лише SYSTEM і адміністратори), сканує служба: записувач `docscan-results.json` один;
+- файли скану в черзі після всіх живих файлів (`scanHi` — usb / path, `scanLo` — docs), обхід тримає в черзі
+  не більше 2000 файлів; до 4 сканів одночасно;
+- кеш `scan\cache.json`: sha256 чистих файлів (INFO, без помилок) з поточними правилами — вдруге не
+  скануються; нові правила → кеш порожній; списки організації діють до кешу;
+- у Wazuh — лише HIGH / MEDIUM (події `DocsScan`, `PathScan`, `USBScan`, поле `scan` — id скану); чисті
+  файли тільки рахуються, ERROR / SKIPPED — у `watcher.log`; хід — `scan\status.json`, підсумок —
+  `scan\history.json` (50 останніх) і рядок `scan <id> done: ... found N, scanned N, already checked N, threats N`.
+
 ---
 
 ## 6. Що збережено без змін (сумісність)
@@ -173,7 +217,7 @@ ReadDirectoryChangesW (кожна тека -WatchPath, рекурсивно, б�
 - **Параметри** — ті самі імена, що в `docscan-watcher.ps1` (`-WatchPath`, `-Yara`, `-Rules`, `-OutDir`,
   `-BackupDir`, `-NoDisarm`, `-QuarantineGeneral`, `-CriticalRules`, `-CriticalOut`, `-MacroUpload`, …),
   тож `install.ps1` і документацію змінювати майже не треба. Нові: `-MinWorkers`, `-MaxWorkers`,
-  `-Workers`, `-CpuTarget`, `-CpuHigh`, `-ScanTimeout`.
+  `-Workers`, `-CpuTarget`, `-CpuHigh`, `-ScanTimeout`; згодом — `-Whitelist`, `-Blacklist` (лише в Go-watcher-і).
 - **Запис `docscan-results.json`** — той самий набір і порядок полів, без `null` (через це колись ламалась
   індексація Wazuh), той самий `summary` (до 600 символів), той самий пропуск однакових повторів (крім HIGH).
 - **Рядки `watcher.log`** — той самий формат (на нього спираються `check_watcher.py` і звіт тесту).
@@ -183,7 +227,8 @@ ReadDirectoryChangesW (кожна тека -WatchPath, рекурсивно, б�
   `-DisarmNoticeHours`, список у `retry.json` (той самий формат, читається обома версіями).
 - **Сховище макросів** `macros\<sha256>.vba.txt` з заголовком, `sent.txt`, надсилання на `-MacroUpload`,
   ретеншн; декодування коду VBA з ANSI-кодової сторінки машини.
-- **Правила** компілюються один раз на старті (`yarac64` → `rules.yarc`), перевірка компіляції перед стартом.
+- **Правила** компілюються один раз на старті (`yarac64` → `rules.yarc`), перевірка компіляції перед стартом
+  (тепер і правил критичної інформації).
 - Вердикти 42 еталонних зразків збігаються з `ci/expected-verdicts.tsv`.
 
 ---
@@ -266,7 +311,7 @@ ReadDirectoryChangesW (кожна тека -WatchPath, рекурсивно, б�
 
 | Файл | Що в ньому |
 |---|---|
-| [main.go](main.go) | запуск, перевірка й компіляція правил, координатор, повтори лікування, запис результатів |
+| [main.go](main.go) | запуск, очікування й перевірка правил (і критичних), компіляція, координатор, повтори лікування, запис результатів |
 | [scan.go](scan.go) | один файл: очікування дописування, SHA256, виклик `yara64`, вердикт, `summary`, рядок журналу |
 | [sched.go](sched.go) | черговість: повтори, поодинокі файли, масові копіювання по колу між користувачами |
 | [pool.go](pool.go) | пул воркерів і автоматичний розмір |
@@ -275,7 +320,18 @@ ReadDirectoryChangesW (кожна тека -WatchPath, рекурсивно, б�
 | [logx.go](logx.go) | `watcher.log` / `docscan-results.json`: дописування з ротацією |
 | [fs_windows.go](fs_windows.go) | `ReadDirectoryChangesW`, заблокований файл, ANSI → UTF-8, CPU машини, пріоритет |
 | [fs_other.go](fs_other.go) | заглушки для розробки на macOS / Linux (опитування теки) |
+| [lists.go](lists.go) | білий / чорний списки організації до сканування, перечитування змінених файлів |
+| [web/](web/) | веб-інтерфейс docscan-web.exe (служба DocScanWeb, https://127.0.0.1:8741/; ../WEB-DESIGN.md) |
+| [sweep.go](sweep.go) | при старті й після зміни списків: наявні файли під масками чорного списку проходять через списки |
+| [scanjob.go](scanjob.go) | скан на вимогу (повний, шлях) і знімних носіїв: запити, обхід, кеш, стан і історія |
+| [scancli.go](scancli.go) | `-ScanDocs`, `-ScanPath`, `-ScanStatus`, `-ScanCancel`, `-Wait` — запит службі з командного рядка |
+| [drives/](drives/) | диски ПК: локальні, USB (за шиною), лише читання (спільний з вебом) |
 | [sched_test.go](sched_test.go) | тести черговості (`go test ./...`) |
+| [config_test.go](config_test.go) | списки розширень ті самі, що в `docscan-watcher.ps1` |
+| [winsvc/](winsvc/) | служба Windows (спільна для watcher-а і updater-а) |
+| [orglists/](orglists/) | формат і зіставлення списків організації (спільний з updater-ом) |
+| [manifest/](manifest/) | підписаний маніфест релізу (перевіряє updater) |
+| [updater/](updater/) | `docscan-updater.exe`, служба DocScanUpdater: оновлення програми, правил і списків (`github` / `mirror` / `marker` / `off`) |
 
 Навантажувальний тест — [../ci/loadtest/](../ci/loadtest/):
 

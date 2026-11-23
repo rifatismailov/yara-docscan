@@ -1,0 +1,38 @@
+{{define "browse"}}{{template "head" .}}
+{{$p := .}}{{with .Data}}
+<h1>Вибір для скану</h1>
+<p class="crumbs"><a href="/scan">← Сканування</a> · <a href="/scan/browse">Диски</a>{{range .Crumbs}} › <a href="/scan/browse?p={{.Path}}">{{.Name}}</a>{{end}}</p>
+
+{{if not .Path}}
+<p class="hint">Відкрийте диск і позначте галочками теки або файли, які треба перевірити. Знімні носії (флешки, USB-диски, SD) —
+тут же, щойно їх вставили.</p>
+<table class="drives"><tr><th>диск</th><th>тип</th><th>розмір</th></tr>
+{{range .Drives}}<tr>
+<td class="path"><a href="/scan/browse?p={{.Root}}"><b>{{.Root}}</b> {{.Label}}</a></td>
+<td>{{if .Removable}}<span class="pill amber">{{if eq .Kind "usb"}}USB{{else}}знімний{{end}}</span>{{else}}{{.Kind}}{{end}}{{if .System}} <span class="tag">системний</span>{{end}}{{if .ReadOnly}} <span class="tag">лише читання</span>{{end}}</td>
+<td class="nowrap">{{if .SizeGB}}{{printf "%.0f" .SizeGB}} ГБ, вільно {{printf "%.0f" .FreeGB}}{{end}}</td>
+</tr>{{else}}<tr><td colspan="3" class="hint">дисків не знайдено</td></tr>{{end}}
+</table>
+{{else}}
+{{if .Protected}}<p class="warn">Тека програм або системна: скан тут лише повідомляє, нічого не знешкоджує і не видаляє.</p>{{end}}
+{{if .Err}}<p class="error">{{.Err}}</p>{{end}}
+<form method="post" action="/scan/start">{{template "csrf" $p}}<input type="hidden" name="kind" value="path">
+<div class="row nowrap pickbar">{{template "scanAction" "cure"}} <button class="primary">◎ Сканувати вибране</button>
+<span class="hint">тека — з усіма підтеками; файл — будь-якого типу</span></div>
+<table class="browse"><tr><th></th><th>ім'я</th><th>розмір</th><th>змінено</th></tr>
+{{if .CanPick}}<tr class="self"><td><input type="checkbox" name="pick" value="{{.Path}}"></td><td><b>уся ця тека</b> <span class="path hint">{{.Path}}</span></td><td></td><td></td></tr>
+{{else}}<tr class="self"><td></td><td class="hint">цілий системний диск не вибирається — позначте потрібні теки (або «Скан документів» на сторінці «Сканування»)</td><td></td><td></td></tr>{{end}}
+<tr><td></td><td>{{if .Up}}<a href="/scan/browse?p={{.Up}}">↑ ..</a>{{else}}<a href="/scan/browse">↑ диски</a>{{end}}</td><td></td><td></td></tr>
+{{range .Items}}<tr>
+<td><input type="checkbox" name="pick" value="{{.Path}}"></td>
+<td class="path">{{if .Dir}}📁 <a href="/scan/browse?p={{.Path}}">{{.Name}}</a>{{else}}{{.Name}}{{end}}{{if .Protected}} <span class="tag">програми — лише повідомлення</span>{{end}}</td>
+<td class="nowrap">{{if not .Dir}}{{mb .Size}}{{end}}</td>
+<td class="nowrap hint">{{ts .Mod}}</td>
+</tr>{{end}}
+</table>
+{{if .More}}<p class="hint">Ще {{.More}} елементів не показано — відкрийте підтеку або впишіть шлях на сторінці «Сканування».</p>{{end}}
+{{if gt (len .Items) 15}}<div class="row nowrap pickbar">{{template "scanAction" "cure"}} <button class="primary">◎ Сканувати вибране</button></div>{{end}}
+</form>
+{{end}}
+{{end}}
+{{template "foot" .}}{{end}}

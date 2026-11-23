@@ -62,6 +62,13 @@ func TestMatchPath(t *testing.T) {
 		{`C:\Users\*\Downloads\*.exe`, `C:\Users\bob\Downloads\AnyDesk.exe`, true},
 		{`C:\Users\*\Downloads\*.exe`, `C:\Users\bob\Downloads\x\AnyDesk.exe`, false},
 		{`C:\Users\*\Downloads\**\*.exe`, `C:\Users\bob\Downloads\x\y\AnyDesk.exe`, true},
+		{`C:\Users\*\Downloads\**\*.exe`, `C:\Users\bob\Downloads\AnyDesk.exe`, true}, // "**\" = zero or more folders
+		{`C:\Users\*\Downloads\**\AnyDesk*.exe`, `C:\Users\bob\Downloads\AnyDesk.exe`, true},
+		{`C:\Users\*\Downloads\**\*.exe`, `C:\Users\bob\Downloads.exe`, false},
+		{`C:\Users\*\Downloads\**\*.exe`, `C:\Users\bob\Downloads2\a.exe`, false},
+		{`C:\Users\**\pike.exe`, `C:\Users\bob\AppData\pike.exe`, true},
+		{`C:\Users\**\pike.exe`, `C:\Users\bob\notpike.exe`, false},
+		{`C:\Users\*\Desktop\**pike*.lnk`, `C:\Users\bob\Desktop\a\pike - fs01.lnk`, true},
 		{`C:\Users\*\Downloads\setup?.msi`, `C:\Users\bob\Downloads\setup1.msi`, true},
 		{`C:\Users\*\Downloads\setup?.msi`, `C:\Users\bob\Downloads\setup12.msi`, false},
 		{`C:\Users\*\Downloads\a+b(1).exe`, `C:\Users\bob\Downloads\a+b(1).exe`, true},
@@ -144,5 +151,61 @@ func TestDecide(t *testing.T) {
 	}
 	if !NeedsTarget(white) || NeedsTarget(&List{Entries: []Entry{{SHA256: own}}}) {
 		t.Errorf("NeedsTarget")
+	}
+}
+
+func TestCouldContain(t *testing.T) {
+	const m = `C:\Users\*\Downloads\**\*.exe`
+	for _, c := range []struct {
+		pat, dir string
+		want     bool
+	}{
+		{m, `C:\`, true},
+		{m, `C:\Users`, true},
+		{m, `C:\Users\bob`, true},
+		{m, `C:\Users\bob\Downloads`, true},
+		{m, `C:\Users\bob\Downloads\x\y`, true},
+		{m, `C:\Users\bob\AppData`, false},
+		{m, `C:\Users\bob\Documents\Downloads`, false},
+		{m, `C:\Windows`, false},
+		{`C:\Users\*\Desktop\*.exe`, `C:\Users\bob\Desktop`, true},
+		{`C:\Users\*\Desktop\*.exe`, `C:\Users\bob\Desktop\sub`, false}, // * - one folder only
+		{`C:\Users\*\Desktop\**pike*.lnk`, `C:\Users\bob\Desktop\sub\x`, true},
+		{`C:\Users\*\OneDrive*\Desktop\**\*.exe`, `C:\Users\bob\OneDrive - Org\Desktop`, true},
+		{`C:\Users\*\OneDrive*\Desktop\**\*.exe`, `C:\Users\bob\Pictures`, false},
+	} {
+		if got := CouldContain(c.pat, c.dir); got != c.want {
+			t.Errorf("CouldContain(%q, %q) = %v", c.pat, c.dir, got)
+		}
+	}
+}
+
+func TestSweepCandidate(t *testing.T) {
+	black := &List{Entries: []Entry{
+		{Path: `C:\Users\*\Desktop\**\*.exe`},
+		{Path: `C:\Users\*\Downloads\**\*.exe`, SHA256: strings.Repeat("a", 64)},
+	}}
+	white := &List{Entries: []Entry{
+		{Path: `C:\Users\**\pike.exe`},
+		{Path: `C:\Users\*\Downloads\**\own.exe`},
+		{Path: `C:\Users\*\Desktop\tool.exe`, SHA256: strings.Repeat("b", 64)},
+	}}
+	for _, c := range []struct {
+		p    string
+		want bool
+	}{
+		{`C:\Users\bob\Desktop\x.exe`, true},
+		{`C:\Users\bob\Desktop\pike.exe`, false}, // white by path beats black by path
+		{`C:\Users\bob\Desktop\tool.exe`, true},  // white needs sha256: Decide checks it with the hash
+		{`C:\Users\bob\Downloads\own.exe`, true}, // black sha256 beats white: Decide checks the hash
+		{`C:\Users\bob\Documents\x.exe`, false},  // no black mask
+		{`C:\Users\bob\Desktop\x.docx`, false},
+	} {
+		if got := SweepCandidate(white, black, c.p); got != c.want {
+			t.Errorf("SweepCandidate(%q) = %v", c.p, got)
+		}
+	}
+	if SweepCandidate(white, nil, `C:\Users\bob\Desktop\x.exe`) {
+		t.Error("no black list: candidate")
 	}
 }

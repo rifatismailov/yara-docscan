@@ -1,0 +1,52 @@
+{{define "status"}}{{template "head" .}}
+{{with .Data}}
+<h1>Стан DocScan</h1>
+{{if .Pause.On}}<p class="warn">Чорний список на ПАУЗІ {{if .Pause.Manual}}до ручного ввімкнення{{else}}до {{ts .Pause.Until}}{{end}} ({{.Pause.By}}): збіги лише повідомляються, без карантину. <a href="/mode">Керування →</a></p>{{end}}
+{{if .SettingsErr}}<p class="error">settings.json: {{.SettingsErr}}</p>{{end}}
+{{if .InitialPw}}<p class="warn">Файл initial-password.txt ще існує — змініть пароль (сторінка «Пароль»).</p>{{end}}
+<div class="stats">
+  <a class="stat {{if index .Counts "HIGH"}}bad{{else}}ok{{end}}" href="/detections?verdict=HIGH&days=1"><span>HIGH · 24 год</span><b>{{index .Counts "HIGH"}}</b><i>виявлення</i></a>
+  <a class="stat amber" href="/detections?verdict=MEDIUM&days=1"><span>MEDIUM · 24 год</span><b>{{index .Counts "MEDIUM"}}</b><i>виявлення</i></a>
+  <a class="stat cyan" href="/detections?verdict=LOW&days=1"><span>LOW · 24 год</span><b>{{index .Counts "LOW"}}</b><i>виявлення</i></a>
+  <a class="stat" href="/detections?verdict=INFO&days=1"><span>INFO · 24 год</span><b>{{index .Counts "INFO"}}</b><i>перевірено, чисто</i></a>
+  <a class="stat" href="/detections?verdict=SKIPPED&days=1"><span>SKIPPED · 24 год</span><b>{{index .Counts "SKIPPED"}}</b><i>не скановано</i></a>
+</div>
+
+<h2>Програма і правила</h2>
+<table class="kv">
+<tr><th>програма</th><td>{{if .Program}}{{.Program}}{{else}}—{{end}}</td></tr>
+<tr><th>правила</th><td>{{if .Rules}}{{.Rules}}{{else}}—{{end}}</td></tr>
+<tr><th>критичні правила</th><td>{{if .CriticalFiles}}{{.CriticalFiles}} файл(ів) у rules\critical{{else}}немає (третій прохід вимкнено){{end}}</td></tr>
+<tr><th>режим watcher</th><td><a href="/mode" class="hint right">змінити →</a>{{if .DetectOnly}}<b class="amber">DETECT ONLY</b> — лише повідомлення, файли не змінюються{{else}}<b class="ok">повний</b> — знешкодження і карантин{{end}} <span class="hint">({{.ModeSource}})</span></td></tr>
+<tr><th>теки під наглядом</th><td>{{join .WatchPath ", "}}</td></tr>
+</table>
+
+<h2>Служби</h2>
+<table><tr><th>служба</th><th>стан</th><th>запуск</th></tr>
+{{range .Services}}<tr><td>{{.Name}}{{if .Display}} <span class="hint">{{.Display}}</span>{{end}}</td>
+<td>{{if eq .State "running"}}<b class="ok">running</b>{{else if eq .State "not installed"}}<span class="hint">не встановлено</span>{{else}}<b class="bad">{{.State}}</b>{{end}}</td><td>{{.Start}}</td></tr>{{end}}
+</table>
+
+<h2>Списки організації</h2>
+<table><tr><th>список</th><th>стан</th><th>serial</th><th>записів</th><th>файл</th></tr>
+{{range .Lists}}<tr><td>{{if eq .Kind "white"}}білий{{else}}чорний{{end}}</td>
+<td>{{if .Error}}<b class="bad">зламаний: {{.Error}}</b>{{else if .Present}}<b class="ok">діє</b>{{else}}<span class="hint">немає</span>{{end}}</td>
+<td>{{if .Serial}}{{.Serial}}{{end}}</td><td>{{if .Present}}{{.Entries}}{{end}}</td><td class="hint">{{.File}}{{if .Prev}} (+ .prev){{end}}</td></tr>{{end}}
+</table>
+
+<h2>Оновлення</h2>
+<form method="post" action="/updates/check" class="row">{{template "csrf" $}}<button>⟳ Перевірити зараз</button> <a href="/updates">налаштування →</a></form>
+<table class="kv">
+<tr><th>режим</th><td>{{if .UpdMode}}{{.UpdMode}}{{else}}—{{end}}</td></tr>
+{{if .UpdMirror}}<tr><th>дзеркало програми</th><td>{{.UpdMirror}}</td></tr>{{end}}
+{{if .RulesMirror}}<tr><th>дзеркало правил</th><td>{{.RulesMirror}}</td></tr>{{end}}
+{{if .ListsURL}}<tr><th>дзеркало списків</th><td>{{.ListsURL}}</td></tr>{{end}}
+</table>
+{{if .Updates}}<table><tr><th>час</th><th>що</th><th>результат</th><th>версія</th><th>повідомлення</th></tr>
+{{range .Updates}}<tr><td>{{ts .Time}}</td><td>{{.Component}}</td><td>{{if eq .Status "success"}}<b class="ok">success</b>{{else if eq .Status "error"}}<b class="bad">error</b>{{else}}{{.Status}}{{end}}</td>
+<td>{{.From}}{{if .To}} → {{.To}}{{end}}</td><td class="hint">{{short .Message 140}}</td></tr>{{end}}
+</table>{{else}}<p class="hint">Записів про оновлення ще немає.</p>{{end}}
+
+<p class="hint">Сертифікат веб-інтерфейсу дійсний до {{ts .CertUntil}}.</p>
+{{end}}
+{{template "foot" .}}{{end}}

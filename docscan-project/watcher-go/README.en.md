@@ -10,8 +10,23 @@ watcher is its §7.
 **Status (2026-11-18):** the Go watcher has been tested on a test terminal server and now ships in the
 package: ▷ (cirun) builds `docscan-watcher.exe` from the commit under test (cross-built on the Mac, `go vet` +
 `go test`), `build_package.ps1` puts it into `watcher\`, and `install.ps1` registers it as the Windows service "DocScan Watcher" (`DocScanWatcher`: automatic, SYSTEM, restarted
-after a failure; `service_windows.go`)
-with it. The PowerShell watcher stays in the package as a fallback: `install.ps1 -WatcherEngine ps`.
+after a failure; [winsvc/](winsvc/)). The PowerShell watcher stays in the package as a fallback:
+`install.ps1 -WatcherEngine ps`.
+
+**What changed since (state 2026-11-22):**
+- **The program package has no rules** (since v1.0.6): they are a separate package (repository
+  `yara-docscan-rules`); a new PC installs them with `install.ps1 -Rules`, then the DocScanUpdater service keeps
+  them up to date ([updater/](updater/)). If the rules are not there yet, the watcher does not crash but waits:
+  WARN `waiting for rules: ...` in the log, checked every 15 s.
+- **Critical-information rules** are in the rules package too (`critical\*.yar`, any number of files; on the PC
+  `<InstallDir>\rules\critical\`). `install.ps1` passes `-CriticalRules <InstallDir>\rules\critical` to the watcher
+  (unless `-NoCritical`). `-CriticalRules` takes a `.yar` file or a folder of `.yar`; at start the watcher checks
+  that they compile (otherwise `[ERROR]` and exit — the updater rolls the new set back). A folder without `.yar`
+  — INFO `no critical rules in ... - critical check off`.
+- **Organisation white and black lists** — `-Whitelist` / `-Blacklist` (`whitelist.json` / `blacklist.json`,
+  entries `path` / `lnk_target` / `sha256`, format in [orglists/](orglists/)); applied before the scan
+  ([lists.go](lists.go)), re-read as soon as the file changes. At start and after every list change the files
+  that already sit under the black list masks are checked too ([sweep.go](sweep.go)).
 
 **Contents**
 1. [Summary](#1-summary)
@@ -160,6 +175,35 @@ workers (pool of automatic size)
 - lost events (kernel buffer overflow or a full internal channel) → a minute later the folders are walked
   and files changed since then are scanned (as before, `rescan after overflow`).
 
+**On-demand and removable-media scan** ([scanjob.go](scanjob.go)) — files already on the disk:
+- `docs` — the DOCUMENTS on the chosen local disks (no USB, no exclusions); `path` — a folder, a file (any type),
+  a removable or non-system disk (`D:\`), not the whole system disk; `usb` — a USB stick, USB disk or SD card;
+- action: report only (`-ScanDetect`) | cure — a document is disarmed, anything else quarantined (no flag) |
+  delete (`-ScanDelete`): a HIGH file is deleted with no copy (in the web after a confirmation page), MEDIUM is only
+  reported; in program folders and on read-only media always report only;
+- the web has a browser `/scan/browse` ([web/browse.go](web/browse.go)): disks → folders → files, tick what to scan;
+- there is deliberately no full scan of all files: on a Mac test it quarantined zip templates inside an installed
+  IDE (a false positive of ARCHIVE_SCRIPT) and broke the app's signature — on Windows it would break programs in
+  `C:\Program Files` the same way;
+- system and program folders (`sysDir`: `C:\Windows`, `Program Files`, `Program Files (x86)`,
+  `ProgramData\Microsoft`, the recycle bin, `System Volume Information`, `AppData\Local\Programs`; on a Mac
+  `/Applications`, `/System`, `Library`, `*.app`): the docs scan does not walk them, and a file there is only
+  reported by any scan, even in full mode;
+- USB is told by the device bus ([drives/](drives/), `IOCTL_STORAGE_QUERY_PROPERTY`), so an external disk that
+  Windows shows as local counts too. Drives are polled every 5 s: a new medium → automatic scan
+  (`settings.json` `usb_scan`: `off` / `detect` / `full`, no field — as the DocScan mode); media present when the
+  service starts are not scanned on their own; a removed medium stops its scan; read-only media → report only;
+- started from the web (page "Сканування") or `docscan-watcher.exe -ScanDocs | -ScanPath E:\ [-ScanDetect | -ScanDelete] [-Wait]`,
+  `-ScanStatus`, `-ScanCancel <id>|all`. Both only drop a request into `C:\ProgramData\DocScan\scan\request-<id>.json`
+  (SYSTEM and Administrators only); the service scans: `docscan-results.json` keeps one writer;
+- scan files queue after all live files (`scanHi` — usb / path, `scanLo` — docs); the walk keeps at most 2000
+  files queued; up to 4 scans at once;
+- cache `scan\cache.json`: sha256 of clean files (INFO, no errors) with the current rules are not scanned again;
+  new rules → empty cache; the organisation lists apply before the cache;
+- Wazuh gets only HIGH / MEDIUM (events `DocsScan`, `PathScan`, `USBScan`, field `scan` = scan id); clean files
+  are only counted, ERROR / SKIPPED go to `watcher.log`; progress in `scan\status.json`, results in
+  `scan\history.json` (last 50) and the line `scan <id> done: ... found N, scanned N, already checked N, threats N`.
+
 ---
 
 ## 6. What stayed the same (compatibility)
@@ -167,7 +211,7 @@ workers (pool of automatic size)
 - **Options** — the names of `docscan-watcher.ps1` (`-WatchPath`, `-Yara`, `-Rules`, `-OutDir`,
   `-BackupDir`, `-NoDisarm`, `-QuarantineGeneral`, `-CriticalRules`, `-CriticalOut`, `-MacroUpload`, …), so
   `install.ps1` and the docs need little change. New: `-MinWorkers`, `-MaxWorkers`, `-Workers`, `-CpuTarget`,
-  `-CpuHigh`, `-ScanTimeout`.
+  `-CpuHigh`, `-ScanTimeout`; later — `-Whitelist`, `-Blacklist` (Go watcher only).
 - **`docscan-results.json` record** — the same fields in the same order, no `null` values (they once broke
   the Wazuh indexing), the same `summary` (up to 600 characters), identical repeats skipped (except HIGH).
 - **`watcher.log` lines** — the same format (`check_watcher.py` and the load-test report rely on it).
@@ -177,7 +221,8 @@ workers (pool of automatic size)
   `-DisarmNoticeHours`, the list in `retry.json` (same format, read by both versions).
 - **Macro store** `macros\<sha256>.vba.txt` with its header, `sent.txt`, upload to `-MacroUpload`,
   retention; VBA code decoded from the machine's ANSI code page.
-- **Rules** compiled once at start (`yarac64` → `rules.yarc`), checked before the start.
+- **Rules** compiled once at start (`yarac64` → `rules.yarc`), checked before the start (now the
+  critical-information rules too).
 - The verdicts of the 42 reference samples match `ci/expected-verdicts.tsv`.
 
 ---
@@ -259,7 +304,7 @@ workers without a gain → back). Further speed-ups — §8.
 
 | File | Contents |
 |---|---|
-| [main.go](main.go) | start, rules check and compile, coordinator, disarm retries, writing results |
+| [main.go](main.go) | start, waiting for and checking the rules (and the critical ones), compile, coordinator, disarm retries, writing results |
 | [scan.go](scan.go) | one file: wait until complete, SHA256, run `yara64`, verdict, `summary`, log line |
 | [sched.go](sched.go) | scan order: retries, single files, bulk copies round-robin per user |
 | [pool.go](pool.go) | worker pool and its automatic size |
@@ -268,7 +313,18 @@ workers without a gain → back). Further speed-ups — §8.
 | [logx.go](logx.go) | `watcher.log` / `docscan-results.json`: append with rotation |
 | [fs_windows.go](fs_windows.go) | `ReadDirectoryChangesW`, locked file, ANSI → UTF-8, machine CPU, priority |
 | [fs_other.go](fs_other.go) | stubs for development on macOS / Linux (folder polling) |
+| [lists.go](lists.go) | organisation white / black lists before the scan, re-reading changed files |
+| [sweep.go](sweep.go) | at start and after a list change: existing files under the black list masks go through the lists |
+| [scanjob.go](scanjob.go) | on-demand (full, path) and removable-media scans: requests, walk, cache, status and history |
+| [scancli.go](scancli.go) | `-ScanDocs`, `-ScanPath`, `-ScanStatus`, `-ScanCancel`, `-Wait` — a request to the service from the command line |
+| [drives/](drives/) | the PC's drives: local, USB (by bus), read-only (shared with the web) |
+| [web/](web/) | the web interface docscan-web.exe (service DocScanWeb, https://127.0.0.1:8741/; ../WEB-DESIGN.md) |
 | [sched_test.go](sched_test.go) | scan-order tests (`go test ./...`) |
+| [config_test.go](config_test.go) | the extension lists match `docscan-watcher.ps1` |
+| [winsvc/](winsvc/) | Windows service (shared by the watcher and the updater) |
+| [orglists/](orglists/) | organisation list format and matching (shared with the updater) |
+| [manifest/](manifest/) | signed release manifest (checked by the updater) |
+| [updater/](updater/) | `docscan-updater.exe`, the DocScanUpdater service: updates the program, rules and lists (`github` / `mirror` / `marker` / `off`) |
 
 Load test — [../ci/loadtest/](../ci/loadtest/):
 

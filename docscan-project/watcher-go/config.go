@@ -50,6 +50,7 @@ type Config struct {
 	MacroUpload        string
 	MacroKeepDays      int
 	MacroMaxMB         int
+	Settings           string // settings.json (settings.go): mode, black list pause, folders, workers - over these flags
 	Whitelist          string // whitelist.json of the organisation (lists.go)
 	Blacklist          string // blacklist.json of the organisation (lists.go)
 	CriticalRules      string
@@ -61,6 +62,21 @@ type Config struct {
 	MaxWorkers         int
 	CpuTarget, CpuHigh int
 	ScanTimeout        time.Duration
+
+	// клієнт служби (scancli.go): покласти запит на скан і вийти — сам скан робить служба
+	ScanDocs   bool
+	ScanPath   []string
+	ScanDetect bool
+	ScanDelete bool
+	ScanCancel string
+	ScanStatus bool
+	ScanWait   bool
+	outDirSet  bool
+}
+
+// ScanClient — запущено як команда скану, а не як watcher.
+func (c *Config) ScanClient() bool {
+	return c.ScanDocs || len(c.ScanPath) > 0 || c.ScanCancel != "" || c.ScanStatus
 }
 
 var defDocExt = []string{
@@ -125,6 +141,7 @@ func parseConfig(args []string) (*Config, error) {
 	fs.IntVar(&c.MacroKeepDays, "MacroKeepDays", 90, "macro store retention, days")
 	fs.IntVar(&c.MacroMaxMB, "MacroMaxMB", 500, "macro store size limit, MB")
 	fs.StringVar(&c.CriticalRules, "CriticalRules", "", "critical-information rules: a .yar or a folder of .yar (<InstallDir>\\rules\\critical: critical\\*.yar of the rules package); empty = off")
+	fs.StringVar(&c.Settings, "Settings", "", `settings.json over these parameters (default <OutDir>\..\settings.json; written by the web interface)`)
 	fs.StringVar(&c.Whitelist, "Whitelist", "", "white list of the organisation (whitelist.json): matching files are not scanned; re-read when it changes")
 	fs.StringVar(&c.Blacklist, "Blacklist", "", "black list of the organisation (blacklist.json): matching files -> HIGH, quarantine; re-read when it changes")
 	fs.StringVar(&c.CriticalOut, "CriticalOut", "", `E5Search queue (default <OutDir>\..\critical\critical.json)`)
@@ -138,6 +155,14 @@ func parseConfig(args []string) (*Config, error) {
 	fs.IntVar(&c.CpuTarget, "CpuTarget", 60, "grow the pool only while the machine's CPU is below this %")
 	fs.IntVar(&c.CpuHigh, "CpuHigh", 85, "shrink the pool when the machine's CPU reaches this %")
 	stimeout := fs.Int("ScanTimeout", 600, "one yara64 run longer than this is killed, s")
+	scanPath := &listFlag{}
+	fs.BoolVar(&c.ScanDocs, "ScanDocs", false, "ask the running service to scan the DOCUMENTS on all local disks, then exit")
+	fs.Var(scanPath, "ScanPath", "ask the running service to scan these paths (folder, file, removable drive E:\\), then exit")
+	fs.BoolVar(&c.ScanDetect, "ScanDetect", false, "with -ScanDocs / -ScanPath: report only, no disarm")
+	fs.BoolVar(&c.ScanDelete, "ScanDelete", false, "with -ScanDocs / -ScanPath: DELETE the HIGH files, no copy kept (not in program folders)")
+	fs.StringVar(&c.ScanCancel, "ScanCancel", "", "stop a scan: its id, or all")
+	fs.BoolVar(&c.ScanStatus, "ScanStatus", false, "show the running scans and the last ones")
+	fs.BoolVar(&c.ScanWait, "Wait", false, "with -ScanDocs / -ScanPath: show the progress until the scan ends")
 	if err := fs.Parse(args); err != nil {
 		return nil, err
 	}
@@ -145,6 +170,12 @@ func parseConfig(args []string) (*Config, error) {
 		return nil, fmt.Errorf("unexpected arguments: %v", fs.Args())
 	}
 	c.WatchPath = watch.vals
+	c.ScanPath = scanPath.vals
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "OutDir" {
+			c.outDirSet = true
+		}
+	})
 	c.Settle = time.Duration(*settle) * time.Second
 	c.ReadyTimeout = time.Duration(*ready) * time.Second
 	c.RescanCooldown = time.Duration(*cool) * time.Second
@@ -181,6 +212,9 @@ func parseConfig(args []string) (*Config, error) {
 	}
 	if c.MacroDir == "" {
 		c.MacroDir = filepath.Join(filepath.Dir(c.OutDir), "macros")
+	}
+	if c.Settings == "" {
+		c.Settings = filepath.Join(filepath.Dir(c.OutDir), "settings.json")
 	}
 	if c.CriticalOut == "" {
 		c.CriticalOut = filepath.Join(filepath.Dir(c.OutDir), "critical", "critical.json")

@@ -86,7 +86,7 @@ $snap = [ordered]@{
 $wp = "'C:\Users','" + $Inbox + "'"
 & powershell -NoProfile -ExecutionPolicy Bypass -Command "& '$Work\pkg\x\install.ps1' -WatchPath $wp -NoWazuhConfig -UpdateMode off$(if ($Rules) { " -Rules '$Rules'" })" 2>&1 | % { "  $_" }
 if ($LASTEXITCODE) { Fail "install.ps1 failed" }
-$snap.critical_on = Test-Path "$InstallDir\critical\critical-rules.yar"
+$snap.critical_on = @(Get-ChildItem "$InstallDir\rules\critical\*.yar" -EA SilentlyContinue).Count -gt 0   # critical\*.yar of the rules package
 $snap | ConvertTo-Json -Depth 3 | Set-Content "$Work\snap.json" -Encoding UTF8
 "  version: " + ((Get-Content "$InstallDir\VERSION.txt" -TotalCount 1) -join "")
 "  third pass (critical rules): " + $snap.critical_on

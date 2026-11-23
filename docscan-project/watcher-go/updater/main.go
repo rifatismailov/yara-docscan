@@ -7,6 +7,10 @@
 //	docscan-updater.exe -Once      # одна перевірка зараз (і завершення оновлення, що триває) — вручну / для тесту
 //	docscan-updater.exe -InstallRules <DocScan-rules-bundle.zip | тека>   # install.ps1 -Rules: перевірити й поставити правила
 //	docscan-updater.exe -CheckList / -NewListKey / -SignList   # списки організації (listscli.go)
+//	docscan-updater.exe -CheckConfig <updater.json>   # перевірити конфіг тим самим кодом, що служба (веб-інтерфейс)
+//
+// Служба перечитує updater.json, щойно він змінився (веб-інтерфейс його правит), а файл <DataDir>\update\check-now
+// означає «перевірити зараз» (програму, правила, списки) — його кладе веб-інтерфейс.
 package main
 
 import (
@@ -38,7 +42,16 @@ func main() {
 	cfgPath := flag.String("Config", "", "updater.json (default <DataDir>\\update\\updater.json)")
 	once := flag.Bool("Once", false, "check once now and exit")
 	installRules := flag.String("InstallRules", "", "verify and install a rules bundle (DocScan-rules-bundle.zip or a folder) into <InstallDir>\\rules, then exit")
+	checkConfig := flag.String("CheckConfig", "", "check an updater.json (the same checks as the service + no unknown fields), then exit")
 	flag.Parse()
+	if *checkConfig != "" {
+		if err := checkConfigFile(*checkConfig, *dataDir); err != nil {
+			fmt.Fprintln(os.Stderr, "ERROR: "+err.Error())
+			os.Exit(1)
+		}
+		fmt.Println("OK")
+		os.Exit(0)
+	}
 	if *cfgPath == "" {
 		*cfgPath = filepath.Join(*dataDir, "update", "updater.json")
 	}
@@ -99,8 +112,27 @@ func run(u *Updater, cfgPath string, once bool, stop <-chan os.Signal) int {
 	next := time.Now().Add(2*time.Minute + time.Duration(rand.Int64N(int64(10*time.Minute))))
 	u.listsNext = next // списки — теж не одразу після старту
 	var markerMod time.Time
+	cfgMod := modTime(cfgPath)
+	checkNow := filepath.Join(u.dataDir, "update", "check-now")
 	for {
 		now := time.Now()
+		// updater.json changed (the web interface): the new settings from now on; a broken file - the old ones stay
+		if m := modTime(cfgPath); !m.Equal(cfgMod) {
+			cfgMod = m
+			if c, err := loadConfig(cfgPath, u.dataDir); err != nil {
+				u.log.Log("ERROR", "config changed but is not valid, the previous one stays: %v", err)
+			} else {
+				cfg, u.cfg = c, c
+				u.keys = append(append([]string{}, manifest.OfficialKeys...), c.ExtraPublicKeys...)
+				u.log.Log("INFO", "config reloaded: mode %s, every %gh, window %q, lists %q", c.Mode, c.CheckEveryHours, c.Window, c.Lists.URL)
+			}
+		}
+		// "check now" (the web interface): the program, the rules and the lists at once
+		if _, err := os.Stat(checkNow); err == nil {
+			os.Remove(checkNow)
+			u.log.Log("INFO", "check now (requested from the web interface)")
+			next, u.listsNext = now, now
+		}
 		u.handleState(now)
 		if !u.busy() && cfg.Lists.URL != "" && !now.Before(u.listsNext) {
 			u.listsTick(now) // списки організації: власний розклад, будь-який режим (і off)
@@ -108,7 +140,7 @@ func run(u *Updater, cfgPath string, once bool, stop <-chan os.Signal) int {
 		if !u.busy() {
 			switch cfg.Mode {
 			case "github", "mirror":
-				if now.After(next) {
+				if !now.Before(next) {
 					wait := u.tick(now, false)
 					next = now.Add(wait)
 				}
@@ -126,6 +158,13 @@ func run(u *Updater, cfgPath string, once bool, stop <-chan os.Signal) int {
 		case <-time.After(30 * time.Second):
 		}
 	}
+}
+
+func modTime(p string) time.Time {
+	if st, err := os.Stat(p); err == nil {
+		return st.ModTime()
+	}
+	return time.Time{}
 }
 
 // tick — періодична перевірка; повертає, коли перевіряти знову.

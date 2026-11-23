@@ -4,7 +4,8 @@
 `SCAN-FLOW.md` (там архітектура, поведінка, розгортання й довідкові таблиці), а пояснює **як читати код**:
 що де лежить, яким шляхом проходить один файл, що робить кожна функція, і як безпечно додати своє.
 
-Мова коду — C (модуль і CLI), PowerShell (вотчер, інсталятор), Python (генератор правил, тести).
+Мова коду — C (модуль і CLI), Go (вотчер `watcher-go`, служба оновлення `docscan-updater`, CI `cirun`),
+PowerShell (інсталятор, запасний вотчер), Python (генератор правил, тести).
 Розділ 2 — мінімум C, потрібний саме для цього коду, на прикладах з нього.
 
 ---
@@ -17,8 +18,8 @@
 4. [Модуль `docscan` (libyara/modules/docscan)](#4-модуль-docscan)
 5. [Лікування — `disarm.c`](#5-лікування--disarmc)
 6. [CLI — наші частини `cli/yara.c`](#6-cli--наші-частини-cliyarac) (6a — пісочниця `cli/docscan_sandbox.c`)
-7. [Вотчер — `docscan-watcher.ps1`](#7-вотчер--docscan-watcherps1)
-8. [Розгортання — `install.ps1`, `build_package.ps1`, `uninstall.ps1`](#8-розгортання)
+7. [Вотчер — `watcher-go` (і запасний `docscan-watcher.ps1`)](#7-вотчер)
+8. [Розгортання — `install.ps1`, `build_package.ps1`, `uninstall.ps1`, `docscan-updater`](#8-розгортання)
 9. [Правила — генератор та інструменти (Python)](#9-правила--генератор-та-інструменти)
 10. [Тести й фазинг](#10-тести-й-фазинг)
 11. [Рецепти: як додати…](#11-рецепти-як-додати)
@@ -38,7 +39,7 @@ libyara/modules/docscan/          МОДУЛЬ (C) — розбір докуме
   zip.c/.h         обгортка над miniz: відкрити ZIP, ім'я/розмір/розпакування запису
   miniz.c/.h       сторонній ZIP/DEFLATE (не наш, не правити — крім позначеної латки)
   rels.c/.h        розбір *.rels (зв'язки OOXML) без XML-парсера
-  inspect_ooxml.c  docx/xlsx/pptx: обхід частин ZIP, DDE, вкладення, ActiveX, altChunk, XLM
+  inspect_ooxml.c  docx/xlsx/pptx: обхід частин ZIP, DDE, вкладення, ActiveX, altChunk, XLM; звичайний ZIP-архів
   cfb.c/.h         читач OLE Compound File (CFB) — «файлова система у файлі»
   msovba.c/.h      розпакування MS-OVBA (стиснений код VBA)
   vba.c/.h         пошук VBA у CFB, ключові слова, текст макросу
@@ -57,21 +58,30 @@ cli/yara.c                                CLI yara64: прапори --docscan-*
 cli/docscan_sandbox.c/.h                  ПІСОЧНИЦЯ (Windows): той самий yara64 як брокер і воркер, токени, job object, записи X C D
 
 docscan-project/
-  rules/docscan-policy.yar   політика: 29 правил DS_* (рівень, лікування, текст для алерту)
+  rules/                     правила — НЕ в git (у .gitignore): реліз github.com/rifatismailov/yara-docscan-rules,
+                             який розкладає cirun (ci/cirun/rulesrc); з v1.0.6 правил немає й у пакеті програми
+  rules/docscan-policy.yar   політика: правила DS_* (рівень, лікування, текст для алерту)
   rules/docscan-index.yar    головний файл правил = політика + file-index.yar
   rules/file-index.yar       ГЕНЕРУЄТЬСЯ: include усіх вендорних файлів
   rules/general/, maldoc/    ГЕНЕРУЮТЬСЯ: вендорні правила
-  rules/                     правила — НЕ в git: реліз yara-docscan-rules, який кладе cirun (окремий репозиторій)
-  rules/tools/               (у yara-docscan-rules) генератор правил та інструменти (Python, PowerShell)
-  watcher/docscan-watcher.ps1   вотчер (PowerShell 5.1)
-  deploy/                    install.ps1, uninstall.ps1, build_package.ps1, manager/ (Wazuh)
+  (yara-docscan-rules) tools/   генератор правил та інструменти (Python, PowerShell) — у репозиторії правил
+  (DocScan-rules.zip) critical/ правила третього проходу (critical/*.yar; на ПК <InstallDir>\rules\critical)
+  watcher-go/                ВОТЧЕР (Go, служба DocScanWatcher): main.go, config.go, scan.go, store.go, pool.go, sched.go,
+                             lists.go, sweep.go, settings.go, scanjob.go, scancli.go, logx.go, fs_windows.go / fs_other.go;
+                             drives/ (диски, USB, захищені теки), orglists/ (білий / чорний списки), manifest/ (підписаний
+                             маніфест), winsvc/ (служба Windows), updater/ (docscan-updater), web/ (docscan-web)
+  watcher/docscan-watcher.ps1   запасний вотчер (PowerShell 5.1, install.ps1 -WatcherEngine ps)
+  deploy/                    install.ps1, uninstall.ps1, build_package.ps1, DocScan-Install.ps1, manager/ (Wazuh)
   test-range/                генератори тестових зразків, run_tests.ps1
-  test-critical/             тести третього проходу (Python): run_tests.py, корпус, «компот», ворожі файли
+  test-critical/             тести третього проходу (Python): run_tests.py, корпус, «компот», ворожі файли,
+                             синтетичний набір і якість критичних правил
   test-samples/generated/    42 тестові зразки (у git); provided/ — реальні, НЕ в git
   fuzz/                      libFuzzer-харнеси, корпус, регресії (build.sh — Мак/Linux, build_windows.ps1 — Windows)
-  ci/                        CI одною кнопкою: cirun (Go), build-test-unix.sh, check_verdicts.*, expected-verdicts.tsv
+  ci/                        CI одною кнопкою: cirun (Go), build-test-unix.sh, check_verdicts.*, expected-verdicts.tsv,
+                             check_watcher.py + combat_*.ps1 (бойовий тест), install_smoke.ps1, loadtest/
   vendor-sources/            клони джерел правил (НЕ в git)
   SCAN-FLOW.md / .en.md      архітектура й довідник; CODE-GUIDE.md — цей файл
+  CRITICAL-RULES.md, LISTS-FLOW.md, UPDATE-DESIGN.md   критичні правила, списки організації, оновлення
 ```
 
 Правило: **модуль лише збирає факти**, а рішення («це HIGH, вирізати макрос») приймають YARA-правила
@@ -166,9 +176,9 @@ UTF-8 (`put_utf8`, `cpy_utf16` у lnk.c; `WideCharToMultiByte` у yara.c), що�
 ## 3. Шлях одного файлу через код
 
 ```
- 1. Вотчер (PS): FileSystemWatcher → подія Created/Changed/Renamed → pending
- 2. Вотчер: пауза 2 с, Wait-FileReady, SHA256, пауза -RescanCooldown для повторів
- 3. Вотчер: Invoke-Scan → yara64.exe -w --docscan-json [--docscan-disarm] -C rules.yarc <файл>
+ 1. Вотчер (Go): watchTree (ReadDirectoryChangesW) → подія → coordinator.onEvent (pend)
+ 2. Вотчер: onTick — тиша -SettleSeconds, пауза -RescanCooldown для повторів → черга sched → воркер пулу: waitFileReady, SHA256
+ 3. Вотчер: invokeScan → yara64.exe -w --docscan-json [--docscan-disarm] -C rules.yarc <файл>
  4. yara.c main: розбір прапорів; --docscan-json вмикає file_vars
  5. yara.c: завантаження rules.yarc → scan_file() → file_vars_set() (filename, extension…)
  6. libyara: yr_scanner_scan_fd → модулі правил → docscan module_load()
@@ -180,9 +190,12 @@ UTF-8 (`put_utf8`, `cpy_utf16` у lnk.c; `WideCharToMultiByte` у yara.c), що�
       без severity → вендорне: yara_file_matches / yara_doc_matches / yara_info_matches + опис
 11. libyara: SCAN_FINISHED → print_docscan_json(): 2-й скан (VBA і кожна частина parts[]) → друк JSON
 12. yara.c: після скану, якщо --docscan-disarm і є дія/HIGH → do_disarm() → disarm.c docscan_disarm()
-13. Вотчер: розбирає JSON, рахує вердикт запису, Get-Summary, пише рядок у docscan-results.json
-14. Агент Wazuh читає docscan-results.json (<localfile> json) → менеджер → правила 101090–101108 → алерт
+13. Вотчер: scanFile розбирає JSON, рахує вердикт запису, summary; coordinator.write — рядок у docscan-results.json
+14. Агент Wazuh читає docscan-results.json (<localfile> json) → менеджер → правила local_rules.docscan.xml (101090…) → алерт
 ```
+
+Запасний PowerShell-вотчер (`install.ps1 -WatcherEngine ps`) проходить ті самі кроки однією чергою:
+`FileSystemWatcher` → `Wait-FileReady` → `Invoke-Scan` → `Scan-File` (розділ 7.2).
 
 Чому факти копіюються в кроці 9, а не читаються пізніше: YARA вивантажує модуль **до** колбеків про збіги
 правил, тож потім поля модуля вже недоступні.
@@ -220,12 +233,15 @@ UTF-8 (`put_utf8`, `cpy_utf16` у lnk.c; `WideCharToMultiByte` у yara.c), що�
 | `begin_declarations … end_declarations` | Оголошує поля, які бачать правила: `declare_integer("is_ooxml")`, `declare_string("template_url")`, масиви `begin_struct_array("packages") … end_struct_array`. **Нове поле, яке мають бачити правила, оголошується тут.** |
 | `module_initialize` / `module_finalize` / `module_unload` | Порожні (`return ERROR_SUCCESS`). |
 | `module_load(context, module_object, …)` | Вся робота на кожен файл: (1) `calloc` результату; (2) обнуляє `is_*`; (3) бере перший блок пам'яті (при скані файлу — весь файл); (4) `docscan_detect_magic` → `is_<тип>=1` і виклик інспектора; (5) переносить поля `docscan_result_t` у поля модуля (`yr_set_integer`, `yr_set_string`, `yr_set_sized_string` для двійкових даних, масиви через `"%i"`); (6) звільняє `vba_code`, буфери `parts[]` і сам результат. |
+| `set_vba_lines(code, len, module_object)` (static) / `vba_skip_statement` | Масив `vba_lines`: код VBA по операторах (рядки-продовження склеєні), кожен шматок ≤ 4000 байтів (`VBA_PIECE` < ліміту `matches`), з перекриттям; порожні рядки, коментарі (`'`, `Rem`) і `Attribute …` пропускаються. |
 
 ### 4.2 `inspect.h` — спільна структура
 
 `docscan_result_t` — усі факти одного документа: прапорці (`macro_present`…), масиви фактів (`external_rels[]`,
 `entries[]`, `embedded[]`, `dde[]`, `packages[]`, `activex[]`, `altchunks[]`), лічильники (`equation_objects`,
-`xlm_macrosheets`), докази (`char[512]`), `vba_code` (malloc), `parts[]` (malloc). Тут же константи-ліміти
+`xlm_macrosheets`), ознаки VBA (`vba_procedures`, `vba_autoexec_names`, `vba_pcode_nosrc`), `encrypted`, звичайний
+ZIP-архів (`is_archive`, `archive_entries[]`, `archive_docs[]`, `zip_unreadable`, `archive_depth`), докази (`char[512]`),
+`vba_code` (malloc), `parts[]` (malloc). Тут же константи-ліміти
 (`DOCSCAN_MAX_*`) і оголошення спільних функцій (`docscan_inspect_*`, `docscan_scan_ole_objects`,
 `docscan_add_part`, `docscan_record_package`, `docscan_add_activex`).
 
@@ -242,7 +258,10 @@ UTF-8 (`put_utf8`, `cpy_utf16` у lnk.c; `WideCharToMultiByte` у yara.c), що�
 | `docscan_contains_ci(...)` | → 0/1 | Те саме без урахування регістру. |
 | `docscan_buf_push(b, src, n)` / `docscan_buf_free(b)` | | Буфер, що росте (подвоєння); `-1` при нестачі пам'яті. |
 | `docscan_zip_open/close/count/entry_name/entry_size` | | Обгортка над miniz (ZIP у пам'яті). |
-| `docscan_zip_extract(z, i, &out_size)` | → malloc-буфер | Розпаковує запис. Записи > 64 МБ не розпаковує (захист від zip-бомби). Звільняти `docscan_zip_free`. |
+| `docscan_zip_extract(z, i, &out_size)` | → malloc-буфер | Розпаковує запис. Записи > 64 МБ (`DOCSCAN_ZIP_MAX_ENTRY`) не розпаковує (захист від zip-бомби). Звільняти `docscan_zip_free`. |
+| `docscan_zip_entry_encrypted(z, i)` | → 0/1 | Запис під паролем (вміст не прочитати). |
+| `docscan_zip_central_names(data, size, cb, ud)` | → кількість записів | ZIP, який miniz не відкриває (зламаний, можливо навмисно): імена, прапорець шифрування й розмір — прямо з центрального каталогу. |
+| `docscan_rtf_control_word_at` / `docscan_rtf_has_control_word` | → 0/1 | Справжнє керівне слово RTF `\слово`: перед `\` парна кількість `\`, далі не літера (текст про `\\objupdate` — не спрацювання). |
 
 ### 4.4 `rels.c` — зв'язки OOXML
 
@@ -271,6 +290,12 @@ UTF-8 (`put_utf8`, `cpy_utf16` у lnk.c; `WideCharToMultiByte` у yara.c), що�
 | `xl/macrosheets/*` | `xlm_macrosheets++`; → 2-й скан |
 | інші `/embeddings/*`, частини altChunk (`is_altchunk_part`) | → 2-й скан |
 
+**Не Office.** Якщо на верхньому рівні немає `[Content_Types].xml` / `mimetype` — це звичайний ZIP-архів:
+`inspect_archive` (записи першого рівня → `archive_entries[]`, `archive_encrypted`; документи всередині, відібрані
+`archive_doc_name`, розбираються тими самими інспекторами з `archive_depth = 1` → `archive_docs[]` і частина
+`archive:<ім'я>`; без рекурсії, ліміти `DOCSCAN_MAX_ARCHIVE_DOCS` / `DOCSCAN_ARCHIVE_BUDGET`). ZIP, який miniz не
+відкриває → `zip_unreadable = 1`, імена — `docscan_zip_central_names` з колбеком `central_name`.
+
 Допоміжні:
 
 | Функція | Що робить |
@@ -298,6 +323,8 @@ CFB — «FAT-файлова система» всередині файлу: с�
 | `cfb_walk(data, size, cb, ncb, ud)` (static) | Уся робота: заголовок → DIFAT → FAT → каталог → mini stream → mini FAT → для кожного потоку збирає байти й викликає колбек. Усі ланцюжки обмежені кількістю секторів у файлі (підроблений FAT може зациклитись), потік ≤ 4 МБ, разом ≤ 64 МБ. |
 | `docscan_cfb_foreach_stream(data, size, cb, ud)` | Колбек отримує `(data, size, ud)`. Використовує `vba.c`. |
 | `docscan_cfb_foreach_named_stream(data, size, cb, ud)` | Колбек отримує ще й **ім'я потоку** (UTF-16 → ASCII, керуючі символи лишаються: `"\x01Ole10Native"`). Використовує `oleobj.c`. |
+| `docscan_cfb_has_stream(data, size, name)` | Чи є потік з таким іменем (нічого не читає). |
+| `docscan_cfb_get_stream(data, size, name, max_size, …)` | Копія першого потоку з таким іменем, до `max_size` (≤ 64 МБ) — третій прохід (великі `.doc/.xls`) і `ole_encrypted`. Звільняти `free()`. |
 | `read_chain(...)` | Іде ланцюжком FAT і склеює сектори. |
 | `u16` / `i32` / `u32` / `i32_push` | Безпечне читання чисел; масив, що росте. |
 
@@ -311,6 +338,8 @@ CFB — «FAT-файлова система» всередині файлу: с�
 | `docscan_scan_vba_container(cfb, size, r)` | Обходить потоки CFB з колбеком `vba_stream_cb`. |
 | `vba_stream_cb(data, size, ud)` (static) | Шукає контейнер MS-OVBA (`0x01` + заголовок чанка); спершу розпаковує 64 байти — якщо там `Attribut…`, розпаковує повністю (≤ 4 МБ). Ключові слова `SUS[]` (powershell, Shell, DownloadFile…) → `macro_suspicious` + `add_evidence`. Текст модуля → `vba_code` (≤ 2 МБ). |
 | `add_evidence(r, kw)` | Дописує слово в доказ `vba_evidence` (`a | b | c`). |
+| `docscan_vba_count_procedures(code, len)` | Кількість визначень `Sub` / `Function` / `Property` на початку рядка (без `End Sub`, коментарів, `Declare … Lib`) → `vba_procedures` (у `module_load`). У `vba_stream_cb`: скомпільований p-код у модулі, чиє джерело без процедур → `vba_pcode_nosrc` (VBA stomping). |
+| `docscan_scan_vba_container` (кінець) | Імена автозапуску (`AUTOEXEC[]`: `AutoOpen`, `Workbook_Open`…) у всьому сирому контейнері, зокрема в таблиці ідентифікаторів p-коду → `vba_autoexec_names` (`DS_MACRO_STOMPED` у політиці). |
 
 ### 4.8 `oleobj.c` — об'єкти в CFB і частини для 2-го скану
 
@@ -338,6 +367,9 @@ CFB — «FAT-файлова система» всередині файлу: с�
 | `hexval`, `le32` (static) | Hex-символ → число; безпечне u32. |
 | `docscan_inspect_pdf(data, size, r)` | `/Launch`, `/JavaScript`/`/JS` (+ `pdf_has_dangerous_js`), `/OpenAction`/`/AA`, `/EmbeddedFile`. |
 | `pdf_has_dangerous_js(d, n)` (static) | Список небезпечних JS-функцій (`app.launchURL`, `eval(`, …). |
+| `pdf_names(d, n)` (static) | Справжні імена PDF (`/JS`, `/JavaScript`, `/OpenAction`, `/AA`, `/Launch`, `/EmbeddedFile(s)`) з розкодуванням `#xx` (`/J#61vaScript`); пропускає дані потоків (`pdf_stream_at`), рядки `(…)` (`pdf_string_end`) і коментарі `%`. Повертає бітові прапорці. |
+| `pdf_is_delim`, `pdf_is_space` (static) | Класи символів PDF. |
+| `ole_encrypted(data, size)` (static, `inspect_ole.c`) | Шифрування паролем (OOXML `EncryptedPackage`, `.doc` fEncrypted, `.xls` `FILEPASS`, `.ppt` EncryptedSummary) → `encrypted`. |
 
 ### 4.10 `lnk.c` — ярлики
 
@@ -375,6 +407,7 @@ CFB — «FAT-файлова система» всередині файлу: с�
 | `extract_ppt` | PowerPoint 97+: рекурсивний обхід записів потоку `PowerPoint Document`, текст з `TextCharsAtom`/`TextBytesAtom`. Пропускаються зразок слайдів і роздатковий матеріал, повторні копії тексту полів (`ppt_seen`). |
 | `ole_summary` | Метадані старих форматів з `\x05SummaryInformation` (автор, назва, дати `FILETIME` → ISO, кодування з PID 1). |
 | `extract_plain` | txt/csv: BOM UTF-8 / UTF-16LE / UTF-16BE, інакше валідний UTF-8, інакше 1251 (не вгадуємо далі). |
+| `docscan_text_free(t)` / `docscan_text_strerror(code)` | Звільнити результат (після `DOCSCAN_TEXT_OK`); коротка англійська причина для коду `DOCSCAN_TEXT_*`. |
 
 **`critical.c` — після витягу.**
 
@@ -439,7 +472,7 @@ CFB — «FAT-файлова система» всередині файлу: с�
 | `docscan_list_add`, `docscan_list_has`, `docscan_obj_add` | JSON-списки (`"a","b"`) і масив `{"rule","description"}` з екрануванням і обмеженням розміру. |
 | `docscan_json_puts`, `docscan_json_evidence`, `docscan_defang` | Друк рядків у JSON; `http` → `hxxp` у доказах. |
 | `docscan_state_reset`, `docscan_copy_string` | Скинути стан (звільнити копії); скопіювати рядок з поля модуля. |
-| `critical_setup()` | Після завантаження основних правил: перевіряє `--critical-out` і `--critical-chunk`, компілює `--critical-rules` окремим компілятором (`yr_compiler_add_string`): один файл — простір імен за замовчуванням; тека — усі `*.yar` верхнього рівня за абеткою (`critical_list`), кожен у просторі імен = ім'я файлу без `.yar`; до 256 файлів і 64 МБ разом (`critical_read`); помилка — з іменем файлу. |
+| `critical_setup()` | Після завантаження основних правил: перевіряє `--critical-out` і `--critical-chunk`, компілює `--critical-rules` окремим компілятором (`yr_compiler_add_string`): один файл — простір імен за замовчуванням; тека — усі `*.yar` верхнього рівня за абеткою (`critical_list`, фільтр `critical_is_yar`, сортування `critical_cmp`; інші файли теки, напр. `VERSION.txt`, ігноруються), кожен у просторі імен = ім'я файлу без `.yar`; до 256 файлів і 64 МБ разом (`critical_read` через `critical_fopen`); помилка — з іменем файлу. |
 | `critical_process(file_path)` | Третій прохід для одного файлу (після скану, **до** лікування): читає файл (≤ 100 МБ; у воркері — байти й дати з `docscan_worker_data` / `docscan_worker_times`, а рядок черги йде записом `C`) → `docscan_text_extract` → `docscan_text_normalize` → `yr_rules_scan_mem` з `critical_callback` → розмір фрагментів (meta правила → `--critical-chunk` → 700/120) → SHA-256, дати файлу, якщо в документі їх немає → `docscan_critical_json` → дописує рядок у чергу під `output_mutex` і друкує `docscan-critical: queued …`. Текст документа ніде не друкується. |
 | `critical_callback` | Збирає назви правил, що спрацювали, і `e5_chunk_size` / `e5_chunk_overlap` з першого правила, де вони є. |
 | `critical_print`, `iso_utc`, `filetime_utc`, `fopen_utf8` | Друк вузьким рядком (на Windows консоль у широкому режимі — тимчасово `_O_TEXT`); дати ISO UTC; відкриття файлу за UTF-8 шляхом (`_wfopen`). |
@@ -476,6 +509,7 @@ CFB — «FAT-файлова система» всередині файлу: с�
 | `docscan_worker_send(tag, a, alen, b, blen)` | воркер | Записати один запис у канал результатів. |
 | `docscan_worker_confine_check()` | воркер | Проби після lockdown: приватний файл (`DOCSCAN_PROBE_SECRET`), запис у `%TEMP%` і `C:\ProgramData`, ключ у `HKLM\SOFTWARE`, читання `HKLM\SAM`, `cmd.exe` (`try_child_process`) — усе має бути заблоковано. |
 | `probe_matrix()`, `probe_one`, `probe_start`, `probe_debug` | брокер | Діагностика в `--docscan-confine-check`: які комбінації токенів стартують; NULL-SID-воркер під налагоджувачем (DLL, виключення, код виходу). |
+| `token_info`, `token_elevated`, `count_privileges`, `enable_privilege`, `can_read`, `confine_lines`, `write_all`, `wfopen_utf8` | обидва | Допоміжні: дані токена, кількість / увімкнення привілеїв, проба читання, рядки звіту, запис у канал повністю, відкриття файлу за UTF-8 шляхом. |
 
 Що треба пам'ятати, змінюючи код, який виконується у воркері:
 - після `docscan_worker_lockdown` **не можна** відкривати файли, писати, вантажити нові DLL, запускати процеси —
@@ -486,21 +520,59 @@ CFB — «FAT-файлова система» всередині файлу: с�
 
 ---
 
-## 7. Вотчер — `docscan-watcher.ps1`
+## 7. Вотчер
+
+Основний вотчер — **Go** (`watcher-go/`, `docscan-watcher.exe`, служба Windows `DocScanWatcher` від імені SYSTEM).
+PowerShell-скрипт `watcher/docscan-watcher.ps1` лишився запасним (`install.ps1 -WatcherEngine ps`, запланована
+задача). Обидва мають ті самі імена параметрів, той самий формат записів `docscan-results.json` і рядків `watcher.log`.
+Чому переписано і цифри навантажувального тесту — `watcher-go/README.md`.
+
+### 7.1 Go-вотчер — `watcher-go/`
+
+**Параметри** (`config.go`, `parseConfig`): ті самі, що в скрипті (нижче), плюс пул: `-Workers` (фіксована
+кількість), `-MinWorkers`, `-MaxWorkers`, `-CpuTarget`, `-CpuHigh`, `-ScanTimeout`; білий / чорний списки:
+`-Whitelist`, `-Blacklist` (є лише в Go). `-CriticalRules` — файл `.yar` або тека (`<InstallDir>\rules\critical`,
+`critical\*.yar` пакета правил; `isFile` / `hasYar`; тека без `.yar` — третій прохід вимкнено).
+
+| Файл / функція | Що робить |
+|---|---|
+| `main.go`: `main`, `start` | Розбір параметрів; служба (`winsvc.Run`) або консоль; `Watcher`, правила, пул, `coordinator`. |
+| `prepareRules` | На старті: `yarac64` компілює `rules.yarc`; якщо третій прохід увімкнено — пробний `yara64 --critical-rules` (не компілюється → помилка старту, тож DocScanUpdater відкочує новий пакет правил). |
+| `coordinator` (`onEvent`, `loop`, `onTick`, `rescan`, `onResult`, `write`, `reportQueue`) | Одна горутина володіє всім станом: зливає події файлу, тиша `-SettleSeconds`, cooldown, черга `sched`, запис у `docscan-results.json` і лог, досканування після переповнення, розмір черги в журналі щохвилини. |
+| `addRetry` / `removeRetry` / `retryTick` / `saveRetry` / `loadRetry` | Повтори лікування відкритого файлу (`retry.json`, 30 с / 5 хв, `DisarmPending`). |
+| `fs_windows.go`: `watchTree` | `ReadDirectoryChangesW` (горутина на теку) → канал подій; переповнення → прапорець для досканування. Також `fileLocked`, `archiveBit`, `cpuMeter`, `ansiToUTF8`, `hideWindow`. `fs_other.go` — заглушки для Мака / Linux. |
+| `sched.go` | Порядок сканування: повтори → поодинокі файли → масові копіювання по колу між користувачами (`isBulk`, `userKey`, `branchKey`). |
+| `pool.go`: `pool`, `autoscale` | Воркери; розмір від `-MinWorkers` до `-MaxWorkers` за чергою і CPU машини. |
+| `scan.go`: `scanFile` | Повна обробка файлу (аналог `Scan-File`): `waitFileReady`, `fileSHA256`, `applyLists`, `invokeScan`, вердикт (`maxVerdict`), карантин general (`quarantine`), `summary`, макроси, черга E5Search. `Record` — запис для Wazuh. |
+| `invokeScan` | Один запуск `yara64` (знижений пріоритет, тайм-аут `-ScanTimeout`); черга третього проходу — у тимчасовий файл, далі `critAppend`. |
+| `store.go`: `critClaim` / `critRelease` / `critAppend` | Той самий вміст (sha256) перевіряється третім проходом один раз за запуск; заявка — **до** скану (кілька воркерів з копіями одного документа). |
+| `store.go`: `saveMacro`, `sendMacro`, `syncMacros`, `loadMacroSent` | Сховище макросів (як `Save-Macro` / `Send-Macro` / `Sync-Macros`). |
+| `lists.go`: `newLists`, `reload`, `applyLists` | Списки організації: перечитування при зміні (зламаний файл — лишається попередній); до сканування `orglists.Decide`: чорний sha256 → білий → чорний path / lnk_target; ціль ярлика — скан без лікування, `evidence.lnk_target`; у записі — `list` (`ListHit`). |
+| `orglists/` | Формат `whitelist.json` / `blacklist.json`, сувора перевірка (`Parse`), зіставлення (`MatchPath`, `MatchTarget`, `Decide`, `NeedsTarget`) — спільне з docscan-updater. |
+| `sweep.go` | Прохід по наявних файлах під масками `path` чорного списку (на старті, після зміни списків і після паузи): файли — у звичайну чергу з подією `ListSweep`. |
+| `settings.go` | `settings.json` поверх параметрів служби (пишуть веб і `install.ps1`, перечитується раз на 5 с): `detect_only`, пауза чорного списку, `usb_scan`, теки й кількість сканувань. |
+| `scanjob.go`: `startScan`, `walkScan`, `scanJob`, `scanResult`, `scanWaiters`, `handOver`, `cancelScan`, `onDrives` | Скан на вимогу і знімних носіїв: запити `<DataDir>\scan\request-<id>.json` (пишуть веб і CLI), види `docs` (документи на локальних дисках, без захищених тек) / `path` (тека, файл, знімний або не системний диск; цілий системний — ні) / `usb` (новий носій — сам, опитування раз на 5 с). Дія: лише повідомити / лікувати / видалити HIGH без копії. Файли — у смуги `scanHi` / `scanLo` після живих; кеш чистих sha256 (`scan\cache.json`, за хешем правил); хід — `status.json`, підсумок — `history.json`; у Wazuh — лише HIGH / MEDIUM (`DocsScan` / `PathScan` / `USBScan`). Файл, який уже сканується, другий скан чекає й рахує в себе. |
+| `scancli.go` | `-ScanDocs`, `-ScanPath`, `-ScanDetect`, `-ScanDelete`, `-ScanStatus`, `-ScanCancel`, `-Wait`: лише запит службі. |
+| `drives/` | `List` (літера, тип, USB за шиною `IOCTL_STORAGE_QUERY_PROPERTY`, лише читання, системний диск), `IsRoot`, `Fixed`, `Protected` (теки програм і системи: скан там лише повідомляє) — спільне для watcher і вебу. |
+| `web/` | `docscan-web.exe` (служба `DocScanWeb`, 127.0.0.1:8741): сторінки стану, знахідок, режиму, паузи, оновлень, винятків, карантину, політики, макросів, сканування (`scan.go`) і провідник для вибору тек (`browse.go`); пише лише файли-налаштування й запити, сканує завжди служба; кожна дія — аудит. Дизайн — `WEB-DESIGN.md`. |
+| `logx.go` | `rotateIfBig`, `Logger` (рядки `watcher.log`). |
+| `winsvc/` | Запуск як служба Windows (`Run`); на інших ОС — заглушка. |
+| `manifest/` | Підписаний маніфест релізу (ed25519): `Verify`, `VerifyProduct`, `Sign`, `Compare` версій — для docscan-updater і cirun. |
+
+Тести — `go test ./...` у `watcher-go` (`config_test.go`, `sched_test.go`, `scanjob_test.go`, `sweep_test.go`,
+`settings_test.go`, `drives/`, `orglists/`, `manifest/`, `updater/`, `web/`).
+
+### 7.2 Запасний PowerShell-вотчер — `docscan-watcher.ps1`
 
 PowerShell 5.1. Файл **лише ASCII** (усі повідомлення й коментарі англійською) — тоді кодування консолі, BOM і `irm`
 не мають значення. Українська — лише в текстах правил (`meta.text`), які приходять з yara64.
 
-**Параметри** (верх файлу): `-WatchPath`, `-Yara`, `-Yarac`, `-Rules`, `-OutDir`, `-BackupDir`, `-NoDisarm`,
+**Параметри** (верх файлу): `-WatchPath`, `-Base`, `-Yara`, `-Yarac`, `-Rules`, `-OutDir`, `-BackupDir`, `-NoDisarm`,
 `-QuarantineGeneral`, `-MaxLogMB`, `-KeepLogs`, `-MaxSizeMB`, `-SettleSeconds`, `-ReadyTimeout`,
 `-RescanCooldown`, `-DisarmRetryMinutes`, `-DisarmNoticeHours`, `-DocExt`, `-GenExt`, `-ExcludePattern`;
-білий / чорний списки: `-Whitelist`, `-Blacklist` (`lists.go`: перечитування при зміні, зламаний файл — лишається
-попередній; `applyLists` до сканування: чорний sha256 → білий → чорний path / lnk_target; ціль ярлика — скан без
-лікування, `evidence.lnk_target`; формат і зіставлення — пакет `watcher-go/orglists`, спільний з updater; у записі — `list`);
 збереження макросів: `-MacroDir`, `-MacroUpload`, `-MacroKeepDays`, `-MacroMaxMB`; третій прохід: `-CriticalRules`
-(файл `.yar` або тека — `<InstallDir>\rules\critical`, `critical\*.yar` пакета правил; `hasYar`; на старті перевіряється
-компіляція, помилка — `[ERROR]`, тож DocScanUpdater відкочує новий пакет правил), `-CriticalOut`, `-CriticalExt`
-(`.odt .ods .odp .txt .csv` — лише коли третій прохід увімкнений).
+(файл `.yar` або тека), `-CriticalOut`, `-CriticalExt` (`.odt .ods .odp .txt .csv` — лише коли третій прохід увімкнений).
+Білого / чорного списків і паралельних сканів у скрипті немає.
 
 **Стан у пам'яті:** `$pending` (події, що чекають), `$recent` (SHA256 останнього скану), `$LastScan` (час скану),
 `$LastKey` (останній запис у Wazuh), `$Retry` (+ `retry.json`), `$rescanAt/$rescanFrom` (після переповнення),
@@ -536,22 +608,40 @@ E5Search за цей запуск — повторний скан того са�
 
 | Файл / функція | Що робить |
 |---|---|
-| `build_package.ps1` | На машині збірки: копіює `yara64.exe`, `yarac64.exe`, VC++ runtime, правила, вотчер, інсталятор, `manager/`; `VERSION.txt`, `SHA256SUMS.txt`, zip. |
-| `install.ps1` | На станції (адмін): перевірка SHA256 → копіювання в `C:\Program Files\DocScan` → `C:\ProgramData\DocScan` (доступ SYSTEM + Administrators) → прибирання старої реалізації → `ossec.conf` агента (з відкатом) → самоперевірка → служба Windows `DocScanWatcher` («DocScan Watcher», перезапуск після збою). |
+| `build_package.ps1` | На машині збірки: копіює `yara64.exe`, `yarac64.exe`, VC++ runtime, вотчер (`docscan-watcher.exe` + запасний `.ps1`), `updater\docscan-updater.exe`, інсталятор, `manager/`; `VERSION.txt`, `SHA256SUMS.txt`, zip. **Правил у пакеті немає** — вони з релізів yara-docscan-rules (`install.ps1 -Rules`, DocScanUpdater). |
+| `install.ps1` | На станції (адмін): перевірка SHA256 → виключення Defender → копіювання в `C:\Program Files\DocScan` → `C:\ProgramData\DocScan` (доступ SYSTEM + Administrators) → правила (`-Rules <bundle>` перевіряє й ставить `docscan-updater -InstallRules`; без `-Rules` наявні правила лишаються) → прибирання старої реалізації → `ossec.conf` агента (з відкатом) → самоперевірка → служба Windows `DocScanWatcher` (Go-вотчер; `-WatcherEngine ps` — задача зі скриптом) → служба `DocScanUpdater` (`updater.json` з `-UpdateMode` …). Параметри кожного встановлення — `<DataDir>\install.json` (`-Reuse`), результат — `-ResultFile`. |
 | `Remove-DocScanBlock(c)` | Прибирає наш блок `<localfile>` з `ossec.conf` (між маркерами), щоб додати новий. |
 | `Remove-LegacyArBlocks(c)` | Прибирає блоки старого active-response (`doc-scan`, `yara-scan`). |
 | `Read-Text` / `Write-Text` | Читання/запис UTF-8 без BOM (`ossec.conf`). |
-| `Step` / `Fail` | Вивід кроку / помилка з виходом. |
-| `install.ps1` (нові параметри) | `-DetectOnly` (пілот), `-NoAvExclusion`, `-MacroUpload <url>`, `-NoCritical` (без третього проходу; інакше watcher отримує `-CriticalRules <InstallDir>\rules\critical` — правила йдуть у пакеті правил; стара тека `<InstallDir>\critical\` видаляється). |
-| `DocScan-Install.ps1` | Єдиний скрипт для ПК: качає `DocScan-windows-x64.zip` + `.sha256` з релізу GitHub (`releases/latest/download` або `docscan-<Version>`), звіряє SHA256, запускає `install.ps1` з пакета; `-Critical <файл / UNC / URL>` — правила E5Search (не в релізі). Реліз робить `cirun --release` (`ci/cirun/deploy/release.go`). |
-| `uninstall.ps1` | Видалення (`-Purge` — разом з результатами й карантином), прибирає `<localfile>`. |
-| `manager/cleanup_manager.sh`, `manager/local_rules.docscan.xml` | Для менеджера Wazuh: прибрати старі `<command>`/`<active-response>`; еталонний блок правил. |
+| `Step` / `Fail` / `Write-Result` | Вивід кроку / помилка з виходом / результат для updater (`-ResultFile`). |
+| `install.ps1` (параметри) | `-DetectOnly` (пілот), `-NoAvExclusion`, `-MacroUpload <url>`, `-WatchPath`, `-QuarantineGeneral`, `-WatcherEngine go\|ps`, `-Workers N`; `-NoCritical` (без третього проходу; інакше watcher отримує `-CriticalRules <InstallDir>\rules\critical` — `critical\*.yar` пакета правил; третій прохід на всіх ПК; стара тека `<InstallDir>\critical\` видаляється); списки: `-Whitelist` / `-Blacklist` / `-NoWhitelist` / `-NoBlacklist`, `-ListsUrl` / `-ListsKey` / `-ListsEveryHours` / `-ListsToken`; оновлення: `-UpdateMode github\|mirror\|marker\|off`, `-UpdateMirror`, `-UpdateMarker`, `-UpdateEveryHours`, `-UpdateWindow`; `-Rules`, `-Reuse`, `-ResultFile`. Окремого параметра для критичних правил немає. |
+| `DocScan-Install.ps1` | Єдиний скрипт для ПК: качає `DocScan-windows-x64.zip` + `.sha256` з релізу GitHub (`releases/latest/download` або `-Version`), звіряє SHA256, запускає `install.ps1` з пакета, передаючи йому свої параметри (`-DetectOnly`, `-NoCritical`, списки, `-WatcherEngine`, `-Workers`, `-Update*` …). Реліз робить `cirun --release` (`ci/cirun/deploy/release.go`). |
+| `uninstall.ps1` | Видалення: служби `DocScanUpdater` і `DocScanWatcher` (спершу Disabled, потім зупинка), процеси вотчера, `<localfile>` з `ossec.conf`; `-Purge` — разом з результатами й карантином. |
+| `manager/cleanup_manager.sh`, `manager/local_rules.docscan.xml`, `manager/0005-docscan_decoder.xml` | Для менеджера Wazuh: прибрати старі `<command>`/`<active-response>`; еталонний блок правил; декодер для `docscan-results.json`. |
+
+**Служба оновлення — `watcher-go/updater/` (`docscan-updater.exe`, служба `DocScanUpdater`).** Налаштування —
+`<DataDir>\update\updater.json`; ставить лише релізи з дійсним підписом CI (`manifest`), ніколи старішу версію,
+відкочує, якщо нова не стартувала. Задум — `UPDATE-DESIGN.md`.
+
+| Файл / функція | Що робить |
+|---|---|
+| `main.go`: `main`, `run`, `tick`, `marker` | Параметри `-DataDir`, `-InstallDir`, `-Config`, `-Once`, `-InstallRules <bundle \| тека>`; цикл перевірок; режим `marker` — запит агента (`update.json`). |
+| `config.go`: `loadConfig`, `check`, `parseMarker`, `inWindow` | `updater.json` (github / mirror / marker / off, `rules`, `lists`, вікно встановлення); розбір маркера. |
+| `update.go`: `check`, `fetch`, `unpackVerified`, `handleState`, `markFailed`, `writeRecord` | Оновлення програми: маніфест і підпис → пакет → кожен файл → `install.ps1 -Reuse -ResultFile` (`launchInstaller`) → результат / відкат; запис для Wazuh. |
+| `rules.go`: `checkRules`, `stageRules`, `compileRules`, `compileCritical`, `swapRules`, `installRulesFile` | Пакет правил `DocScan-rules.zip` (основні + `critical\`): підпис → файли → пробна компіляція `yarac64` (`compileRules`) і критичних разом через `yara64 --critical-rules=<тека>` (`compileCritical`) → заміна `<InstallDir>\rules` (попередні — `rules.prev`), перезапуск вотчера, відкат, якщо не стартував. |
+| `lists.go`: `checkLists`, `checkList`, `listsTick`, `writeReplace` | Списки з дзеркала організації (`lists.url`, підпис `lists.public_keys`, `serial` новіший, бекап `.prev`, запис `component: lists`). |
+| `listscli.go`, `listsign.go` | `docscan-updater -CheckList / -NewListKey / -SignList` (`signList`, `readListKey`). |
+| `svc_windows.go`, `launch_windows.go` | Зупинка / запуск служб; запуск інсталятора окремим процесом. |
 
 ---
 
 ## 9. Правила — генератор та інструменти
 
-`rules/tools/build_vendor_rules.py` — збирає `rules/general/`, `rules/maldoc/` з `vendor-sources/`.
+Генератор та інструменти лежать у репозиторії правил **yara-docscan-rules** (`tools/`), не в репозиторії програми;
+порядок зміни правил — генератор → локальний коміт → задача VS Code «Rules: check» → push → «Rules: release»
+(обидві — `cirun rules-release`, розділ 10).
+
+`tools/build_vendor_rules.py` — збирає `general/`, `maldoc/` з `vendor-sources/`.
 
 | Константа / функція | Що робить |
 |---|---|
@@ -582,10 +672,13 @@ E5Search за цей запуск — повторний скан того са�
 
 | Файл | Що робить |
 |---|---|
-| `ci/cirun/` (Go) | Коміт з перевіркою для публічного репозиторію (`gitops/git.go`, винятки — `skipChecks`), платформи `unix.go` / `windows.go`, хвилі, підсумок, push. |
+| `ci/cirun/` (Go) | `main.go` — один прогін: коміт з перевіркою для публічного репозиторію (`gitops/git.go`, винятки — `skipChecks`), платформи (`platform/unix.go` / `windows.go`; `platform/gowatcher.go` — крос-збірка `docscan-watcher.exe` і `docscan-updater.exe`), хвилі й підсумок (`orchestrator/`), push; доступ до машин — `transport/` (local / SSH / WinRM); налаштування — `config/` (`config.yaml`, секрети через `Resolver`); тестові файли поза git — `assets/`; правила прогону — `rulesrc/` (`Fetch`: реліз yara-docscan-rules, перевірка підпису, розкладання в `docscan-project/rules`); реліз програми — `deploy/release.go`, `deploy/manifest.go`, `deploy/version.go`; `prepare.go` (стенди перед прогоном), `pipeline.go` / `forgejo_run.go` / `forgejo/` (конвеєр Forgejo Actions). |
 | `ci/build-test-unix.sh` | Збірка й тести на macOS / Linux: documents, critical, hostile, corpus, malware, fuzz. |
-| `ci/cirun/rules_release.go`, `deploy/rules.go`, `deploy/critical.go` | Один інструмент для правил: `cirun rules-release --dir <yara-docscan-rules> [--critical <docscan-critical>] [--dry-run]` — компіляція основних правил (yarac), критичні (`CheckCritical`: імена `critical/*.yar`, компіляція разом через `yara --critical-rules`, прогін `tests/match` і `tests/no-match` одним `yara -r`, шляхи — з черги), пакет `DocScan-rules.zip` з `critical/`, підпис, реліз. Updater ставить пакет як завжди; `compileRules` перевіряє ще й `critical\` (`compileCritical`, yara64). |
+| `ci/cirun/rules_release.go`, `deploy/rules.go`, `deploy/critical.go` | Один інструмент для правил: `cirun rules-release --dir <yara-docscan-rules> [--critical <docscan-critical>] [--dry-run]` (задачі VS Code «Rules: check» — з `--dry-run`, «Rules: release») — компіляція основних правил (yarac), критичні (`CriticalFiles`: імена `critical/*.yar`; `CheckCritical`: компіляція разом через `yara --critical-rules`, прогін `tests/match` і `tests/no-match` одним `yara -r`, шляхи — з черги), пакет `DocScan-rules.zip` з `critical/` (`PrepareRules`), підпис, реліз (`Publish`). Updater ставить пакет як завжди; `compileRules` перевіряє ще й `critical\` (`compileCritical`, yara64). |
 | `watcher-go/orglists`, `watcher-go/updater/lists.go`, `listsign.go`, `listscli.go` | Списки організації: формат, `Decide`; DocScanUpdater — `lists.url` / `lists.public_keys` (підпис ключем організації, `serial` новіший, бекап `.prev`, запис `component: lists`); `docscan-updater -CheckList / -NewListKey / -SignList`. Тести — `go test ./...`, на стенді — `install_smoke.ps1`. |
+| `ci/install_smoke.ps1` | Крок стенду `install`: пакет цього коміту ставиться як на ПК (`install.ps1`, служба `DocScanWatcher`), кілька зразків у тестову теку — у вотчера мають бути записи з очікуваним вердиктом; потім `uninstall.ps1 -Purge`. |
+| `ci/combat_setup.ps1`, `combat_feed.ps1`, `combat_cleanup.ps1`, `ci/check_watcher.py` | Бойовий тест (`cirun --combat`, Windows): встановлення пакета, подача тестових файлів у теку партіями від SYSTEM, прибирання всього, що приніс тест; `check_watcher.py` звіряє записи `docscan-results.json` з очікуваним (`expected-verdicts.tsv`, `malware/expected.txt`). |
+| `ci/loadtest/` | Навантажувальний тест термінального сервера (RDP-сесії, генератор дій `loadgen.ps1`, звіт `loadtest_report.py`) — див. `watcher-go/README.md`. |
 | `ci/check_verdicts.py` / `.ps1`, `ci/expected-verdicts.tsv` | Документи: вердикт, лікування, повторний скан, оригінали — проти еталона 42 зразків (`--write` — свідома зміна еталона). |
 | `ci/check_corpus.py` | Корпуси й шкідливе ПЗ: вердикти в TSV для звірки Мак ↔ Windows; `expected.txt` — обов'язкові виявлення. |
 | `test-range/gen_test_range.py` | Генерує нешкідливі зразки: `write_docx`, `write_xlsx`, `write_zip`, `rels`, `build_cfb(stream, name)`, `build_cfb_multi`, `vba_project`, `ovba_container`, `build_lnk`, `ole10native`, `ole1_object`, `gen()` / `gen_objects()` / `gen_vba_projects()` / `gen_fp_regressions()` / `gen_archives()`. Вихід (`range/`) — не в git; потрібні файли копіюються в `test-samples/generated/`. |
@@ -598,10 +691,12 @@ E5Search за цей запуск — повторний скан того са�
 | `test-critical/run_tests.py` | Третій прохід: ділення проти еталона E5Search, інваріанти JSON, усі формати, параметри, поведінка без опції (`--yara`, `--legacy DIR`). |
 | `test-critical/md2office.py`, `eval_corpus.py` | Корпус E5Search (`.md`) → docx/xlsx/pptx (далі LibreOffice → doc/odt/rtf/xls/ppt); оцінка: у черзі чи ні проти розмітки. |
 | `test-critical/mix_corpus.py`, `eval_mix.py` | «Компот»: документи корпусу + безпечні вектори 1-го і 2-го проходів; перевірка вердикту, лікування й тексту в черзі (режими `cli` / `watcher`). |
-| `test-critical/hostile.py`, `hostile_run.py` | 35 ворожих / зламаних файлів: без падінь і зависань, зрозуміла причина. |
+| `test-critical/hostile.py`, `hostile_run.py` | 35 ворожих / зламаних файлів: без падінь і зависань, зрозуміла причина (тестове критичне правило — `crit-test.yar`). |
+| `test-critical/gen_sensitive_dataset.py` | Синтетичний набір для третього проходу: вигадані українські ділові документи з чутливими даними в справжньому форматі (Luhn, IBAN mod-97, РНОКПП, префікси ключів / токенів), складні негативи, змішані й чисті, `expected.tsv`; категорії bank, personal, credentials, keys, tokens, infra, classified, org; docx/xlsx/pptx/odt/rtf/txt/csv. |
+| `test-critical/eval_sensitive.py` | Якість критичних правил: кожен документ набору — через `yara64 --critical-rules`, як на ПК; по категоріях — знайдено / пропущено (recall) і хибні (precision); `--corpus` — хибні на чистому корпусі. `--critical` — файл `.yar` або тека. Категорія правила — з імені `ORG_<КАТЕГОРІЯ>_…` або `meta.category`. |
 | `fuzz/fetch_corpus.sh`, `fuzz/make_corpus.py` | Корпус з відкритих джерел / з тестових зразків. |
 
-Перевірити зміну модуля на Mac:
+Перевірити зміну модуля на Mac (`docscan-project/rules/` — реліз правил, який туди розклав cirun; у git його немає):
 
 ```sh
 make -j8                                                    # збірка ./yara
@@ -654,8 +749,9 @@ rule DS_XLM_MACROSHEET
 
 ### 11.3 Нове розширення у вотчері
 
-Додати в `-DocExt` (документи: скан з лікуванням, документні правила рахуються) або `-GenExt` (решта) у
-`docscan-watcher.ps1` — **лише якщо для формату є готові правила**. Оновити таблицю в `SCAN-FLOW.md` розділ 7.
+Додати в `-DocExt` (документи: скан з лікуванням, документні правила рахуються) або `-GenExt` (решта) — у
+Go-вотчері (`watcher-go/config.go`: `defDocExt` / `defGenExt`) і в запасному `docscan-watcher.ps1` —
+**лише якщо для формату є готові правила**. Оновити таблицю в `SCAN-FLOW.md` розділ 7.
 
 ### 11.4 Нове джерело правил
 
@@ -701,4 +797,4 @@ rule DS_XLM_MACROSHEET
 | Нові файлові операції у воркері | Після lockdown воркер не може нічого відкрити чи записати — нова функція «тихо не працює» лише на Windows | Усе з файлами — у брокері через запис; читання — до lockdown |
 | `slow-unit-*` у фазингу | libFuzzer зберіг повільний (> 10 с на завантаженій ВМ) вхід — CI рахував його як падіння | Падіння — лише `crash-` / `timeout-` / `oom-` / `leak-` |
 | Вихід генератора в git | `gen_test_range.py` пише в `test-range/range/`, ця тека потрапила в коміт | Тека в `.gitignore`; у git — лише `test-samples/generated/` |
-| Повторний скан | Повтор лікування відкритого файлу ставив документ у чергу E5Search ще раз | `$CritQueued` — один раз на вміст (sha256) за запуск |
+| Повторний скан | Повтор лікування відкритого файлу ставив документ у чергу E5Search ще раз | Один раз на вміст (sha256) за запуск: Go — `critClaim` **до** скану (кілька воркерів з копіями одного документа), PS — `$CritQueued` |

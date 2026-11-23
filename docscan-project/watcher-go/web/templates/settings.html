@@ -1,0 +1,69 @@
+{{define "mode"}}{{template "head" .}}
+{{$p := .}}{{with .Data}}
+<h1>Режим і чорний список</h1>
+
+<h2>Чорний список</h2>
+{{if .Pause.On}}
+<p class="warn">На ПАУЗІ {{if .Pause.Manual}}до ручного ввімкнення{{else}}до {{ts .Pause.Until}}{{end}} ({{.Pause.By}}). Збіги з чорним списком
+лише повідомляються (HIGH, disarm "paused"), файли не забираються в карантин.</p>
+<form method="post" action="/pause" class="row">{{template "csrf" $p}}<input type="hidden" name="for" value="off">
+<button class="primary">▶ Увімкнути блокування зараз</button></form>
+<p class="hint">Після ввімкнення файли, що вже лежать під масками чорного списку, перевіряються ще раз.</p>
+{{else}}
+<p>Блокує: збіг з чорним списком — HIGH і карантин{{if .DetectOnly}} (зараз режим DETECT ONLY — лише повідомлення){{end}}.</p>
+<form method="post" action="/pause" class="row">{{template "csrf" $p}}
+  <span class="lbl">тимчасово вимкнути блокування:</span>
+  <button name="for" value="1h">на 1 год</button>
+  <button name="for" value="4h">на 4 год</button>
+  <button name="for" value="today">до кінця дня ({{.Today}})</button>
+  <button name="for" value="manual" class="danger">до ручного ввімкнення</button>
+</form>
+<p class="hint">Пауза — запис у Wazuh (хто, до коли). Відомі шкідливі файли за sha256 теж лише повідомлятимуться — паузу тримайте короткою.</p>
+{{end}}
+
+<h2>Режим watcher</h2>
+<form method="post" action="/mode" class="stack">{{template "csrf" $p}}
+  <label><input type="radio" name="mode" value="full" {{if not .DetectOnly}}checked{{end}}> <b>Повний</b> — небезпечні документи знешкоджуються, файли зі списку / заборонені — у карантин</label>
+  <label><input type="radio" name="mode" value="detect" {{if .DetectOnly}}checked{{end}}> <b>Detect only</b> — лише повідомлення, файли не змінюються</label>
+  <p class="hint">зараз: {{if .DetectOnly}}detect only{{else}}повний{{end}} (з {{.Source}}); режим застосовується за кілька секунд, без перезапуску</p>
+  <label class="lbl">теки під наглядом (по одній у рядку) <textarea name="watch" rows="3">{{.WatchPath}}</textarea></label>
+  <label class="lbl">паралельних сканувань (0 — автоматично) <input name="workers" value="{{.Workers}}" size="4"></label>
+  <p class="hint">Зміна тек або кількості сканувань перезапускає службу DocScanWatcher.</p>
+  <button class="primary">Зберегти</button>
+</form>
+{{end}}
+{{template "foot" .}}{{end}}
+
+{{define "updates"}}{{template "head" .}}
+{{$p := .}}{{with .Data}}
+<h1>Оновлення</h1>
+<p class="hint">C:\ProgramData\DocScan\update\updater.json. Перед записом конфіг перевіряє сам DocScanUpdater (docscan-updater -CheckConfig);
+попередній файл лишається як updater.json.bak. Служба застосовує новий конфіг сама, протягом пів хвилини.</p>
+<form method="post" action="/updates/check" class="row">{{template "csrf" $p}}<button>⟳ Перевірити зараз</button></form>
+<form method="post" action="/updates" class="stack">{{template "csrf" $p}}
+<h2>Програма</h2>
+  <label class="lbl">режим <select name="mode">
+    <option value="github" {{if eq .C.Mode "github"}}selected{{end}}>github — останній реліз на GitHub</option>
+    <option value="mirror" {{if eq .C.Mode "mirror"}}selected{{end}}>mirror — дзеркало організації</option>
+    <option value="marker" {{if eq .C.Mode "marker"}}selected{{end}}>marker — за маркером агента</option>
+    <option value="off" {{if eq .C.Mode "off"}}selected{{end}}>off — не оновлювати</option>
+  </select></label>
+  <label class="lbl">дзеркало програми (mirror: https://… або \\сервер\шара) <input name="mirror" value="{{.C.Mirror.URL}}" size="90"></label>
+  <label class="lbl">репозиторій GitHub (github) <input name="repo" value="{{.C.GitHub.Repo}}" placeholder="rifatismailov/yara-docscan"></label>
+  <label class="lbl">перевіряти кожні, год <input name="every" value="{{.C.CheckEveryHours}}" size="5"></label>
+  <label class="lbl">ставити лише в цей час (напр. 22:00-06:00; порожньо — будь-коли) <input name="window" value="{{.C.Window}}" size="12"></label>
+<h2>Правила</h2>
+  <label><input type="checkbox" name="rules_off" {{if .C.Rules.Off}}checked{{end}}> не оновлювати правила</label>
+  <label class="lbl">дзеркало правил (порожньо — те саме, що програми; напр. Anthophila_Pollen) <input name="rules_mirror" value="{{.C.Rules.Mirror.URL}}" size="90"></label>
+  <label class="lbl">репозиторій релізів правил (github) <input name="rules_repo" value="{{.C.Rules.GitHub.Repo}}" placeholder="rifatismailov/yara-docscan-rules"></label>
+  <label class="lbl">ключі організації, що підписує правила / програму (extra_public_keys, ed25519:…, по одному в рядку) <textarea name="extra_keys" rows="2">{{.Extra}}</textarea></label>
+<h2>Списки організації</h2>
+  <label class="lbl">дзеркало списків (порожньо — лише вручну) <input name="lists_url" value="{{.C.Lists.URL}}" size="90"></label>
+  <label class="lbl">ключі списків (ed25519:…, по одному в рядку) <textarea name="lists_keys" rows="2">{{.ListKeys}}</textarea></label>
+  <label class="lbl">перевіряти кожні, год <input name="lists_every" value="{{.C.Lists.CheckEveryHours}}" size="5"></label>
+  <label class="lbl">токен закритого дзеркала (лише читання) {{if .HasToken}}<span class="hint">— задано; порожнє поле — лишити як є</span>{{end}} <input type="password" name="lists_token" autocomplete="off"></label>
+  {{if .HasToken}}<label><input type="checkbox" name="lists_token_clear"> прибрати токен</label>{{end}}
+  <button class="primary">Перевірити і зберегти</button>
+</form>
+{{end}}
+{{template "foot" .}}{{end}}

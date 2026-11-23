@@ -9,7 +9,8 @@
 # What it does:
 #   1) verifies the package SHA256SUMS.txt;
 #   1b) Microsoft Defender exclusions for -InstallDir and -DataDir (-NoAvExclusion skips); ESET - warning only;
-#   2) copies bin\, rules\, watcher\ to -InstallDir (default C:\Program Files\DocScan);
+#   2) copies bin\, watcher\, updater\ to -InstallDir (default C:\Program Files\DocScan); the rules come from
+#      -Rules (a yara-docscan-rules bundle, with critical\*.yar) or stay as installed;
 #   3) creates -DataDir (C:\ProgramData\DocScan): results\, quarantine\, macros\ - access for SYSTEM + Administrators only;
 #      macros\ = the VBA code of every document with macros (-MacroUpload: also POSTed to a collector);
 #      critical\ = the E5Search queue (critical.json: full text of documents matching the critical rules - critical\*.yar of
@@ -30,12 +31,15 @@
 #      (a script cannot be a service). A task left by an older version is removed.
 #   3b) rules: -Rules <bundle> (signed rules release of yara-docscan-rules, verified by docscan-updater.exe); without
 #      -Rules the rules a PC already has from a bundle (rules\VERSION.txt) stay - a program update never replaces
-#      them; otherwise the rules of this package (until packages come without rules); no rules at all - not installed;
+#      them; otherwise the rules of this package (old packages only - packages come without rules); no rules - not installed;
 #   8) the update service "DocScan Updater" (DocScanUpdater, updater\docscan-updater.exe): how it updates is in
 #      <DataDir>\update\updater.json, written from -UpdateMode (github | mirror | marker | off), -UpdateMirror,
 #      -ListsUrl / -ListsKey / -ListsEveryHours (the organisation's signed white / black lists),
 #      -UpdateMarker, -UpdateEveryHours, -UpdateWindow (only when given, or on the first install: github). It installs
 #      only releases signed by the DocScan CI, never an older version, and rolls back when the new one does not start.
+#   9) the web interface "DocScan Web" (DocScanWeb, web\docscan-web.exe): https://127.0.0.1:<-WebPort 8741>/, HTTPS with
+#      a certificate made here and trusted by Windows (only 127.0.0.1 / localhost, not a CA), user admin with a
+#      generated password (shown once, also in <DataDir>\web\initial-password.txt until the first sign-in). -NoWeb - none.
 # Running it again = update (the previous rules are kept in rules.prev\). The parameters of every install are kept in
 # <DataDir>\install.json: -Reuse repeats them (the updater runs install.ps1 -Reuse -ResultFile <json>, so the PC keeps
 # its mode: -DetectOnly, -WatchPath, -Workers, ...). The installed package stays in <DataDir>\update\packages\<version>
@@ -77,6 +81,8 @@ param(
   [string]  $ListsToken = "",     # a closed mirror (Forgejo with sign-in, a private repository): read-only token -> lists.token
   [string]  $Rules = "",          # rules bundle from a yara-docscan-rules release (DocScan-rules-bundle.zip: file, UNC or URL; or a
                                   # folder with rules-manifest.json/.sig + DocScan-rules.zip) - verified (CI signature) and installed
+  [switch]  $NoWeb,               # no web interface (service DocScanWeb); an installed one is removed
+  [int]     $WebPort = 8741,      # web interface: https://127.0.0.1:<port>/ (8740 is Anthophila_Hive's)
   [switch]  $Reuse,               # take the parameters of the previous install (<DataDir>\install.json) - used by the updater
   [string]  $ResultFile = ""      # write {"ok":..,"version":..,"error":..} here at the end (the updater reads it)
 )
@@ -115,10 +121,10 @@ if (Test-Path -LiteralPath $InstallJson) { try { $prevInstall = Get-Content -Lit
 if ($Reuse) {
   if (-not $prevInstall) { Fail "-Reuse: no $InstallJson (DocScan was not installed by this version of install.ps1)" }
   $p = $prevInstall.params
-  foreach ($n in "WatchPath", "MacroUpload", "WatcherEngine", "Workers", "OssecDir") {
+  foreach ($n in "WatchPath", "MacroUpload", "WatcherEngine", "Workers", "OssecDir", "WebPort") {
     if (-not $PSBoundParameters.ContainsKey($n) -and $null -ne $p.$n -and "$($p.$n)" -ne "") { Set-Variable -Name $n -Value $p.$n }
   }
-  foreach ($n in "QuarantineGeneral", "NoAvExclusion", "DetectOnly", "NoWazuhConfig", "KeepLegacy", "KeepLegacyYara", "NoCritical") {
+  foreach ($n in "QuarantineGeneral", "NoAvExclusion", "DetectOnly", "NoWazuhConfig", "KeepLegacy", "KeepLegacyYara", "NoCritical", "NoWeb") {
     if (-not $PSBoundParameters.ContainsKey($n) -and $p.$n) { Set-Variable -Name $n -Value ([switch]$true) }
   }
   $WatchPath = @($WatchPath)
@@ -175,6 +181,12 @@ if ((Get-Service -Name $UpdSvc -EA SilentlyContinue) -and (Get-Service -Name $Up
   Stop-Service -Name $UpdSvc -Force -EA SilentlyContinue
   $script:updStopped = $true
 }
+# the web interface: its exe is replaced too (step 9 starts it again)
+$WebSvc = "DocScanWeb"
+if ((Get-Service -Name $WebSvc -EA SilentlyContinue) -and (Get-Service -Name $WebSvc).Status -ne 'Stopped') {
+  Stop-Service -Name $WebSvc -Force -EA SilentlyContinue
+}
+Get-Process docscan-web -EA SilentlyContinue | ? { $_.Path -like "$InstallDir\*" } | Stop-Process -Force -EA SilentlyContinue
 $oldProcs = @(Get-CimInstance Win32_Process | ? { $_.Name -eq 'docscan-watcher.exe' -or ($_.Name -eq 'powershell.exe' -and $_.CommandLine -like "*docscan-watcher.ps1*") })
 if ($oldTasks.Count -or $oldSvc -or $oldProcs.Count) {
   Step "stopping the previous version"
@@ -229,7 +241,7 @@ if ((Test-Path "$InstallDir\rules") -and -not $Rules -and -not (Test-Path "$Inst
   Copy-Item "$InstallDir\rules" "$InstallDir\rules.prev" -Recurse
 }
 # rules: from a bundle (-Rules, installed below by docscan-updater) / kept (the PC has bundle rules: rules\VERSION.txt)
-# / from this package (until packages come without rules)
+# / from this package (old packages only: packages come without rules since v1.0.6)
 $bundleRules = Test-Path "$InstallDir\rules\VERSION.txt"
 $pkgRules = Test-Path (Join-Path $Pkg "rules\docscan-index.yar")
 $rulesFrom = if ($Rules) { "bundle" } elseif ($bundleRules) { "kept" } elseif ($pkgRules) { "package" } else { "" }
@@ -533,10 +545,20 @@ $keepParams = [ordered]@{
   WatchPath = @($WatchPath); MacroUpload = $MacroUpload; WatcherEngine = $WatcherEngine; Workers = $Workers; OssecDir = $OssecDir
   QuarantineGeneral = [bool]$QuarantineGeneral; NoAvExclusion = [bool]$NoAvExclusion; DetectOnly = [bool]$DetectOnly
   NoWazuhConfig = [bool]$NoWazuhConfig; KeepLegacy = [bool]$KeepLegacy; KeepLegacyYara = [bool]$KeepLegacyYara
-  NoCritical = [bool]$NoCritical
+  NoCritical = [bool]$NoCritical; NoWeb = [bool]$NoWeb; WebPort = $WebPort
 }
 # UTF-8 without BOM (Write-Text): docscan-updater (Go) reads these files
 Write-Text $InstallJson ([ordered]@{ installed = $verTitle; version = $relVer; time = (Get-Date).ToString("s"); history = $hist; params = $keepParams } | ConvertTo-Json -Depth 4)
+# settings.json (read by the watcher over its service parameters; the web interface edits it): the mode, folders and
+# workers of THIS install, so a value set earlier in the web interface does not override the installer. The black
+# list pause (blacklist_paused_*) set in the web interface stays.
+$setFile = Join-Path $DataDir "settings.json"
+$set = [ordered]@{}
+if (Test-Path -LiteralPath $setFile) {
+  try { $o = Get-Content -LiteralPath $setFile -Raw | ConvertFrom-Json; foreach ($k in "blacklist_paused_until", "blacklist_paused_by") { if ($o.$k) { $set[$k] = [string]$o.$k } } } catch { }
+}
+$set.detect_only = [bool]$DetectOnly; $set.watch_path = @($WatchPath); $set.workers = [int]$Workers
+Write-Text $setFile ($set | ConvertTo-Json -Depth 3)
 # the package itself (current + previous release): the updater reinstalls the previous one when an update fails
 $pkgRoot = "$DataDir\update\packages"
 if ($relVer) {
@@ -607,6 +629,65 @@ if ((Test-Path -LiteralPath $updExe) -and ($updMode -ne "off" -or $listsUrlNow))
   Stop-Service -Name $UpdSvc -Force -EA SilentlyContinue; sc.exe delete $UpdSvc | Out-Null
 }
 
+# --- 9. web interface (DocScanWeb): https://127.0.0.1:<WebPort>/, HTTPS + admin password ---
+$webExe = "$InstallDir\web\docscan-web.exe"
+$webDir = "$DataDir\web"
+$webUrl = "https://127.0.0.1:$WebPort/"
+$webPw = ""
+$webOn = $false
+if (-not $NoWeb -and (Test-Path -LiteralPath $webExe)) {
+  # a broken web interface must not fail the install (the updater would roll back the protection): warning only
+  try {
+    Step "web interface '$WebSvc' ($webUrl)"
+    if ($WebPort -lt 1 -or $WebPort -gt 65535) { throw "-WebPort ${WebPort}: expected 1..65535" }
+    New-Item -ItemType Directory -Force $webDir | Out-Null
+    # the key and the password hash: SYSTEM and Administrators only (no inheritance from ProgramData: Users can read there)
+    icacls $webDir /inheritance:r /grant:r "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-544:(OI)(CI)F" | Out-Null
+    if ($LASTEXITCODE) { throw "icacls $webDir failed" }
+    $o = @(& $webExe -InitTLS -DataDir $DataDir 2>&1 | % { "$_" })
+    if ($LASTEXITCODE -or ($o[-1] -notmatch '^cert (.+) ([0-9A-F]{40}) (new|kept)$')) { throw "certificate: $($o -join ' ')" }
+    $thumb = $Matches[2]
+    # the certificate becomes trusted (no browser warning); only for 127.0.0.1 / localhost and not a CA.
+    # Older copies of OUR certificate (same CN) are removed from Root
+    Get-ChildItem Cert:\LocalMachine\Root | ? { $_.Subject -like "CN=DocScan Web 127.0.0.1*" -and $_.Thumbprint -ne $thumb } | Remove-Item -EA SilentlyContinue
+    if (-not (Test-Path "Cert:\LocalMachine\Root\$thumb")) {
+      Import-Certificate -FilePath "$webDir\cert.cer" -CertStoreLocation Cert:\LocalMachine\Root | Out-Null
+    }
+    Write-Host "  certificate $thumb ($($Matches[3])), trusted for https://127.0.0.1"
+    $o = @(& $webExe -InitAuth -DataDir $DataDir -Listen "127.0.0.1:$WebPort" 2>&1 | % { "$_" })
+    if ($LASTEXITCODE) { throw "password: $($o -join ' ')" }
+    if ($o[-1] -match '^password (\S+)$') { $webPw = $Matches[1] }
+    $wbin = '"' + $webExe + '" -DataDir "' + $DataDir.TrimEnd('\') + '" -InstallDir "' + $InstallDir.TrimEnd('\') + '" -Listen 127.0.0.1:' + $WebPort
+    $wdesc = "DocScan: web interface of this PC ($webUrl)"
+    if (Get-Service -Name $WebSvc -EA SilentlyContinue) {
+      Set-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Services\$WebSvc" -Name ImagePath -Value $wbin
+      Set-Service -Name $WebSvc -StartupType Automatic -DisplayName "DocScan Web" -Description $wdesc
+    } else {
+      New-Service -Name $WebSvc -BinaryPathName $wbin -DisplayName "DocScan Web" -Description $wdesc -StartupType Automatic | Out-Null
+    }
+    sc.exe config $WebSvc obj= LocalSystem | Out-Null
+    sc.exe failure $WebSvc reset= 86400 actions= restart/60000/restart/60000/restart/300000 | Out-Null
+    if (-not $NoStart) {
+      Start-Service -Name $WebSvc
+      [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+      $ok = $false
+      for ($i = 0; $i -lt 20 -and -not $ok; $i++) {
+        Start-Sleep -Milliseconds 500
+        try { $r = Invoke-WebRequest -UseBasicParsing "$($webUrl)login" -TimeoutSec 5; $ok = $r.StatusCode -eq 200 } catch { }
+      }
+      if ($ok) { Write-Host "  running: $webUrl answers over trusted HTTPS" } else { Write-Host "  started, but $webUrl does not answer yet - see $DataDir\results\web.log" -ForegroundColor Yellow }
+    }
+    $webOn = $true
+  } catch {
+    Write-Host "  web interface NOT set up: $($_.Exception.Message)" -ForegroundColor Yellow
+    $webOn = $false
+  }
+} elseif (Get-Service -Name $WebSvc -EA SilentlyContinue) {
+  Step "web interface off$(if ($NoWeb) { ' (-NoWeb)' } else { ' (not in this package)' }): service $WebSvc removed"
+  Stop-Service -Name $WebSvc -Force -EA SilentlyContinue; sc.exe delete $WebSvc | Out-Null
+  Get-ChildItem Cert:\LocalMachine\Root | ? { $_.Subject -like "CN=DocScan Web 127.0.0.1*" } | Remove-Item -EA SilentlyContinue
+}
+
 Write-Result $true ""
 Write-Host ""
 Write-Host "DocScan installed." -ForegroundColor Green
@@ -626,4 +707,11 @@ $rv = if (Test-Path "$InstallDir\rules\VERSION.txt") { [string](Get-Content "$In
 Write-Host "  rules:      $InstallDir\rules ($rv)"
 Write-Host ("  lists:      white " + $(if (Test-Path -LiteralPath $whiteFile) { $whiteFile } else { "-" }) + ", black " + $(if (Test-Path -LiteralPath $blackFile) { $blackFile } else { "-" }) + $(if ($listsUrlNow) { "; updated daily from $listsUrlNow" } else { "" }))
 Write-Host ("  updates:    " + $(if ((Test-Path -LiteralPath $updExe) -and ($updMode -ne "off" -or $listsUrlNow)) { "service $UpdSvc, mode $updMode ($updCfg); records: $DataDir\results\docscan-updates.json" } else { "off" }))
+if ($webOn) {
+  Write-Host "  web:        $webUrl  (user admin)"
+  if ($webPw) {
+    Write-Host "              password: $webPw" -ForegroundColor Yellow
+    Write-Host "              temporary: change it at the first sign-in; until then it is also in $webDir\initial-password.txt (Administrators only)"
+  } else { Write-Host "              password unchanged (forgot it: '$webExe' -ResetPassword)" }
+} else { Write-Host "  web:        off$(if ($NoWeb) { ' (-NoWeb)' })" }
 Write-Host "  uninstall:  powershell -ExecutionPolicy Bypass -File '$InstallDir\uninstall.ps1'"

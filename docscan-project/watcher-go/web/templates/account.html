@@ -1,0 +1,35 @@
+{{define "login"}}<!doctype html>
+<html lang="uk"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Вхід · DocScan</title><link rel="stylesheet" href="/static/style.css"></head>
+<body class="ops loginpage"><main class="login">
+<div class="brand big"><span class="hex">⬡</span> DOCSCAN<b>//WEB</b></div>
+<div class="ver">{{.Host}} · керування DocScan на цьому ПК</div>
+{{with .Data}}
+<section class="card">
+<h2>SECURE_ACCESS</h2>
+{{if .Err}}<p class="error">{{.Err}}</p>{{end}}
+<form method="post" action="/login" class="stack">
+  <input type="hidden" name="pre" value="{{.Pre}}"><input type="hidden" name="next" value="{{.Next}}">
+  <label class="lbl">identity <span class="prompt"><i>&gt;</i><input name="name" value="admin" required autocomplete="username" placeholder="USERNAME"></span></label>
+  <label class="lbl">key <span class="prompt"><i>#</i><input type="password" name="password" required autocomplete="current-password" autofocus placeholder="••••••••"></span></label>
+  <button class="primary wide">AUTHENTICATE ›</button>
+</form>
+</section>
+{{if .FirstRun}}<p class="hint center">перший вхід: пароль — у C:\ProgramData\DocScan\web\initial-password.txt (лише для адміністраторів);<br>після входу DocScan попросить новий пароль</p>{{end}}
+<p class="hint center">забули пароль: <code>docscan-web.exe -ResetPassword</code> від адміністратора · сесія 30 хв без дій</p>
+{{end}}
+</main></body></html>{{end}}
+
+{{define "password"}}{{template "head" .}}
+<h1>Пароль</h1>
+{{if .MustChange}}<p class="warn">Це тимчасовий пароль після встановлення. Задайте свій — після цього файл initial-password.txt буде видалено.</p>{{end}}
+<section class="card">
+<form method="post" action="/password" class="stack">{{template "csrf" .}}
+  <label class="lbl">поточний пароль <input type="password" name="old" required autocomplete="current-password"></label>
+  <label class="lbl">новий пароль (не менше 12 символів) <input type="password" name="new" required minlength="12" autocomplete="new-password"></label>
+  <label class="lbl">ще раз <input type="password" name="new2" required minlength="12" autocomplete="new-password"></label>
+  <button class="primary">Змінити пароль</button>
+</form>
+</section>
+<p class="hint">Після зміни всі інші сесії виходять.</p>
+{{template "foot" .}}{{end}}

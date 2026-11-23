@@ -14,7 +14,9 @@
 //
 // Поля запису (потрібне хоча б одне; якщо кілька — файл має збігтися з УСІМА):
 //
-//	path        де лежить файл: повний шлях з маскою; * — будь-що в межах однієї теки, ** — будь-яка глибина, ? — один символ
+//	path        де лежить файл: повний шлях з маскою; * — будь-що в межах однієї теки, ** — будь-яка глибина
+//	            ("**\" — нуль або більше тек: C:\Users\*\Downloads\**\*.exe бере і Downloads\a.exe, і Downloads\x\a.exe),
+//	            ? — один символ
 //	lnk_target  куди веде ярлик (.lnk): мережева тека \\сервер\шара\ (у чорному списку можна й увесь сервер \\сервер\)
 //	sha256      вміст файлу (хеш)
 //
@@ -155,7 +157,10 @@ func glob(pat string) *regexp.Regexp {
 	for i := 0; i < len(pat); i++ {
 		switch c := pat[i]; c {
 		case '*':
-			if i+1 < len(pat) && pat[i+1] == '*' {
+			if i+2 < len(pat) && pat[i+1] == '*' && pat[i+2] == '\\' {
+				b.WriteString(`(?:.*\\)?`) // "**\" — нуль або більше тек: Downloads\**\*.exe бере і Downloads\a.exe
+				i += 2
+			} else if i+1 < len(pat) && pat[i+1] == '*' {
 				b.WriteString(`.*`)
 				i++
 			} else {
@@ -171,6 +176,66 @@ func glob(pat string) *regexp.Regexp {
 	re := regexp.MustCompile(b.String())
 	globMap[pat] = re
 	return re
+}
+
+// CouldContain — під текою dir може лежати файл, що підходить під маску pattern. Прохід по наявних файлах (watcher)
+// заходить лише в такі теки: для C:\Users\*\Downloads\**\*.exe — лише C:\Users\<профіль>\Downloads, не весь диск.
+func CouldContain(pattern, dir string) bool {
+	ps := strings.Split(norm(pattern), `\`)
+	ds := strings.Split(strings.TrimSuffix(norm(dir), `\`), `\`)
+	for i, d := range ds {
+		if strings.Contains(ps[i], "**") {
+			return true // далі — будь-яка глибина
+		}
+		if i >= len(ps)-1 {
+			return false // остання частина маски — ім'я файлу, а тут ще тека
+		}
+		if !glob(ps[i]).MatchString(d) {
+			return false
+		}
+	}
+	return true
+}
+
+// SweepCandidate — файл p, що вже лежить на диску, підпадає під path-запис чорного списку (прохід по наявних
+// файлах). Остаточно вирішує Decide (з sha256 і ціллю ярлика); false, якщо білий список дозволяє цей шлях сам по
+// собі (запис лише з path), а чорні записи, що збіглися, не мають sha256 (sha256 у чорному сильніший за білий).
+func SweepCandidate(white, black *List, p string) bool {
+	if black == nil {
+		return false
+	}
+	hit, sha := false, false
+	for i := range black.Entries {
+		if e := &black.Entries[i]; e.Path != "" && MatchPath(e.Path, p) {
+			hit = true
+			sha = sha || e.SHA256 != ""
+		}
+	}
+	if !hit {
+		return false
+	}
+	if !sha && white != nil {
+		for i := range white.Entries {
+			if e := &white.Entries[i]; e.Path != "" && e.SHA256 == "" && e.LnkTarget == "" && MatchPath(e.Path, p) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// PathMasks — маски path усіх записів списку.
+func (l *List) PathMasks() []string {
+	if l == nil {
+		return nil
+	}
+	var m []string
+	for _, e := range l.Entries {
+		if e.Path != "" {
+			m = append(m, e.Path)
+		}
+	}
+	return m
 }
 
 // MatchTarget — ціль ярлика target лежить у мережевій теці prefix (нормалізований запис lnk_target, з "\" у кінці).

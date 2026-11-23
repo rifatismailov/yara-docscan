@@ -13,8 +13,12 @@
 //	        [-m "повідомлення"] [--no-commit] [--no-push] [--plan] [--push-only] [--combat]
 //	        [--release] [--release-run DIR]
 //
-// --release: після зеленого прогону і push - реліз vX.Y.Z (--bump patch/minor/major) на GitHub: увесь пакет (програма,
-// правила, watcher, скрипти) + DocScan-Install.ps1 + DocScan-Setup.ps1 (deploy/release.go).
+// --release: після зеленого прогону і push - реліз vX.Y.Z (--bump patch/minor/major) на GitHub: пакет програми
+// DocScan-windows-x64.zip (bin, watcher, updater, скрипти; без правил) + DocScan-Install.ps1 + підписаний маніфест
+// (deploy/release.go). Правила (і критичні, critical/*.yar) — окремий реліз:
+//
+//	go run -C docscan-project/ci/cirun . rules-release --dir <yara-docscan-rules> --critical <docscan-critical> [--dry-run]
+//
 // --release-run DIR: той самий реліз з уже зеленого запушеного прогону.
 //
 //	go run -C docscan-project/ci/cirun . windows      (лише Windows за змінними середовища — для ci.yml)

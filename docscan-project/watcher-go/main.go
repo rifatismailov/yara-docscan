@@ -50,6 +50,9 @@ type job struct {
 	evt      string
 	prevHash string // sha256 of the last scan: the same content is not scanned again
 	retry    bool   // DisarmRetry / DisarmPending
+	scan     string // id of an on-demand / USB scan (scanjob.go); "" - a live event
+	detect   bool   // this file: report only (scan in detect-only mode, read-only media)
+	del      bool   // scan in delete mode: a HIGH file is deleted after the scan (scanjob.go scanResult)
 }
 
 type result struct {
@@ -79,13 +82,15 @@ type Watcher struct {
 	results    *appender
 	host       string
 	ruleArgs   []string
-	lists      *Lists // white / black lists of the organisation (nil - none)
+	lists      *Lists         // white / black lists of the organisation (nil - none)
+	set        *settingsState // settings.json (settings.go)
 	criticalOn bool
 	docSet     map[string]bool
 	genSet     map[string]bool
 	crit       critState
 	macro      macroState
 	retryFile  string
+	cache      *scanCache // sha256 already found clean with these rules (scanjob.go)
 }
 
 func (w *Watcher) category(p string) string {
@@ -126,6 +131,9 @@ func main() {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
 	}
+	if c.ScanClient() { // docscan-watcher -ScanDocs / -ScanPath / -ScanStatus / -ScanCancel (scancli.go)
+		os.Exit(scanClient(c, os.Stdout))
+	}
 	body := func(stop <-chan os.Signal) int { return start(c, stop) }
 	// служба Windows (install.ps1): SCM подає «стоп»; інакше — консоль, Ctrl+C / SIGTERM
 	if ok, code := winsvc.Run(ServiceName, body); ok {
@@ -146,6 +154,7 @@ func start(c *Config, stop <-chan os.Signal) int {
 	w.results = &appender{file: filepath.Join(c.OutDir, "docscan-results.json"), maxBytes: int64(c.MaxLogMB) << 20, keep: c.KeepLogs}
 	w.retryFile = filepath.Join(c.OutDir, "retry.json")
 	w.lists = newLists(c.Whitelist, c.Blacklist, w.log)
+	w.loadSettings() // settings.json: mode, black list pause, folders, workers (before the folders are watched)
 	w.crit.seen = map[string]bool{}
 	for _, e := range c.DocExt {
 		w.docSet[e] = true
@@ -230,6 +239,9 @@ func (w *Watcher) prepareRules() error {
 	}
 	w.ruleArgs = []string{c.Rules}
 	compiled := filepath.Join(c.OutDir, "rules.yarc")
+	defer func() { // the scan cache is valid only with exactly these rules
+		w.cache = newScanCache(filepath.Join(scanDir(c), "cache.json"), rulesKey(append([]string{c.Rules}, w.ruleArgs[len(w.ruleArgs)-1])...))
+	}()
 	if !exists(c.Yarac) {
 		w.log.Log("WARN", "%s is missing - scanning from the source .yar (every scan recompiles the rules)", c.Yarac)
 		return nil
@@ -267,7 +279,7 @@ func (w *Watcher) run(stop <-chan os.Signal) int {
 		return 1
 	}
 	w.log.Log("INFO", "start: watching %s | disarm=%s | quarantine: %s | results: %s", strings.Join(c.WatchPath, ", "),
-		map[bool]string{true: "True", false: "False"}[!c.NoDisarm], c.BackupDir, w.results.file)
+		map[bool]string{true: "True", false: "False"}[!w.noDisarm()], c.BackupDir, w.results.file)
 	upload := c.MacroUpload
 	if upload == "" {
 		upload = "off"
@@ -305,8 +317,10 @@ func (w *Watcher) work(j job, wk *worker) result {
 			return res
 		}
 	}
-	res.rec = w.scanFile(j.path, j.evt, wk)
-	if h, err := fileSHA256(j.path); err == nil {
+	res.rec = w.scanFile(j.path, j.evt, wk, scanOpts{scan: j.scan, detect: j.detect})
+	if res.rec != nil && res.rec.Disarm == "" && res.rec.DocFile.Sha256 != "" {
+		res.hashAfter = res.rec.DocFile.Sha256 // nothing changed the file: no second read (a full scan reads a lot)
+	} else if h, err := fileSHA256(j.path); err == nil {
 		res.hashAfter = h
 	}
 	if res.rec != nil && strings.HasPrefix(res.rec.Disarm, "failed:") && fileLocked(j.path) {
@@ -331,6 +345,13 @@ type coordinator struct {
 	overflow *atomic.Bool
 	rescanCh chan fsEvent
 	rescanN  chan int
+	sweepN   chan int  // прохід по наявних файлах за чорним списком закінчився (sweep.go)
+	sc       scanState // скан на вимогу і USB (scanjob.go)
+
+	sweeping      bool
+	nextSettings  time.Time
+	sweptGen      int
+	nextListCheck time.Time
 
 	pending  map[string]*pend
 	queued   map[string]bool // in one of the ready queues
@@ -350,11 +371,12 @@ type coordinator struct {
 
 func newCoordinator(w *Watcher, p *pool, events <-chan fsEvent, ov *atomic.Bool) *coordinator {
 	co := &coordinator{w: w, pool: p, s: newSched(w.c.WatchPath), events: events, overflow: ov,
-		rescanCh: make(chan fsEvent, 1000), rescanN: make(chan int, 1),
+		rescanCh: make(chan fsEvent, 1000), rescanN: make(chan int, 1), sweepN: make(chan int, 1),
 		pending: map[string]*pend{}, queued: map[string]bool{}, inflight: map[string]bool{},
 		recent: map[string]string{}, lastScan: map[string]time.Time{}, lastKey: map[string]string{},
 		retry: map[string]*retryItem{}}
 	co.loadRetry()
+	co.initScan()
 	return co
 }
 
@@ -388,8 +410,13 @@ func (co *coordinator) loop(stop <-chan os.Signal) {
 		if have {
 			jobs = co.pool.jobs
 		}
+		var scanIn <-chan job // files of the scans: only while their queue is short
+		if co.s.scanLen() < scanQueueMax {
+			scanIn = co.sc.ch
+		}
 		select {
 		case <-stop:
+			co.w.cache.save()
 			return
 		case e := <-co.events:
 			co.onEvent(e)
@@ -399,6 +426,13 @@ func (co *coordinator) loop(stop <-chan os.Signal) {
 			co.rescanning = false
 			co.w.log.Log("WARN", "rescan after overflow: files changed since %s - %d", co.rescanFrom.Format("15:04:05"), n)
 			co.rescanFrom = time.Time{}
+		case n := <-co.sweepN:
+			co.sweeping = false
+			co.w.log.Log("INFO", "lists: existing files under the black list masks - %d to check", n)
+		case j := <-scanIn:
+			co.scanJob(j, time.Now())
+		case d := <-co.sc.drivesCh:
+			co.onDrives(d)
 		case jobs <- nj:
 			co.s.pop()
 			delete(co.queued, nj.path)
@@ -449,10 +483,20 @@ func (co *coordinator) onTick(now time.Time) {
 		if !isFile(p) {
 			continue
 		}
-		co.s.add(job{path: p, evt: pd.evt, prevHash: co.recent[p]}, now)
+		ph := co.recent[p]
+		if pd.evt == "ListSweep" {
+			ph = "" // the lists changed: the same content gets a new verdict
+		}
+		co.s.add(job{path: p, evt: pd.evt, prevHash: ph}, now)
 		co.queued[p] = true
 	}
 	co.retryTick(now)
+	if now.After(co.nextSettings) { // settings.json: mode / black list pause at once
+		co.nextSettings = now.Add(5 * time.Second)
+		co.w.reloadSettings(now)
+	}
+	co.sweepCheck(now)
+	co.scanTick(now)
 	if len(co.recent) > 50000 {
 		co.recent, co.lastScan, co.lastKey = map[string]string{}, map[string]time.Time{}, map[string]string{}
 	}
@@ -484,6 +528,7 @@ func (co *coordinator) onResult(r result) {
 	delete(co.inflight, p)
 	co.done1m++
 	co.doneScale++
+	defer co.scanWaiters(r)
 	if r.unchanged {
 		return
 	}
@@ -494,7 +539,11 @@ func (co *coordinator) onResult(r result) {
 	} else {
 		delete(co.recent, p)
 	}
-	if r.rec != nil {
+	if r.j.scan != "" {
+		if co.scanResult(r) {
+			co.write(r.rec, p)
+		}
+	} else if r.rec != nil {
 		co.write(r.rec, p)
 	}
 	failed := r.rec != nil && strings.HasPrefix(r.rec.Disarm, "failed:")
@@ -554,10 +603,10 @@ func (co *coordinator) reportQueue() {
 		co.prevReady = 0
 		return
 	}
-	co.w.log.Log("INFO", "queue: waiting %d, ready %d (single files %d, bulk %d from %d users), scanning %d of %d workers, done in the last minute %d",
-		waiting, ready, len(co.s.fresh)+len(co.s.retry), co.s.nBulk, len(co.s.order), busy, co.pool.size(), done)
+	co.w.log.Log("INFO", "queue: waiting %d, ready %d (single files %d, bulk %d from %d users, on-demand scan %d), scanning %d of %d workers, done in the last minute %d",
+		waiting, ready, len(co.s.fresh)+len(co.s.retry), co.s.nBulk, len(co.s.order), co.s.scanLen(), busy, co.pool.size(), done)
 	// a queue that keeps growing: files reach the disk faster than they are scanned
-	if ready > 1000 && ready > co.prevReady && time.Since(co.lastQueueWarn) > 10*time.Minute {
+	if ready-co.s.scanLen() > 1000 && ready > co.prevReady && time.Since(co.lastQueueWarn) > 10*time.Minute {
 		co.w.log.Log("WARN", "scan backlog: %d files wait for a scan and the queue grows (%d scans / min with %d workers)",
 			ready, done, co.pool.size())
 		co.lastQueueWarn = time.Now()

@@ -10,8 +10,9 @@
 # What it does:
 #   1) downloads DocScan-windows-x64.zip and its .sha256 from the GitHub release (the latest one, or
 #      the one tagged -Version, e.g. v1.0.0) and checks the SHA256 (stops on mismatch);
-#   2) the package holds everything: bin\ (yara64.exe, yarac64.exe, VC++ runtime), rules\, watcher\,
-#      install.ps1, uninstall.ps1; it is unpacked into a temp folder;
+#   2) the package holds the program: bin\ (yara64.exe, yarac64.exe, VC++ runtime), watcher\, updater\,
+#      install.ps1, uninstall.ps1 - no rules: a new PC needs -Rules (the yara-docscan-rules bundle, with the
+#      critical rules in critical\); it is unpacked into a temp folder;
 #   3) runs install.ps1 from the package (it checks every file against SHA256SUMS.txt, installs to
 #      C:\Program Files\DocScan, registers the Windows service "DocScan Watcher") and removes the temp files.
 # Update: the same command; a new release on GitHub = a new version for every PC that runs it.
@@ -43,6 +44,8 @@ param(
   [string]  $ListsUrl = "",         # -> install.ps1 -ListsUrl: the organisation's mirror with signed lists (checked daily)
   [string[]]$ListsKey = @(),        # -> install.ps1 -ListsKey: the organisation's public key(s) for the lists
   [double]  $ListsEveryHours = 0,   # -> install.ps1 -ListsEveryHours (default 24)
+  [switch]  $NoWeb,                 # -> install.ps1 -NoWeb (no web interface)
+  [int]     $WebPort = 0,           # -> install.ps1 -WebPort (default there: 8741)
   [string]  $Rules = ""             # rules bundle (DocScan-rules-bundle.zip of a yara-docscan-rules release): file, UNC or URL -> install.ps1 -Rules
 )
 $ErrorActionPreference = "Stop"
@@ -112,6 +115,8 @@ try {
   if ($ListsKey.Count)    { $p.ListsKey = $ListsKey }
   if ($ListsEveryHours -gt 0) { $p.ListsEveryHours = $ListsEveryHours }
   if ($ListsUrl -and ($ListsToken -or $env:DOCSCAN_LISTS_TOKEN)) { $p.ListsToken = $(if ($ListsToken) { $ListsToken } else { $env:DOCSCAN_LISTS_TOKEN }) }   # closed mirror
+  if ($NoWeb)             { $p.NoWeb = $true }
+  if ($WebPort -gt 0)     { $p.WebPort = $WebPort }
   if ($Rules)             { $p.Rules = $Rules }
 
   # white / black lists: without -Whitelist / -Blacklist the lists a PC already has stay (install.ps1 checks the format)

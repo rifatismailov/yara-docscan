@@ -1,0 +1,43 @@
+{{define "exceptions"}}{{template "head" .}}
+{{$p := .}}{{with .Data}}
+<h1>Виключення і локальні списки</h1>
+<p class="hint">Списки цього ПК: діють разом зі списками організації з дзеркала (Pollen) і ними не перезаписуються.
+Білий список (виключення) сильніший за чорний за шляхом: своя програма проходить навіть там, де програми заборонені.
+Відомий шкідливий файл (чорний список за sha256) не пропускає ніщо.</p>
+
+<section class="card">
+<h2>Додати {{if eq .Kind "black"}}у локальний чорний список{{else}}виключення (білий список){{end}}</h2>
+<form method="post" action="/exceptions/add" class="stack">{{template "csrf" $p}}
+  <input type="hidden" name="f" value="{{.F}}"><input type="hidden" name="o" value="{{.O}}">
+  <label class="lbl">список <select name="kind">
+    <option value="white" {{if ne .Kind "black"}}selected{{end}}>білий — виключення (не перевіряти, не блокувати)</option>
+    <option value="black" {{if eq .Kind "black"}}selected{{end}}>чорний — заборонити на цьому ПК</option></select></label>
+  <label class="lbl">шлях (маска: * — у межах теки, ** — будь-яка глибина) <input name="path" value="{{.Path}}" size="90" placeholder="C:\Users\*\Desktop\OurApp*.exe"></label>
+  <label class="lbl">sha256 (вміст файлу) <input name="sha" value="{{.SHA}}" size="70" placeholder="порожньо — за шляхом"></label>
+  {{if .SHA}}<label><input type="radio" name="scope" value="exact" checked> лише цей файл (шлях + sha256): нова версія програми знову перевірятиметься</label>
+  <label><input type="radio" name="scope" value="path"> будь-яка версія за цим шляхом (без sha256)</label>{{end}}
+  <label class="lbl">ціль ярлика (lnk_target, мережева тека \\сервер\шара\ — лише для .lnk) <input name="lnk" value="{{.Lnk}}" size="60"></label>
+  <label class="lbl">коментар (навіщо) <input name="comment" value="{{.Comment}}" size="70" required></label>
+  {{if .Quarantined}}<label><input type="checkbox" name="restore" checked> повернути файл з карантину на місце</label>{{end}}
+  <button class="primary">Додати</button>
+</form>
+</section>
+
+{{range list2 .LocalWhite .LocalBlack}}
+<h2>{{if eq .Kind "white"}}Виключення цього ПК (локальний білий список){{else}}Локальний чорний список{{end}}</h2>
+{{if .Error}}<p class="error">{{.File}}: {{.Error}}</p>{{end}}
+{{if .Entries}}<table><tr><th>шлях</th><th>sha256</th><th>ціль ярлика</th><th>коментар</th><th>додано</th><th></th></tr>
+{{$k := .Kind}}{{range $i, $e := .Entries}}<tr><td class="path">{{$e.Path}}</td><td><code>{{short $e.SHA256 16}}</code></td><td>{{$e.LnkTarget}}</td><td>{{$e.Comment}}</td><td class="nowrap">{{$e.Added}} {{$e.By}}</td>
+<td><form method="post" action="/exceptions/remove">{{template "csrf" $p}}<input type="hidden" name="kind" value="{{$k}}"><input type="hidden" name="i" value="{{$i}}"><button class="small danger" title="Прибрати">✕</button></form></td></tr>{{end}}
+</table>{{else}}<p class="hint">Записів немає.</p>{{end}}
+{{end}}
+
+{{range list2 .MirrorWhite .MirrorBlack}}
+<h2>{{if eq .Kind "white"}}Білий{{else}}Чорний{{end}} список організації (з дзеркала, лише перегляд)</h2>
+{{if .Error}}<p class="error">{{.File}}: {{.Error}}</p>{{end}}
+{{if .Entries}}<table><tr><th>шлях</th><th>sha256</th><th>ціль ярлика</th><th>коментар</th></tr>
+{{range .Entries}}<tr><td class="path">{{.Path}}</td><td><code>{{short .SHA256 16}}</code></td><td>{{.LnkTarget}}</td><td class="hint">{{.Comment}}</td></tr>{{end}}
+</table>{{else}}<p class="hint">Немає.</p>{{end}}
+{{end}}
+{{end}}
+{{template "foot" .}}{{end}}

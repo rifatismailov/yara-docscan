@@ -72,7 +72,6 @@ if ($Package) {
   Expand-Archive -LiteralPath $Package -DestinationPath $pk -Force
   # -UpdateMode off: the update service must not replace the tested build with a release during the test
   $a = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", (Join-Path $pk "install.ps1"), "-NoWazuhConfig", "-UpdateMode", "off")
-  if ($Critical) { $a += @("-CriticalRules", $Critical) }
   if ($Rules) { $a += @("-Rules", $Rules) }
   if ($DetectOnly) { $a += "-DetectOnly" }
   if ($Workers -gt 0 -and -not $GoExe) { $a += @("-Workers", $Workers) }
@@ -85,13 +84,22 @@ if ($Package) {
   $f = "$env:TEMP\DocScan-Install.ps1"
   Invoke-WebRequest -UseBasicParsing https://github.com/rifatismailov/yara-docscan/releases/latest/download/DocScan-Install.ps1 -OutFile $f
   $a = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $f)
-  if ($Critical) { $a += @("-Critical", $Critical) }
   if ($DetectOnly) { $a += "-DetectOnly" }
   if ($Workers -gt 0 -and -not $GoExe) { $a += @("-Workers", $Workers) }
   & powershell @a | Out-Host
   if ($LASTEXITCODE -ne 0) { throw "DocScan-Install.ps1 failed: exit $LASTEXITCODE" }
 }
 Get-Content "$inst\VERSION.txt" -TotalCount 1
+# -Critical: the test's critical rules replace the ones of the rules package (rules\critical\*.yar; install.ps1 gives
+# the watcher that folder) - the watcher restarts to load them
+if ($Critical) {
+  Step "critical rules for the test: $Critical -> $inst\rules\critical"
+  $cd = "$inst\rules\critical"
+  New-Item -ItemType Directory -Force $cd | Out-Null
+  Get-ChildItem -LiteralPath $cd -Filter *.yar -EA SilentlyContinue | Remove-Item -Force
+  Copy-Item -LiteralPath $Critical $cd -Force
+  Restart-Service DocScanWatcher -EA SilentlyContinue
+}
 
 if ($GoExe) {
   Step "switch to the Go watcher"

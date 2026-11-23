@@ -66,6 +66,23 @@ const DefaultRepo = "rifatismailov/yara-docscan"
 var repoRe = regexp.MustCompile(`^[\w.-]+/[\w.-]+$`)
 var windowRe = regexp.MustCompile(`^(\d\d):(\d\d)-(\d\d):(\d\d)$`)
 
+// checkConfigFile — -CheckConfig: те саме, що loadConfig, і ще невідомі поля — помилка (друкарська помилка в назві
+// поля інакше мовчки дала б значення за замовчуванням). Файлу немає — помилка.
+func checkConfigFile(path, dataDir string) error {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	d := json.NewDecoder(bytes.NewReader(bytes.TrimPrefix(b, []byte("\xef\xbb\xbf"))))
+	d.DisallowUnknownFields()
+	var c Config
+	if err := d.Decode(&c); err != nil {
+		return fmt.Errorf("%s: %w", path, err)
+	}
+	_, err = loadConfig(path, dataDir)
+	return err
+}
+
 // loadConfig читає updater.json; немає файлу — значення за замовчуванням (github, кожні 6 год).
 func loadConfig(path, dataDir string) (*Config, error) {
 	c := &Config{}

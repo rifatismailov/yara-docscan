@@ -88,8 +88,9 @@ docscan-disarm: invoice.docm -> removed:vbaProject.bin
 
 ### File watcher and deployment
 
-`docscan-project/watcher/docscan-watcher.ps1` (Windows, PowerShell 5.1, runs as SYSTEM) watches folders,
-scans every new or changed file with one `yara64` run, disarms documents, keeps the VBA code of documents
+The file watcher `docscan-watcher.exe` (`docscan-project/watcher-go/`, Go, a Windows service running as SYSTEM;
+the older PowerShell watcher `docscan-project/watcher/docscan-watcher.ps1` stays in the package as a fallback,
+`install.ps1 -WatcherEngine ps`) watches folders, scans every new or changed file with one `yara64` run, disarms documents, keeps the VBA code of documents
 with macros (`C:\ProgramData\DocScan\macros\`, optionally copied to a collector), retries the cure of files
 held open by Word, and appends one JSON line per file (with a human-readable `summary`) to
 `C:\ProgramData\DocScan\results\docscan-results.json` for the Wazuh agent. With pass 3 on, matching
@@ -120,12 +121,30 @@ DocScanUpdater (`-NoCritical` turns pass 3 off on a PC).
 
 The installer verifies the package and the signed rules, adds Defender exclusions, configures the Wazuh agent and
 registers the Windows services "DocScan Watcher" (`DocScanWatcher`: watches files, runs yara64) and `DocScanUpdater`
-(program, rules and lists updates; the sources are set per organisation in `updater.json`).
+(program, rules and lists updates; mode `github` | `mirror` | `marker` | `off`, set with `-UpdateMode` and kept per
+organisation in `updater.json`; design: [UPDATE-DESIGN.md](docscan-project/UPDATE-DESIGN.md), Ukrainian).
 
 The organisation's **white list** (`whitelist.json`: files not scanned) and **black list** (`blacklist.json`: HIGH and
 quarantine before any scan) name files by path mask, by the network folder a shortcut points to, or by sha256; the
 organisation keeps them itself, by hand or on its own mirror (signed with its key, checked daily by DocScanUpdater).
 Format and diagrams: `docscan-project/deploy/README.txt`, [LISTS-FLOW.md](docscan-project/LISTS-FLOW.md). Wazuh manager rules: `docscan-project/deploy/manager/local_rules.docscan.xml`.
+
+A **local web interface** for the PC's administrator - `docscan-web.exe`, the service `DocScanWeb`, only on
+`https://127.0.0.1:8741/` (HTTPS with a certificate made at install, login `admin`, every action audited to Wazuh) - shows
+the state and detections and sets the mode, the black-list pause, updates, local exceptions, the quarantine, the local
+policy and the stored macros ([WEB-DESIGN.md](docscan-project/WEB-DESIGN.md), Ukrainian). Its page **Сканування** checks
+files already on the disk (the watcher only sees new and changed ones):
+
+- **documents** on the chosen local disks, without system and program folders;
+- a **removable medium** (USB stick, USB disk, SD) or a non-system disk, all files. A new removable medium is scanned on its own
+  (`usb_scan`: as the mode / full / report only / off);
+- folders and files picked in a **browser** of the PC's disks.
+
+The action is report only, cure (disarm, quarantine) or delete the threats with no copy (after a confirmation). Files in
+program folders (`Windows`, `Program Files`, `AppData\Local\Programs`) are only ever reported. There is deliberately no
+"scan every file on every disk": disarming or quarantining files of installed programs breaks those programs. The same
+from PowerShell: `docscan-watcher.exe -ScanDocs | -ScanPath E:\ [-ScanDetect | -ScanDelete] [-Wait]`, `-ScanStatus`,
+`-ScanCancel all`.
 
 ### Where things are
 
@@ -135,9 +154,10 @@ Format and diagrams: `docscan-project/deploy/README.txt`, [LISTS-FLOW.md](docsca
 | `cli/yara.c` | the `--docscan-*`, `--file-vars` and `--critical-*` flags, JSON output, pass 2, disarm and pass 3 hooks |
 | `cli/docscan_sandbox.c` | the Windows sandbox: broker / worker, restricted tokens, job object, result records |
 | [yara-docscan-rules](https://github.com/rifatismailov/yara-docscan-rules) | the rules (separate repository, signed releases): `docscan-policy.yar` (the policy), `docscan-index.yar` (policy + vendor rules), the generator. Not in this repository: `cirun` puts the release of a run into `docscan-project/rules/`, a PC gets it with `DocScan-Install.ps1 -Rules` and then from the DocScanUpdater service |
-| `docscan-project/watcher/`, `deploy/` | the file watcher; package build, installer, setup scripts, Wazuh manager rules |
+| `docscan-project/watcher-go/` | the Go file watcher (Windows service), the updater (`updater/`, DocScanUpdater) and the signed-manifest check (`manifest/`) |
+| `docscan-project/watcher/`, `deploy/` | the old PowerShell watcher (fallback); package build, installer, setup scripts, Wazuh manager rules |
 | `docscan-project/test-range/`, `test-samples/generated/`, `test-critical/`, `fuzz/` | regression test and 42 inert test documents, pass-3 tests, libFuzzer harnesses (ASan + UBSan) |
-| `docscan-project/ci/` | one-button CI (`cirun`, Go): build and every test on macOS and a Windows VM — documents, sandbox, hostile files, ~4,000 public corpus documents, real malware (scan only), fuzzing; push only after a green run |
+| `docscan-project/ci/` | one-button CI (`cirun`, Go): build and tests on the Mac, then the Forgejo pipeline (`.forgejo/workflows/pipeline.yml`) on Windows 11, Windows Server 2019, Windows 10 and Ubuntu stands — documents, sandbox, install + watcher, hostile files, ~4,000 public corpus documents, real malware (scan only), fuzzing; push to GitHub and release only after a green run. `cirun rules-release` checks and builds the rules package |
 | **[`docscan-project/SCAN-FLOW.en.md`](docscan-project/SCAN-FLOW.en.md)** · [українською](docscan-project/SCAN-FLOW.md) | **full documentation**: diagrams, every function, behaviour, deployment, Wazuh, tests, limitations |
 | [`docscan-project/CODE-GUIDE.md`](docscan-project/CODE-GUIDE.md) | code walkthrough for contributors (Ukrainian) |
 
