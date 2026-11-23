@@ -24,7 +24,9 @@ param(
   [Parameter(Mandatory)][string]$ShareUser,
   [string]$DataDir = "$env:ProgramData\DocScan",
   [string]$InstallDir = "$env:ProgramW6432\DocScan",
-  [string]$Rules = ""         # rules bundle of the run -> install.ps1 -Rules
+  [string]$Rules = "",        # rules bundle of the run -> install.ps1 -Rules
+  [string]$Package = ""       # a ready package (the build stand's DocScan-<version>.zip): no build here - a stand without
+                              # a compiler (Win10) runs the combat on the Win11 package
 )
 
 $ErrorActionPreference = "Continue"
@@ -39,9 +41,17 @@ Remove-Item $Work -Recurse -Force -EA 0
 New-Item -ItemType Directory -Force $Work, "$Work\src", $Inbox | Out-Null
 Get-ChildItem -LiteralPath $Inbox -Force | Remove-Item -Recurse -Force -EA 0
 
-# --- 1. package
-& powershell -NoProfile -ExecutionPolicy Bypass -File "$Repo\docscan-project\deploy\build_package.ps1" -Repo $Repo -Out "$Work\pkg" -Version $Version 2>&1 | Select-Object -Last 2 | % { "  $_" }
-$zip = "$Work\pkg\DocScan-$Version.zip"
+# --- 1. package: the ready one of the build stand, or built here
+if ($Package) {
+  if (-not (Test-Path -LiteralPath $Package)) { Fail "no package $Package" }
+  New-Item -ItemType Directory -Force "$Work\pkg" | Out-Null
+  $zip = "$Work\pkg\DocScan-$Version.zip"
+  Copy-Item -LiteralPath $Package $zip -Force
+  "  ready package: $Package"
+} else {
+  & powershell -NoProfile -ExecutionPolicy Bypass -File "$Repo\docscan-project\deploy\build_package.ps1" -Repo $Repo -Out "$Work\pkg" -Version $Version 2>&1 | Select-Object -Last 2 | % { "  $_" }
+  $zip = "$Work\pkg\DocScan-$Version.zip"
+}
 if (-not (Test-Path $zip)) { Fail "package not built" }
 Expand-Archive $zip "$Work\pkg\x" -Force
 lap "package"

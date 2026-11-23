@@ -84,7 +84,8 @@ func main() {
 	bump := flag.String("bump", "patch", "release number part to increase: patch (v1.0.1), minor (v1.1.0) or major (v2.0.0)")
 	rulesVer := flag.String("rules", "latest", "rules release of github.com/rifatismailov/yara-docscan-rules to build and test with (latest | vX.Y.Z)")
 	watch := flag.Bool("watch", false, "pipeline mode forgejo: wait for the Forgejo run and print its result (default: start it and exit)")
-	releaseRun := flag.String("release-run", "", "only make the GitHub release from an earlier green, pushed run (ci-out/<run>)")
+	releaseRun := flag.String("release-run", "", "the GitHub release of an earlier green, pushed run (a folder with its Windows package DocScan-<version>.zip): first the combat test on --machine with that package, the release only if it is green")
+	machine := flag.String("machine", "vm-win10", "--release-run / --combat: the Windows machine (platforms.windows.candidates[].name) for the combat test")
 	flag.Parse()
 
 	cfg, err := config.Load(*cfgPath)
@@ -105,6 +106,19 @@ func main() {
 			short := ver[strings.LastIndex(ver, "-")+1:]
 			if sha, err = gitops.Git("rev-parse", "--verify", short+"^{commit}"); err != nil {
 				err = fmt.Errorf("commit %s of %s not found", short, ver)
+			}
+		}
+		// спершу прогін конвеєра має повністю закінчитись зеленим і зробити push коміту на GitHub: бойовий тест не йде
+		// паралельно зі стендами (спільний Proxmox: навантаження зіпсувало б навантажувальний тест srv2019)
+		if err == nil {
+			err = waitPushed(cfg, sha, 2*time.Hour)
+		}
+		// без зеленого бойового тесту на Win10 з цим самим пакетом релізу немає (правило проєкту)
+		if err == nil {
+			pkg, _, _ := deploy.FullPackage(*releaseRun)
+			say("combat test on %s with the package %s (commit %s) - the release only if it is green", *machine, filepath.Base(pkg), sha[:8])
+			if !releaseCombat(ctx, cfg, sec, sha, pkg, *machine, *rulesVer) {
+				err = fmt.Errorf("the combat test on %s is not green", *machine)
 			}
 		}
 		tail := []string{}
@@ -153,6 +167,9 @@ func main() {
 
 	o := &orchestrator.Orchestrator{Cfg: cfg, Sec: sec, Forgejo: fj,
 		Opt: orchestrator.Options{Only: splitList(*only), Push: !*noPush, Branch: branch, Fuzz: *fuzz, Combat: *combat}}
+	if *combat { // бойовий тест — на вибраній машині (за замовчуванням Win10)
+		o.Opt.Machine = *machine
+	}
 
 	if *pushOnly {
 		err := o.PublishCommit(ctx, sha)
@@ -192,7 +209,12 @@ func main() {
 		}
 	}
 	// конвеєр Forgejo Actions (pipeline.mode: forgejo): тут лише macOS, далі — стенди у Forgejo (forgejo_run.go)
-	if cfg.Pipeline.Mode == "forgejo" {
+	// бойовий тест є лише в локальному режимі (Мак сам веде Windows-машину з platforms.windows, ~2 год):
+	// у конвеєрі Forgejo його немає, тож --combat не має мовчки зникати
+	if cfg.Pipeline.Mode == "forgejo" && *combat {
+		say("--combat: the combat test runs only in the local mode - this run goes from this Mac to the Windows machine of platforms.windows, not through Forgejo")
+	}
+	if cfg.Pipeline.Mode == "forgejo" && !*combat {
 		os.Exit(runForgejo(ctx, cfg, sec, o, src, sha, branch, *release, *bump, *fuzz, *watch, started))
 	}
 	say("build %s (%s) on: %s   fuzzing %ds", sha[:8], branch, strings.Join(o.Plan(), ", "), *fuzz)
@@ -457,4 +479,57 @@ func doRelease(cfg *config.Config, sec *config.Resolver, runDir, sha, bump strin
 		return []string{"NOT released"}
 	}
 	return []string{"RELEASED " + r.Tag}
+}
+
+// releaseCombat — бойовий тест перед релізом: машина machine (Win10, без компілятора) ставить ГОТОВИЙ пакет pkg
+// (той, що піде в реліз), проганяє install smoke і бойовий тест. Повний набір цього коміту вже пройшов у конвеєрі.
+func releaseCombat(ctx context.Context, cfg *config.Config, sec *config.Resolver, sha, pkg, machine, rulesVer string) bool {
+	if cfg.FileServer.UNC == "" {
+		say("! combat: no fileserver section in the config")
+		return false
+	}
+	o := &orchestrator.Orchestrator{Cfg: cfg, Sec: sec, Opt: orchestrator.Options{Only: []string{"windows"}, Combat: true,
+		Machine: machine, Prebuilt: pkg, CombatOnly: true}}
+	o.RunDir = filepath.Join(cfg.OutDir, "combat-"+time.Now().Format("20060102-150405"))
+	if err := os.MkdirAll(o.RunDir, 0o755); err != nil {
+		say("! combat: %v", err)
+		return false
+	}
+	src := platform.Source{SHA: sha, Archive: func(f string) ([]byte, error) { return gitops.Archive(sha, f) }}
+	rules, err := rulesrc.Fetch(rulesVer, config.ExpandHome("~/docscan-ci/rules"))
+	if err != nil {
+		say("! combat: rules: %v", err)
+		return false
+	}
+	src.RulesZip, src.RulesBundle, src.RulesVersion = rules.Zip, rules.Bundle, rules.Version
+	green := o.Build(ctx, src)
+	o.Summary()
+	return green
+}
+
+// waitPushed чекає, поки коміт sha з'явиться в гілці push.remote/<гілка конвеєра> на GitHub (зелений прогін
+// конвеєра робить push лише після ВСІХ стендів); не з'явився за max — помилка, ні бойового тесту, ні релізу.
+func waitPushed(cfg *config.Config, sha string, max time.Duration) error {
+	remote := cfg.Push.Remote
+	if remote == "" {
+		remote = "docscan"
+	}
+	branch := cfg.Pipeline.Branch
+	if branch == "" {
+		branch = gitops.MustGit("rev-parse", "--abbrev-ref", "HEAD")
+	}
+	end := time.Now().Add(max)
+	for {
+		if _, err := gitops.Git("fetch", "-q", remote, branch); err == nil {
+			if _, err := gitops.Git("merge-base", "--is-ancestor", sha, "FETCH_HEAD"); err == nil {
+				say("commit %s is on GitHub (%s/%s): the pipeline run is green and pushed", sha[:8], remote, branch)
+				return nil
+			}
+		}
+		if time.Now().After(end) {
+			return fmt.Errorf("commit %s is not on GitHub (%s/%s) after %s - the pipeline run is not green / not pushed", sha[:8], remote, branch, max)
+		}
+		say("waiting for the pipeline run to finish and push %s to GitHub ...", sha[:8])
+		time.Sleep(2 * time.Minute)
+	}
 }

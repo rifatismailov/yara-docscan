@@ -42,6 +42,12 @@ type Options struct {
 	Branch string   // гілка для push
 	Fuzz   int      // секунди фазингу
 	Combat bool     // Windows: бойовий тест — установлений watcher проганяє всі тестові файли
+	// Machine — Windows: лише кандидат з цим ім'ям (platforms.windows.candidates[].name), напр. vm-win10
+	Machine string
+	// Prebuilt — Windows: готовий пакет стенда-збирача (Win11) замість збірки на машині; з CombatOnly — лише
+	// бойовий тест (cirun --release-run: повний набір цього коміту вже пройшов у конвеєрі)
+	Prebuilt   string
+	CombatOnly bool
 }
 
 // Orchestrator — один прогін.
@@ -80,9 +86,27 @@ func (o *Orchestrator) newPlatform(name string, rep platform.Reporter) platform.
 	case "linux":
 		return platform.NewLinux(p, o.Sec, o.Opt.Fuzz, o.RunDir, o.Assets, rep)
 	case "windows":
+		if o.Opt.Machine != "" {
+			pc := *p
+			pc.Candidates = nil
+			for _, c := range p.Machines() {
+				if c.Name == o.Opt.Machine {
+					pc.Candidates = append(pc.Candidates, c)
+				}
+			}
+			pc.Connection = nil
+			p = &pc
+		}
 		w := platform.NewWindows(p, o.Sec, o.Opt.Fuzz, o.Assets, rep)
 		if o.Opt.Combat {
 			w.EnableCombat(o.Cfg.FileServer)
+		}
+		if o.Opt.Prebuilt != "" {
+			suite := "full"
+			if o.Opt.CombatOnly {
+				suite = "combat"
+			}
+			w.SetStand("test", suite, o.Opt.Prebuilt)
 		}
 		return w
 	}

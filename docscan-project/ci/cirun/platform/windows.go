@@ -372,6 +372,12 @@ exit $rc
 	if w.role != "" {
 		steps = append(steps, w.install(ctx)...)
 	}
+	if w.suite == "combat" { // лише бойовий тест (cirun --release-run): повний набір цього коміту вже пройшов у конвеєрі
+		if w.combat == nil {
+			return steps, fmt.Errorf("suite combat without the combat test (no fileserver)")
+		}
+		return append(steps, w.runCombat(ctx, pyFind)...), nil
+	}
 	if !w.full {
 		if w.role != "" { // стенд з набором smoke: так і задумано, не «неповний прогін»
 			return steps, nil
@@ -380,12 +386,7 @@ exit $rc
 		w.report(Event{Platform: "windows", Kind: "note", Step: "partial: full_tests is off on this machine - no critical, hostile, corpus, malware, fuzz"})
 		return steps, nil
 	}
-	// $py — справжній Python (не заглушка з WindowsApps); немає — код 3 = SKIP
-	const py = `
-$py = @("python", "python3", "py") | ForEach-Object { Get-Command $_ -EA 0 } | Where-Object { $_.Source -notlike "*WindowsApps*" } | Select-Object -First 1
-if (-not $py) { "no Python on this machine"; exit 3 }
-$py = $py.Source; $env:PYTHONIOENCODING = 'utf-8'
-`
+	const py = pyFind
 	steps = append(steps, w.step(ctx, "critical", py+`
 Set-Location $repo
 & $py docscan-project\test-critical\run_tests.py --yara '{{Y}}'
@@ -670,10 +671,14 @@ func (w *Windows) runCombat(ctx context.Context, py string) (steps []StepResult)
 exit 0
 `, -1))
 	}()
+	pkgArg := "" // стенд без компілятора (Win10): готовий пакет стенда-збирача замість збірки на місці
+	if w.prebuilt != "" {
+		pkgArg = ` -Package "$w\build.zip"`
+	}
 	setup := w.step(ctx, "combat-setup", `
 $env:DOCSCAN_SHARE_PASS = '`+q(pass)+`'
 Set-Location $repo
-& powershell -NoProfile -ExecutionPolicy Bypass -File docscan-project\ci\combat_setup.ps1 -Repo $repo -Work '`+work+`' -Inbox '`+inbox+`' -Version {{V}} -Share '`+q(fs.UNC)+`' -ShareUser '`+q(user)+`' -Rules "$w\DocScan-rules-bundle.zip"
+& powershell -NoProfile -ExecutionPolicy Bypass -File docscan-project\ci\combat_setup.ps1 -Repo $repo -Work '`+work+`' -Inbox '`+inbox+`' -Version {{V}} -Share '`+q(fs.UNC)+`' -ShareUser '`+q(user)+`' -Rules "$w\DocScan-rules-bundle.zip"`+pkgArg+`
 exit $LASTEXITCODE
 `, -1)
 	steps = append(steps, setup)
@@ -809,3 +814,10 @@ func (w *Windows) Close() error {
 	}
 	return nil
 }
+
+// pyFind — $py: справжній Python (не заглушка з WindowsApps); немає — код 3 = SKIP
+const pyFind = `
+$py = @("python", "python3", "py") | ForEach-Object { Get-Command $_ -EA 0 } | Where-Object { $_.Source -notlike "*WindowsApps*" } | Select-Object -First 1
+if (-not $py) { "no Python on this machine"; exit 3 }
+$py = $py.Source; $env:PYTHONIOENCODING = 'utf-8'
+`

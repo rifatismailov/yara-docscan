@@ -181,6 +181,10 @@ token_ref:    "keepassxc:CI/Forgejo/api-token"
 go run -C docscan-project/ci/cirun . --combat --only windows --fuzz 0
 ```
 
+Йде завжди в **локальному режимі**: Мак сам веде Windows-машину з `platforms.windows` (перша доступна з
+`candidates`), навіть коли `pipeline.mode: forgejo` — у конвеєрі Forgejo бойового тесту немає. Після тесту
+тестові файли прибираються, а DocScan лишається встановленим (оновлення вимкнено, `-UpdateMode off`).
+
 Перевіряє систему так, як вона працює на робочій станції, а не `yara64` напряму:
 
 | Крок | Що |
