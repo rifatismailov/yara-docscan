@@ -98,7 +98,25 @@ if ($Critical) {
   New-Item -ItemType Directory -Force $cd | Out-Null
   Get-ChildItem -LiteralPath $cd -Filter *.yar -EA SilentlyContinue | Remove-Item -Force
   Copy-Item -LiteralPath $Critical $cd -Force
+  # the load starts right after this script: wait until the restarted watcher really watches again (its own new
+  # "start: watching" line), otherwise the files of the first burst are created while the service is down - no
+  # event for them ever comes (runs 32-33: 93 MISSED, all from the first second)
+  $log = "$env:ProgramData\DocScan\results\watcher.log"
+  $mark = if (Test-Path $log) { (Get-Item $log).Length } else { 0 }
   Restart-Service DocScanWatcher -EA SilentlyContinue
+  $started = $false
+  for ($t = 0; $t -lt 180 -and -not $started; $t += 2) {
+    Start-Sleep 2
+    if ((Get-Service DocScanWatcher).Status -ne "Running") { continue }
+    if (Test-Path $log) {
+      $fs = [IO.File]::Open($log, 'Open', 'Read', 'ReadWrite'); [void]$fs.Seek($mark, 'Begin')
+      $tail = (New-Object IO.StreamReader($fs, [Text.Encoding]::UTF8)).ReadToEnd(); $fs.Close()
+      $started = $tail -match "start: watching"
+    }
+  }
+  if (-not $started) { throw "the watcher did not start again within 3 min after the critical rules were set" }
+  Start-Sleep 3   # the folder watches are set up right after the start line
+  "  watcher restarted with the test's critical rules"
 }
 
 if ($GoExe) {
