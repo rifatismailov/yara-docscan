@@ -1,8 +1,13 @@
-# DocScan CI/CD: started by ▷ in VS Code (cirun on the Mac) after the local macOS check, never by hand-written
-# pushes. Flow: prepare (start the stand VMs that are off on Proxmox, open the RDP sessions of the load test) ->
-# probe (which stands are reachable) -> win11 (MSBuild + smoke suite + package) -> srv2019 / win10
-# (full suite on the win11 package) and ubuntu (own build, full suite, fuzzing) in parallel -> report
-# ([CI/CD] lines, Verified on) -> only if no stand has ERROR: security gate -> git push to GitHub -> release.
+# DocScan CI/CD: started by cirun on the Mac after the local macOS check, never by hand-written pushes.
+#   stage 1  build   win11: MSBuild + smoke suite + package -> the Forgejo package store (docscan-builds/<commit>)
+#   stage 2  tests   srv2019 (full + terminal-server load test) and win10 (full) on the win11 package, ubuntu (own
+#                    build, full suite, fuzzing) - after stage 1
+#   stage 3  combat  ONLY for a release (input release=true, cirun --release) and only after a green stage 2:
+#                    win10 - the installed watcher on the win11 package with ~5 500 test files; ubuntu - the full
+#                    suite again with 1 h fuzzing. No green combat - no push, no release.
+#   report   [CI/CD] lines, Verified on -> only if nothing has ERROR: security gate -> git push to GitHub -> release.
+# Before stage 1: prepare (start the stand VMs that are off on Proxmox, open the RDP sessions of the load test) ->
+# probe (which stands are reachable).
 # An unreachable stand is SKIPPED and does not stop the run. All jobs run on the runner "lan" (LXC next to
 # Forgejo) and share one run folder on it, so the win11 package reaches the other stands without artifact
 # uploads. Addresses and credentials are Forgejo secrets (CIRUN_CONFIG = the stands config, CI_* = passwords,
@@ -45,6 +50,9 @@ env:
   CI_SRV2019_PASS: ${{ secrets.CI_SRV2019_PASS }}
   CI_WIN10_PASS: ${{ secrets.CI_WIN10_PASS }}
   CI_STORE_TOKEN: ${{ secrets.CI_STORE_TOKEN }}
+  CI_FS_UNC: ${{ secrets.CI_FS_UNC }}
+  CI_FS_USER: ${{ secrets.CI_FS_USER }}
+  CI_FS_PASS: ${{ secrets.CI_FS_PASS }}
 
 jobs:
   probe:
@@ -88,7 +96,7 @@ jobs:
     runs-on: lan
     timeout-minutes: 120
     steps:
-      - name: Windows 11 - MSBuild, smoke suite, package
+      - name: stage 1 - Windows 11 - MSBuild, smoke suite, package to the Forgejo store
         run: cd "$ART/src" && "$ART/cirun" stand --config "$ART/config.yaml" --art "$ART" --sha "$SHA" --name win11 --rules "${{ inputs.rules }}"
 
   srv2019:
@@ -97,7 +105,7 @@ jobs:
     runs-on: lan
     timeout-minutes: 300
     steps:
-      - name: Windows Server 2019 - full suite + terminal-server load test on the win11 package
+      - name: stage 2 - Windows Server 2019 - full suite + terminal-server load test on the win11 package
         run: cd "$ART/src" && "$ART/cirun" stand --config "$ART/config.yaml" --art "$ART" --sha "$SHA" --name srv2019 --rules "${{ inputs.rules }}" --assets "${{ inputs.assets }}"
 
   win10:
@@ -106,20 +114,38 @@ jobs:
     runs-on: lan
     timeout-minutes: 180
     steps:
-      - name: Windows 10 - full suite on the win11 package
+      - name: stage 2 - Windows 10 - full suite on the win11 package
         run: cd "$ART/src" && "$ART/cirun" stand --config "$ART/config.yaml" --art "$ART" --sha "$SHA" --name win10 --rules "${{ inputs.rules }}" --assets "${{ inputs.assets }}"
 
   ubuntu:
-    needs: probe
-    if: needs.probe.outputs.ubuntu == 'online'
+    needs: [probe, win11]
+    if: always() && needs.probe.outputs.ubuntu == 'online'
     runs-on: lan
     timeout-minutes: 180
     steps:
-      - name: Ubuntu - build, full suite, fuzzing
+      - name: stage 2 - Ubuntu - build, full suite, fuzzing
         run: cd "$ART/src" && "$ART/cirun" stand --config "$ART/config.yaml" --art "$ART" --sha "$SHA" --name ubuntu --rules "${{ inputs.rules }}" --assets "${{ inputs.assets }}" --fuzz "${{ inputs.fuzz }}"
 
-  report:
+  combat-win10:
     needs: [probe, win11, srv2019, win10, ubuntu]
+    if: always() && inputs.release == 'true'
+    runs-on: lan
+    timeout-minutes: 300
+    steps:
+      - name: stage 3 - Windows 10 combat test - installed watcher, win11 package, ~5 500 test files
+        run: cd "$ART/src" && "$ART/cirun" stand --config "$ART/config.yaml" --art "$ART" --sha "$SHA" --name win10 --combat --rules "${{ inputs.rules }}"
+
+  combat-ubuntu:
+    needs: [probe, win11, srv2019, win10, ubuntu]
+    if: always() && inputs.release == 'true'
+    runs-on: lan
+    timeout-minutes: 240
+    steps:
+      - name: stage 3 - Ubuntu combat test - full suite with 1 h fuzzing
+        run: cd "$ART/src" && "$ART/cirun" stand --config "$ART/config.yaml" --art "$ART" --sha "$SHA" --name ubuntu --combat --rules "${{ inputs.rules }}" --assets "${{ inputs.assets }}" --fuzz 3600
+
+  report:
+    needs: [probe, win11, srv2019, win10, ubuntu, combat-win10, combat-ubuntu]
     if: always()
     runs-on: lan
     steps:
@@ -130,7 +156,8 @@ jobs:
         run: |
           set -eu
           cd "$ART/src"
-          "$ART/cirun" report --config "$ART/config.yaml" --art "$ART" --sha "$SHA" --mac "${{ inputs.mac }}" --md "$ART/report.md"
-          rel=""
-          if [ "${{ inputs.release }}" = "true" ]; then rel="--release --bump ${{ inputs.bump }}"; fi
+          rel="" combat=""
+          if [ "${{ inputs.release }}" = "true" ]; then rel="--release --bump ${{ inputs.bump }}"; combat="--combat win10,ubuntu"; fi
+          # a release run: also the combat tests must be OK, otherwise no push and no release
+          "$ART/cirun" report --config "$ART/config.yaml" --art "$ART" --sha "$SHA" --mac "${{ inputs.mac }}" --md "$ART/report.md" $combat
           "$ART/cirun" publish --config "$ART/config.yaml" --art "$ART" --sha "$SHA" --notes "$ART/report.md" --rules "${{ inputs.rules }}" $rel

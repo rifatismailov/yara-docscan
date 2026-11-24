@@ -187,10 +187,16 @@ func splitStatus(d string) (title, state, detail string) {
 
 // uploadMacAsset кладе ci-out/<прогін>/macos/yara-darwin-arm64.tar.gz у сховок (docscan-builds/<коміт>).
 func uploadMacAsset(cfg *config.Config, sec *config.Resolver, sha, runDir string) error {
+	return putBuild(cfg, sec, sha, MacAsset, filepath.Join(runDir, "macos", MacAsset))
+}
+
+// putBuild кладе файл збірки коміту sha у сховок Forgejo (docscan-builds/<коміт>/<name>): macOS tar.gz від ▷,
+// пакет Windows від стенда-збирача (етап 1 конвеєра) — його видно у Forgejo (Packages) і з нього ж реліз.
+func putBuild(cfg *config.Config, sec *config.Resolver, sha, name, path string) error {
 	if cfg.Tests.Store.URL == "" {
 		return fmt.Errorf("no tests.store")
 	}
-	data, err := os.ReadFile(filepath.Join(runDir, "macos", MacAsset))
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return err
 	}
@@ -198,7 +204,7 @@ func uploadMacAsset(cfg *config.Config, sec *config.Resolver, sha, runDir string
 	if err != nil {
 		return err
 	}
-	u := buildsURL(cfg, sha, MacAsset)
+	u := buildsURL(cfg, sha, name)
 	del, _ := http.NewRequest("DELETE", u, nil) // повторний прогін того самого коміту — замінити
 	del.Header.Set("Authorization", "token "+tok)
 	if r, err := http.DefaultClient.Do(del); err == nil {

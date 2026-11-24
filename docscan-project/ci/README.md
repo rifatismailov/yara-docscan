@@ -38,18 +38,24 @@ Forgejo  prepare: вимкнена ВМ стенда (vm:) → start через 
          WinRM / SSH; srv2019 (sessions:) — менше count RDP-сесій <prefix>01.. → відкрити їх зі стенда from (rds_connect.ps1
          завданням планувальника в інтерактивній сесії; на стенді from — автовхід); ВМ після прогону не вимикаються
          probe: які стенди доступні (недоступний → SKIPPED (host offline), прогін не падає)
-         win11 (Windows 11):            MSBuild + Go-watcher, 42 зразки, пісочниця, пакет, установка + watcher
-         srv2019 (Windows Server 2019): пакет win11, повний набір (третій прохід, ворожі файли, корпус,
+ етап 1  win11 (Windows 11):            MSBuild + Go-watcher, 42 зразки, пісочниця, пакет, установка + watcher;
+                                        пакет → сховок Forgejo (Packages: docscan-builds/<коміт>)
+ етап 2  srv2019 (Windows Server 2019): пакет win11, повний набір (третій прохід, ворожі файли, корпус,
          win10 (Windows 10)             шкідливе ПЗ — лише сканування, установка + watcher);
                                         srv2019 ще й навантажувальний тест термінального сервера (нижче)
          ubuntu (Ubuntu Server):        власна збірка, повний набір, фазинг
+ етап 3  лише реліз (▷, --release) і лише після зеленого етапу 2 — бойовий тест, паралельно:
+         combat-win10:  установлений watcher на ПАКЕТІ win11, ~5 500 тестових файлів (бойовий тест, нижче)
+         combat-ubuntu: повний набір ще раз, фазинг 1 год
+         недоступний стенд, пропущений або червоний бойовий тест → ERROR: ні push, ні релізу
          report: [CI/CD] <стенд> -> OK | ERROR | SKIPPED, [RESULT] Verified on: ...
          лише без жодного ERROR: перевірка безпеки комітів → git push на GitHub → (з ▷) реліз vX.Y.Z:
          пакет Windows + DocScan-Install.ps1, yara-docscan-linux-x64.tar.gz, yara-docscan-macos-arm64.tar.gz,
          у описі — таблиця «Verified on»
 ```
 
-- ▷ = з релізом; Cmd+Shift+B = без релізу (push на GitHub після зеленого прогону — так само). Обидва
+- ▷ = з релізом: етапи 1–3 (~3 год), push і реліз — лише після зеленого бойового тесту на Win10 і Ubuntu;
+  Cmd+Shift+B = без релізу: етапи 1–2 (~45 хв), push на GitHub після зеленого прогону. Обидва
   завершуються одразу після запуску прогону в Forgejo: стежити не треба, результат — у прогоні Forgejo і в
   статусах коміту (`cirun/<стенд>`, `cirun/result`, `cirun/publish`); реліз з'являється на GitHub сам.
   Задача «… wait for Forgejo (--watch)» — по-старому, з очікуванням і зведенням у терміналі.
@@ -57,7 +63,8 @@ Forgejo  prepare: вимкнена ВМ стенда (vm:) → start через 
   тож пакет win11 доходить до інших стендів без сторонніх сховищ.
 - Адреси й облікові дані стендів — у секретах Forgejo: `CIRUN_CONFIG` (конфіг стендів з `env:`-посиланнями),
   `CI_WIN11_PASS`, `CI_SRV2019_PASS`, `CI_WIN10_PASS`, `CI_SSH_KEY`, `CI_KNOWN_HOSTS`, `CI_STORE_TOKEN`,
-  `CI_GITHUB_TOKEN`, `CI_FORGEJO_TOKEN`. У публічному workflow нічого внутрішнього немає.
+  `CI_GITHUB_TOKEN`, `CI_FORGEJO_TOKEN`; для бойового тесту — файловий сервер `CI_FS_UNC`, `CI_FS_USER`,
+  `CI_FS_PASS`. У публічному workflow нічого внутрішнього немає.
 - Підкоманди для завдань workflow: `prepare` (`cirun/prepare.go`), `probe`, `stand`, `report`, `publish`
   (`cirun/pipeline.go`); ▷-частина — `cirun/forgejo_run.go`. Повернутися до старого режиму (усе з Мака): `pipeline.mode: local`.
 - Proxmox вмикається вручну; стенди мають «Start at boot» (після Forgejo і файлового сервера), prepare — підстраховка,
@@ -83,7 +90,7 @@ Forgejo  prepare: вимкнена ВМ стенда (vm:) → start через 
 | `docscan-project/ci/build-test-unix.sh [all\|build\|test]` | збірка і тести на macOS / Linux (cirun кличе `build`, потім `test`) |
 | `docscan-project/ci/check_verdicts.ps1` / `.py` | перевірка документів (Windows без Python / інші ОС) |
 | `docscan-project/ci/expected-verdicts.tsv` | еталон для 42 зразків `test-samples/generated` (оновлювати свідомо: `check_verdicts.py --write`) |
-| `.forgejo/workflows/pipeline.yml` | workflow конвеєра Forgejo: prepare + probe → win11 → srv2019 / win10, ubuntu → report + publish |
+| `.forgejo/workflows/pipeline.yml` | workflow конвеєра Forgejo: prepare + probe → етап 1 win11 → етап 2 srv2019 / win10 / ubuntu → етап 3 (реліз) combat-win10 / combat-ubuntu → report + publish |
 | `docscan-project/ci/install_smoke.ps1`, `combat_*.ps1`, `check_watcher.py`, `check_corpus.py`, `loadtest/` | установка + watcher на стенді, бойовий тест, перевірка корпусу / шкідливого ПЗ, навантажувальний тест |
 
 Тести в кожному прогоні: **документи** (42 зразки, серед них 7 макросів VBA, 4 регресії хибних тривог / шифрування і 6 zip-архівів: вердикт, лікування,

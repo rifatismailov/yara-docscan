@@ -189,6 +189,7 @@ func cmdStand(args []string) int {
 	assetsVer := fs.String("assets", "", "version of the test files in the Forgejo store (from ▷ on the Mac); empty - no corpus / malware")
 	malware := fs.Bool("malware", true, "the assets version has malware.zip")
 	rulesVer := fs.String("rules", "latest", "rules release of yara-docscan-rules (the version ▷ tested on macOS)")
+	combat := fs.Bool("combat", false, "stage 3 (release only): the combat test on this stand after a green stage 2 - Windows: the installed watcher on the build stand's package with ~5 500 test files; Linux: the full suite again with long fuzzing (--fuzz)")
 	fs.Parse(args)
 	if *name == "" || *sha == "" || *art == "" {
 		die("stand: --name, --sha and --art are required")
@@ -202,13 +203,22 @@ func cmdStand(args []string) int {
 	if err != nil {
 		die("commit %s is not in this checkout", *sha)
 	}
+	st := standStatus(s)
+	if *combat { // свій статус (<стенд>-combat): результат етапу 2 цього стенда лишається
+		st.Name, st.Title = s.Name+"-combat", s.Title+" combat"
+	}
 	if prev := readStatus(*art, s.Name); prev != nil && prev.Status == "SKIPPED" {
+		if *combat { // реліз без бойового тесту неможливий: недоступний стенд — ERROR, не пропуск
+			st.Status, st.Detail = "ERROR", "the stand is offline: "+prev.Detail
+			writeStatus(*art, st)
+			fmt.Printf("[%s] %s: %s\n", st.Name, st.Title, st.Detail)
+			return 1
+		}
 		fmt.Printf("[%s] %s: %s - skipped\n", s.Name, s.Title, prev.Detail)
 		return 0
 	}
-	st := standStatus(s)
 	t0 := time.Now()
-	postStatus(full, s.Name, s.Title, "RUNNING", s.Suite+" suite on "+s.Connection.Host)
+	postStatus(full, st.Name, st.Title, "RUNNING", s.Suite+" suite on "+s.Connection.Host)
 	finish := func() int {
 		st.Seconds = int(time.Since(t0).Seconds())
 		if st.Status == "OK" {
@@ -223,12 +233,27 @@ func cmdStand(args []string) int {
 		if err := writeStatus(*art, st); err != nil {
 			fmt.Println("! status:", err)
 		}
-		postStatus(full, s.Name, s.Title, st.Status, st.Detail)
+		postStatus(full, st.Name, st.Title, st.Status, st.Detail)
 		fmt.Printf("[%s] %s -> %s (%s)\n", s.Name, s.Title, st.Status, st.Detail)
 		if st.Status == "ERROR" {
 			return 1
 		}
 		return 0
+	}
+
+	// етап 3: бойовий тест лише після зеленого етапу 2 (жоден стенд не ERROR / без результату)
+	if *combat {
+		var bad []string
+		for i := range cfg.Stands {
+			o := readStatus(*art, cfg.Stands[i].Name)
+			if o == nil || o.Status == "ERROR" {
+				bad = append(bad, cfg.Stands[i].Name)
+			}
+		}
+		if len(bad) > 0 {
+			st.Status, st.Detail = "SKIPPED", "stage 2 is not green ("+strings.Join(bad, ", ")+") - no combat test, no release"
+			return finish()
+		}
 	}
 
 	// збірка стенда-збирача для role test
@@ -286,6 +311,20 @@ func cmdStand(args []string) int {
 		w := platform.NewWindows(pc, sec, 0, as, rep)
 		w.SetStand(s.Role, s.Suite, prebuilt)
 		w.SetLoad(s.Load)
+		if *combat {
+			if s.Role != "test" || prebuilt == "" {
+				st.Status, st.Detail = "ERROR", "combat test: a role test stand with the build stand's package is needed"
+				return finish()
+			}
+			fsrv, err := combatFileServer(cfg)
+			if err != nil {
+				st.Status, st.Detail = "ERROR", "combat test: "+err.Error()
+				return finish()
+			}
+			w.SetStand("test", "combat", prebuilt) // лише бойовий тест: повний набір цей пакет уже пройшов на етапі 2
+			w.SetLoad(nil)
+			w.EnableCombat(fsrv)
+		}
 		p = w
 	case "linux":
 		pc.Script = "docscan-project/ci/build-test-unix.sh"
@@ -356,8 +395,32 @@ func cmdStand(args []string) int {
 	for _, f := range files {
 		st.Artifacts = append(st.Artifacts, filepath.Base(f))
 	}
+	// етап 1: пакет стенда-збирача — у сховок Forgejo (docscan-builds/<коміт>): його видно в Packages, з нього
+	// тестують інші стенди, бойовий тест і реліз (той самий файл)
+	if s.Role == "build" && !*combat {
+		if zips, _ := filepath.Glob(filepath.Join(dst, "DocScan-*.zip")); len(zips) > 0 {
+			if err := putBuild(cfg, sec, full, filepath.Base(zips[0]), zips[0]); err != nil {
+				fmt.Printf("[%s] ! package to the Forgejo store: %v\n", s.Name, err)
+			} else {
+				fmt.Printf("[%s] package %s -> Forgejo store (%s/%s)\n", s.Name, filepath.Base(zips[0]), BuildsPackage, full[:12])
+			}
+		}
+	}
 	st.Status = "OK"
 	return finish()
+}
+
+// combatFileServer — звідки бойовий тест бере тестові файли: fileserver з конфігу, а на раннері, де його в
+// CIRUN_CONFIG немає, — із секретів Forgejo CI_FS_UNC, CI_FS_USER, CI_FS_PASS (адреса не в публічному workflow).
+func combatFileServer(cfg *config.Config) (config.FileServer, error) {
+	if cfg.FileServer.UNC != "" {
+		return cfg.FileServer, nil
+	}
+	f := config.FileServer{UNC: os.Getenv("CI_FS_UNC"), User: os.Getenv("CI_FS_USER"), PasswordRef: "env:CI_FS_PASS"}
+	if f.UNC == "" || f.User == "" || os.Getenv("CI_FS_PASS") == "" {
+		return f, fmt.Errorf("no file server: fileserver in the config or the secrets CI_FS_UNC / CI_FS_USER / CI_FS_PASS")
+	}
+	return f, nil
 }
 
 // ---------------------------------------------------------------- report --
@@ -369,6 +432,7 @@ func cmdReport(args []string) int {
 	mac := fs.String("mac", "", `result of the local Mac check from ▷: "OK|<details>" (empty - not reported)`)
 	md := fs.String("md", "", "write the Verified-on table (Markdown) here, for the release notes")
 	sha := fs.String("sha", "", "commit (for the Forgejo commit statuses)")
+	combat := fs.String("combat", "", "stage 3 (a release run): stands whose combat test must be OK, comma-separated (win10,ubuntu); a missing or skipped one is an ERROR - no push, no release")
 	fs.Parse(args)
 	cfg, _ := loadPipelineConfig(*cfgPath)
 	var all []*StandStatus
@@ -382,6 +446,16 @@ func cmdReport(args []string) int {
 		if st == nil {
 			st = standStatus(s)
 			st.Status, st.Detail = "ERROR", "no result (the job did not finish)"
+		}
+		all = append(all, st)
+	}
+	for _, n := range splitList(*combat) { // реліз — лише після зеленого бойового тесту (правило проєкту)
+		st := readStatus(*art, n+"-combat")
+		switch {
+		case st == nil:
+			st = &StandStatus{Name: n + "-combat", Title: n + " combat", Status: "ERROR", Detail: "no result (the combat job did not run or finish)"}
+		case st.Status == "SKIPPED":
+			st.Status = "ERROR" // без бойового тесту релізу немає
 		}
 		all = append(all, st)
 	}
