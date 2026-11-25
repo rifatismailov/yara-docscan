@@ -109,7 +109,7 @@ const winCommon = `
 $w = '{{W}}'; $repo = '{{REPO}}'
 New-Item -ItemType Directory -Force $w | Out-Null
 if (Get-Command Add-MpPreference -EA 0) {
-  try { if (@((Get-MpPreference).ExclusionPath) -notcontains $w) { Add-MpPreference -ExclusionPath $w -EA Stop } } catch { }
+  try { if (@((Get-MpPreference -EA Stop).ExclusionPath) -notcontains $w) { Add-MpPreference -ExclusionPath $w -EA Stop } } catch { }
 }
 `
 
@@ -475,7 +475,8 @@ foreach ($r in (Get-ChildItem "$repo\docscan-project\fuzz\regressions" -Filter "
   if ($LASTEXITCODE -ne 0) { "regression FAIL: " + $r.Name; $bad++ }
 }
 "regressions: $nr, failed: $bad"
-$seeds = @("$w\tests\corpus", "$w\tests\seeds", "$repo\docscan-project\test-samples\generated") | Where-Object { Test-Path $_ }
+# @(...) around the filter: one folder left would be a string, and @seeds splats a string char by char
+$seeds = @(@("$w\tests\corpus", "$w\tests\seeds", "$repo\docscan-project\test-samples\generated") | Where-Object { Test-Path $_ })
 "seed folders: " + ($seeds -join ', ')
 & $fz "-dict=$repo\docscan-project\fuzz\docscan.dict" -max_len=262144 -max_total_time=`+fmt.Sprint(w.fuzz)+` -timeout=20 -rss_limit_mb=2048 "-artifact_prefix=$f\crashes\" "$f\corpus" @seeds 2>&1 | Select-String -Pattern "^#|Done|ERROR|crash|INITED" | Select-Object -Last 15 | % { $_.Line }
 $rc = $LASTEXITCODE
