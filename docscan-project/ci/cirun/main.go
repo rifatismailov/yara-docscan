@@ -85,12 +85,22 @@ func main() {
 	rulesVer := flag.String("rules", "latest", "rules release of github.com/rifatismailov/yara-docscan-rules to build and test with (latest | vX.Y.Z)")
 	watch := flag.Bool("watch", false, "pipeline mode forgejo: wait for the Forgejo run and print its result (default: start it and exit)")
 	releaseRun := flag.String("release-run", "", "the GitHub release of an earlier green, pushed run (a folder with its Windows package DocScan-<version>.zip): first the combat test on --machine with that package, the release only if it is green")
+	local := flag.Bool("local", false, "local mode whatever pipeline.mode says: this Mac builds and tests on the first reachable Windows candidate (e.g. win10-2 while the CI server is off); never pushes or releases")
 	machine := flag.String("machine", "vm-win10", "--release-run / --combat: the Windows machine (platforms.windows.candidates[].name) for the combat test")
 	flag.Parse()
 
 	cfg, err := config.Load(*cfgPath)
 	if err != nil {
 		die("%v\n(create it from docscan-project/ci/config.example.yaml)", err)
+	}
+	// --local: прогін без сервера CI (Proxmox / Forgejo вимкнені) — Мак сам веде Windows-машину. Лише перевірка:
+	// без push і релізу, бо правило проєкту — публікація тільки після повного конвеєра з комбатом
+	if *local {
+		if *release || *releaseRun != "" || *pushOnly {
+			die("--local is a test run only: no --release / --release-run / --push-only")
+		}
+		cfg.Pipeline.Mode = "local"
+		*noPush = true
 	}
 	sec := config.NewResolver(cfg.Secrets)
 	if *fuzz < 0 {

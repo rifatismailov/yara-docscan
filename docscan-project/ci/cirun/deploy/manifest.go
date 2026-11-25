@@ -1,6 +1,6 @@
 package deploy
 
-// Підписаний маніфест релізу (формат — docscan/watcher/manifest): manifest.json + manifest.sig поруч із пакетом.
+// Підписаний маніфест релізу (формат — docscan/services/pkg/manifest): manifest.json + manifest.sig поруч із пакетом.
 // docscan-updater на ПК бере оновлення лише з дійсним підписом, хоч із GitHub, хоч із дзеркала організації.
 
 import (
@@ -15,7 +15,7 @@ import (
 	"slices"
 	"time"
 
-	"docscan/watcher/manifest"
+	"docscan/services/pkg/manifest"
 )
 
 // Імена файлів маніфесту серед активів релізу (однакові в усіх релізах: releases/latest/download/<ім'я>).
@@ -55,7 +55,7 @@ func signPackage(product, version, build, commit, pkg, pkgSHA, seedB64 string) (
 		return nil, nil, err
 	}
 	if !slices.Contains(trustedKeys, pub) {
-		return nil, nil, fmt.Errorf("the signing key %s is not in manifest.OfficialKeys (watcher-go/manifest) - PCs would reject the release", pub)
+		return nil, nil, fmt.Errorf("the signing key %s is not in manifest.OfficialKeys (services/pkg/manifest) - PCs would reject the release", pub)
 	}
 	st, err := os.Stat(pkg)
 	if err != nil {

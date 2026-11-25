@@ -24,7 +24,7 @@ DocScan стежить за новими файлами, перевіряє до
    оновлює служба DocScanUpdater (оновлення програми правил не чіпає).
    Правила критичної інформації (третій прохід, черга E5Search) - у тому самому пакеті правил DocScan-rules.zip,
    тека critical\ (скільки завгодно .yar): ставляться й оновлюються разом з правилами на ВСІХ ПК; -NoCritical
-   вимикає третій прохід на ПК. Як писати й випускати - docscan-project/CRITICAL-RULES.md.
+   вимикає третій прохід на ПК. Як писати й випускати - docscan-project/DOCSCAN.md, розділ «Третій прохід».
    ПК потрібен доступ до github.com і objects.githubusercontent.com (TLS 1.2).
    Білий / чорний списки організації: -Whitelist / -Blacklist <файл | UNC | URL> (приватний URL - -ListsToken або
    DOCSCAN_LISTS_TOKEN), -NoWhitelist / -NoBlacklist; щоденно з дзеркала - -ListsUrl + -ListsKey. Див. нижче.
@@ -155,7 +155,7 @@ DocScan стежить за новими файлами, перевіряє до
      1) sh manager/cleanup_manager.sh          — прибирає <command>/<active-response> doc-scan/yara-scan
      2) блок manager/local_rules.docscan.xml → /var/ossec/etc/rules/local_rules.xml
      3) /var/ossec/bin/wazuh-analysisd -t && systemctl restart wazuh-manager
-   Подробиці — SCAN-FLOW.md, розділ 12.
+   Подробиці — docscan-project/DOCSCAN.md, розділ «Wazuh».
 
 5. Після встановлення
 ---------------------
@@ -174,9 +174,13 @@ DocScan стежить за новими файлами, перевіряє до
    Веб-інтерфейс "DocScan Web" (DocScanWeb): https://127.0.0.1:8741/ — лише з цього ПК (-WebPort інший порт,
      -NoWeb без нього). Сторінки: стан, виявлення (фільтри за рівнем, датою, шляхом, правилом), журнали, дії у веб.
      HTTPS: сертифікат створюється під час встановлення і стає довіреним у Windows (лише 127.0.0.1 / localhost, не CA;
-     uninstall.ps1 прибирає). Вхід: admin; тимчасовий пароль — у виводі інсталятора і в
-     C:\ProgramData\DocScan\web\initial-password.txt (лише адміністратори); перший вхід вимагає новий пароль, файл
-     після цього видаляється. Забули: "C:\Program Files\DocScan\web\docscan-web.exe" -ResetPassword (від адміністратора).
+     uninstall.ps1 прибирає). Вхід: admin; тимчасовий пароль — лише в C:\ProgramData\DocScan\web\initial-password.txt
+     (лише адміністратори; інсталятор його НЕ друкує — вивід, запущений через GPO / RMM, лишається в їхніх журналах).
+     Діє 24 год: перший вхід вимагає новий пароль і видаляє файл; не увійшли за 24 год — пароль не діє, файл
+     видаляється. Новий тимчасовий: docscan-web -ResetPassword (PowerShell від адміністратора).
+     Аудит (event "Admin" у docscan-results.json -> Wazuh): кожна дія у вебі, невдалий вхід, блокування входу після
+     кількох невдалих спроб, скидання пароля (via cli), строк тимчасового пароля минув; у записі — і обліковий запис
+     Windows (admin.windows_user), з якого відкрито веб (на термінальному сервері веб бачать усі користувачі).
      Налаштування з вебу: «Оновлення» (updater.json; перевіряє docscan-updater -CheckConfig, копія — updater.json.bak;
      служба перечитує файл сама; «Перевірити зараз»), «Режим і чорний список» (повний / detect only — одразу; теки й
      кількість сканувань — з перезапуском служби; пауза чорного списку на 1 год / 4 год / до кінця дня / до ручного
@@ -213,8 +217,12 @@ DocScan стежить за новими файлами, перевіряє до
    Режим: Get-Content C:\ProgramData\DocScan\results\watcher.log -Encoding UTF8 | Select-String "start:|critical:" | Select -Last 2
      (disarm=True — лікування, disarm=False — лише детект; "critical: off" — третій прохід вимкнений)
 
+   Команди DocScan у PATH (інсталятор додає теки watcher, web, updater; працюють у НОВІЙ консолі, від адміністратора):
+     docscan-web -ResetPassword        новий тимчасовий пароль вебу
+     docscan-updater -Once             перевірити оновлення зараз
+     docscan-watcher -ScanStatus       що сканується зараз
    Скан з PowerShell (від адміністратора; сканує служба, тут лише запит):
-     & "C:\Program Files\DocScan\watcher\docscan-watcher.exe" -ScanPath E:\ -Wait      (тека, файл або знімний диск)
+     docscan-watcher -ScanPath E:\ -Wait      (тека, файл або знімний диск)
      ... -ScanDocs [-ScanDetect]     документи на всіх локальних дисках (-ScanDetect — лише повідомлення)
      ... -ScanDelete                 разом з -ScanPath / -ScanDocs: HIGH-файли видалити без копії
      ... -ScanStatus                 що сканується і останні скани;   ... -ScanCancel all   зупинити
@@ -225,4 +233,4 @@ DocScan стежить за новими файлами, перевіряє до
    Видалення: powershell -ExecutionPolicy Bypass -File "C:\Program Files\DocScan\uninstall.ps1" [-Purge]
 
 Вимоги: Windows 10/11 x64, PowerShell 5.1 (є в системі), права адміністратора. Вивід усіх скриптів —
-англійською (ASCII), тож кодування консолі й irm не заважають. Повна документація: docscan-project/SCAN-FLOW.md.
+англійською (ASCII), тож кодування консолі й irm не заважають. Повна документація: docscan-project/DOCSCAN.md.

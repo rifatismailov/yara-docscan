@@ -35,6 +35,8 @@ $sw = [Diagnostics.Stopwatch]::StartNew()
 function lap($what) { "{0,-28} {1,6:N0} s" -f $what, $sw.Elapsed.TotalSeconds; $sw.Restart() }
 function Fail($m) { "ERROR: $m"; exit 1 }
 
+# a clean stand: no DocScan left from an earlier run or a manual install (its updater / rules would change the test)
+& powershell -NoProfile -ExecutionPolicy Bypass -File "$Repo\docscan-project\ci\clean_docscan.ps1" -InstallDir $InstallDir -DataDir $DataDir 2>&1 | % { "  $_" }
 # leftovers of an earlier (broken) run
 if (Get-ScheduledTask -TaskName $Feed -EA 0) { Stop-ScheduledTask -TaskName $Feed -EA 0; Unregister-ScheduledTask -TaskName $Feed -Confirm:$false }
 Remove-Item $Work -Recurse -Force -EA 0

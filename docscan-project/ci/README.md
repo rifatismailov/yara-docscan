@@ -85,12 +85,13 @@ Forgejo  prepare: вимкнена ВМ стенда (vm:) → start через 
 | `cirun/platform/` | інтерфейс `Platform` (Prepare → SyncSource → Build → Test → FetchArtifacts); `unix.go` — macOS і Linux, `windows.go` |
 | `cirun/orchestrator/` | хвилі з `requires`, хід і відсоток у терміналі, підсумок, push коміту на GitHub |
 | `cirun/forgejo/` | необов'язково: доступність, mirror-sync / push у Forgejo, статуси коміту |
-| `cirun/platform/gowatcher.go` | Go-watcher для пакета: `git archive` теки `watcher-go` точного коміту → `go vet` + `go test` → крос-збірка `docscan-watcher.exe` (windows/amd64) на Маку → у репозиторій на Windows-машині (крок build); на Windows Go не потрібен |
+| `cirun/platform/gowatcher.go` | Go-watcher для пакета: `git archive` теки `services` точного коміту → `go vet` + `go test` → крос-збірка `docscan-watcher.exe` (windows/amd64) на Маку → у репозиторій на Windows-машині (крок build); на Windows Go не потрібен |
 | `cirun/gitops/`, `cirun/deploy/` | коміт з перевіркою безпеки, `git archive`; реліз на GitHub (`release.go`, `manifest.go`, `version.go`), пакет правил (`rules.go`, критичні — `critical.go`) |
 | `docscan-project/ci/build-test-unix.sh [all\|build\|test]` | збірка і тести на macOS / Linux (cirun кличе `build`, потім `test`) |
 | `docscan-project/ci/check_verdicts.ps1` / `.py` | перевірка документів (Windows без Python / інші ОС) |
 | `docscan-project/ci/expected-verdicts.tsv` | еталон для 42 зразків `test-samples/generated` (оновлювати свідомо: `check_verdicts.py --write`) |
 | `.forgejo/workflows/pipeline.yml` | workflow конвеєра Forgejo: prepare + probe → етап 1 win11 → етап 2 srv2019 / win10 / ubuntu → етап 3 (реліз) combat-win10 / combat-ubuntu → report + publish |
+| `docscan-project/ci/clean_docscan.ps1` | стенд без DocScan: перед кожним встановленням (install smoke, бойовий тест) і після бойового тесту — служби, програма, дані, винятки Defender, сертифікат вебу. Стенд НІКОЛИ не тримає DocScan між прогонами |
 | `docscan-project/ci/install_smoke.ps1`, `combat_*.ps1`, `check_watcher.py`, `check_corpus.py`, `loadtest/` | установка + watcher на стенді, бойовий тест, перевірка корпусу / шкідливого ПЗ, навантажувальний тест |
 
 Тести в кожному прогоні: **документи** (42 зразки, серед них 7 макросів VBA, 4 регресії хибних тривог / шифрування і 6 zip-архівів: вердикт, лікування,
@@ -109,6 +110,7 @@ go run -C docscan-project/ci/cirun . --only macos        # лише ці пла�
 go run -C docscan-project/ci/cirun . --fuzz 0            # без фазингу
 go run -C docscan-project/ci/cirun . --release           # після зеленого прогону — реліз на GitHub
 go run -C docscan-project/ci/cirun . --no-push           # не пушити коміт на GitHub
+go run -C docscan-project/ci/cirun . --local             # сервер CI вимкнений: Мак сам збирає і тестує на першій доступній Windows-ВМ (win10-2); без push і релізу
 go run -C docscan-project/ci/cirun . --push-only         # лише git push HEAD на GitHub (після зеленого прогону)
 go run -C docscan-project/ci/cirun . --rules v1.2.3      # з цим релізом правил (за замовчуванням latest)
 go run -C docscan-project/ci/cirun . --watch             # режим forgejo: чекати кінця прогону Forgejo і друкувати стан
@@ -190,7 +192,7 @@ go run -C docscan-project/ci/cirun . --combat --only windows --fuzz 0
 
 Йде завжди в **локальному режимі**: Мак сам веде Windows-машину з `platforms.windows` (перша доступна з
 `candidates`), навіть коли `pipeline.mode: forgejo` — у конвеєрі Forgejo бойового тесту немає. Після тесту
-тестові файли прибираються, а DocScan лишається встановленим (оновлення вимкнено, `-UpdateMode off`).
+тестові файли прибираються, і DocScan теж видаляється повністю (`clean_docscan.ps1`): стенд не тримає DocScan між прогонами.
 
 Перевіряє систему так, як вона працює на робочій станції, а не `yara64` напряму:
 
@@ -199,7 +201,7 @@ go run -C docscan-project/ci/cirun . --combat --only windows --fuzz 0
 | combat-setup | `combat_setup.ps1`: пакет цього коміту → `install.ps1` (оновлення: `C:\Program Files\DocScan`, `C:\ProgramData\DocScan`, служба Windows DocScanWatcher від SYSTEM; watcher стежить за `C:\Users` і тестовою текою `C:\ci\inbox`); тестові файли з **файлового сервера** (`fileserver` у config.yaml): `yara\corpus`, `yara\seeds`, `yara\malware\malware.zip` і `provided.zip` (пароль `infected`, розпаковуються лише в `C:\ci\combat`) + 42 зразки з git; знімок стану |
 | combat-feed | `combat_feed.ps1` (окреме завдання SYSTEM): кладе файли в `C:\ci\inbox` партіями по 50 і чекає, поки watcher упорається; cirun раз на 30 с показує хід |
 | combat | `check_watcher.py`: на кожен файл, який watcher має сканувати (за його списками розширень), є запис без `ERROR`; 42 зразки — вердикт, лікування і вердикт після лікування за еталоном; реальні зразки замовника — HIGH; шкідливе ПЗ — кожен шлях `expected.txt`, який watcher сканує, виявлений (решта — список «не сканується через розширення»); корпус — вердикт політики = прямому скану (крок corpus). Звіт — `combat-report.txt`, записи — `combat-records.json`, лог watcher-а — `combat-watcher.log` |
-| combat-cleanup | `combat_cleanup.ps1` (завжди): тестові файли, розпаковане шкідливе ПЗ, бекапи й копії макросів, створені тестом, рядки тесту в черзі E5Search. DocScan лишається встановленим (оновленим до перевіреної збірки) |
+| combat-cleanup | `combat_cleanup.ps1` (завжди): тестові файли, розпаковане шкідливе ПЗ, бекапи й копії макросів, створені тестом, рядки тесту в черзі E5Search. потім DocScan видаляється повністю (`clean_docscan.ps1`) |
 
 **Звірка між платформами.** Вердикти корпусу (`corpus-verdicts.tsv`) кожної платформи порівнюються: рішення
 DocScan (вердикт і знахідки) на тих самих файлах мають збігатися точно — інакше прогін не зелений.
@@ -243,7 +245,7 @@ SYSTEM: 25 користувачів, сплеск 10 файлів на стар�
 
 **Вручну**: окремий тестовий сервер Windows Server з роллю RD Session Host, N справжніх RDP-сесій
 з іншої Windows-машини і генератор дій користувачів — `loadtest/` (опис файлів і результати —
-[../watcher-go/README.md](../watcher-go/README.md) §2, §7, §9). Порядок: `rds_setup.ps1` (роль, користувачі) →
+[../DOCSCAN.md](../DOCSCAN.md#history), «Історія»). Порядок: `rds_setup.ps1` (роль, користувачі) →
 `rds_connect.ps1` на клієнті (сесії) → `rds_docs.ps1` (тестові набори) → `rds_reset.ps1 -DefenderOff` (DocScan
 з нуля, Defender вимкнено, опційно Go-watcher) → `rds_load.ps1` (прогін; від SYSTEM через завдання планувальника, не з WinRM-сеансу)
 → `loadtest_report.py <тека прогону>`. Режими генератора: звичайний темп, `-Burst N`, `-All` (увесь набір
@@ -331,7 +333,7 @@ go run -C docscan-project/ci/cirun . rules-release --dir <checkout yara-docscan-
   (документ з `tests/match` не знайдено — `NOT FOUND`, з `tests/no-match` знайдено — `FALSE ALARM`, реліз не робиться).
 - Пакет: `DocScan-rules.zip` (основні правила + `critical/`), `rules-manifest.json` / `.sig`, `DocScan-rules-bundle.zip`
   (для `-Rules` інсталятора); підпис — той самий ключ. Критичні правила ставляться на **всі** ПК (на окремому ПК третій
-  прохід вимикає `-NoCritical` інсталятора). Як писати критичні правила — [../CRITICAL-RULES.md](../CRITICAL-RULES.md).
+  прохід вимикає `-NoCritical` інсталятора). Як писати критичні правила — [../DOCSCAN.md](../DOCSCAN.md#critical).
 - `--dry-run` — лише перевірка й пакет (`ci-out/rules-release-<тег>/`), без публікації. Обидва checkout-и мають бути
   чистими, коміт правил — уже на GitHub; реліз робиться на коміт репозиторію правил (змінилися лише критичні —
   спершу закомітити й запушити щось у репозиторій правил).
@@ -340,8 +342,8 @@ go run -C docscan-project/ci/cirun . rules-release --dir <checkout yara-docscan-
 
 **Підпис.** `cirun publish` / `--release` складає `manifest.json` і підписує його ключем ed25519
 `release.signing_key_ref` (типово `keepassxc:CI/Release/signing-key`; на раннері — `env:CI_SIGNING_KEY`, секрет
-Forgejo). Ключ має бути серед `OfficialKeys` у `watcher-go/manifest` — інакше реліз не випускається (ПК його не
-прийняли б). Служба оновлення на ПК (`DocScanUpdater`, [../UPDATE-DESIGN.md](../UPDATE-DESIGN.md) §0) ставить лише
+Forgejo). Ключ має бути серед `OfficialKeys` у `services/pkg/manifest` — інакше реліз не випускається (ПК його не
+прийняли б). Служба оновлення на ПК (`DocScanUpdater`, [../DOCSCAN.md](../DOCSCAN.md#updater)) ставить лише
 підписане. Новий ключ: спершу додати публічний у `OfficialKeys` і випустити реліз зі старим ключем, потім міняти.
 
 - Імена активів однакові в усіх релізах — `releases/latest/download/<ім'я>` завжди дає найновіший (без GitHub API

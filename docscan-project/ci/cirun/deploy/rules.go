@@ -21,7 +21,7 @@ import (
 	"strings"
 	"time"
 
-	"docscan/watcher/manifest"
+	"docscan/services/pkg/manifest"
 )
 
 const (

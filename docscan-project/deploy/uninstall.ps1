@@ -1,4 +1,5 @@
-﻿# DocScan - uninstall.
+﻿# Docs: docscan-project/DOCSCAN.md#deploy (removal); admin guide: deploy/README.txt
+# DocScan - uninstall.
 #   powershell -ExecutionPolicy Bypass -File "C:\Program Files\DocScan\uninstall.ps1"           # data is kept
 #   powershell -ExecutionPolicy Bypass -File "C:\Program Files\DocScan\uninstall.ps1" -Purge    # + results and quarantine
 param(
@@ -10,6 +11,19 @@ $TaskName = "DocScan Watcher"
 $admin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
   [Security.Principal.WindowsBuiltInRole]::Administrator)
 if (-not $admin) { Write-Host "Run as Administrator" -ForegroundColor Red; exit 1 }
+
+# audit: who removes DocScan. A record for Wazuh (docscan-results.json) - with -Purge the file goes away a moment
+# later, so the same goes to the Windows Application log too (the Wazuh agent collects it): eventcreate, source DocScan
+$who = "$env:USERDOMAIN\$env:USERNAME"
+$detail = "DocScan is being removed by $who" + $(if ($Purge) { " (-Purge: results and quarantine too)" } else { "" })
+try {
+  $rec = [ordered]@{ timestamp = (Get-Date).ToString("yyyy-MM-ddTHH:mm:ss.fffzzz"); source = "docscan"; host = $env:COMPUTERNAME; event = "Admin"
+    admin = [ordered]@{ user = "-"; action = "docscan-uninstalled"; detail = $detail; via = "installer"; windows_user = $who } }
+  $f = Join-Path $DataDir "results\docscan-results.json"
+  if (Test-Path (Split-Path $f)) { [IO.File]::AppendAllText($f, ($rec | ConvertTo-Json -Compress -Depth 4) + "`n", (New-Object Text.UTF8Encoding($false))) }
+} catch { }
+eventcreate.exe /L APPLICATION /SO DocScan /T WARNING /ID 900 /D $detail 2>&1 | Out-Null
+if ($Purge) { Start-Sleep 5 }   # give the Wazuh agent a moment to send the record before the file is deleted
 
 $SvcName = "DocScanWatcher"
 # the services (Go watcher, updater): Disabled first, so their recovery actions do not start them again, then stop
@@ -48,6 +62,14 @@ if (Test-Path $ossecConf) {
     Restart-Service WazuhSvc -Force -EA SilentlyContinue
     Write-Host "ossec.conf: DocScan <localfile> block removed, WazuhSvc restarted"
   }
+}
+
+# the DocScan commands out of the machine PATH (install.ps1 put watcher\, web\, updater\ there)
+$mp = [Environment]::GetEnvironmentVariable("Path", "Machine")
+$keep = @($mp -split ";" | ? { $_ -and -not $_.StartsWith($InstallDir + "\", [StringComparison]::OrdinalIgnoreCase) })
+if ($keep.Count -ne @($mp -split ";" | ? { $_ }).Count) {
+  [Environment]::SetEnvironmentVariable("Path", ($keep -join ";"), "Machine")
+  Write-Host "PATH: DocScan commands removed"
 }
 
 # uninstall.ps1 lives in $InstallDir: delete everything except itself, and itself later

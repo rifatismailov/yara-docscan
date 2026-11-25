@@ -1,4 +1,4 @@
-﻿# DocScan - build the deployment package (on the machine where yara64.exe was built).
+# DocScan - build the deployment package (on the machine where yara64.exe was built).
 #
 #   powershell -ExecutionPolicy Bypass -File build_package.ps1 [-Repo C:\docscan-build\yara] [-Out C:\docscan-build\dist]
 #
@@ -38,29 +38,29 @@ Copy-Item $crt.FullName, (Join-Path $crt.DirectoryName "vcruntime140_1.dll") "$s
 # rules: NOT in the package - they come from the yara-docscan-rules releases (install.ps1 -Rules <bundle>,
 # then the DocScanUpdater service keeps them up to date)
 # watcher: the Go build (default engine) + the PowerShell script (fallback: install.ps1 -WatcherEngine ps).
-# docscan-watcher.exe is put into watcher-go\ by cirun (cross-built on the Mac); a manual build here needs Go.
-$goExe = "$Repo\docscan-project\watcher-go\docscan-watcher.exe"
+# docscan-watcher.exe is put into services\cmd\watcher\ by cirun (cross-built on the Mac); a manual build here needs Go.
+$goExe = "$Repo\docscan-project\services\cmd\watcher\docscan-watcher.exe"
 if (-not (Test-Path $goExe)) {
-  if (-not (Get-Command go -EA SilentlyContinue)) { throw "$goExe is missing and Go is not installed - build it: cd watcher-go; `$env:GOOS='windows'; go build -trimpath -o docscan-watcher.exe ." }
-  Push-Location "$Repo\docscan-project\watcher-go"
-  try { $env:CGO_ENABLED = "0"; & go build -trimpath "-ldflags=-s -w" -o docscan-watcher.exe .; if ($LASTEXITCODE) { throw "go build failed" } } finally { Pop-Location }
+  if (-not (Get-Command go -EA SilentlyContinue)) { throw "$goExe is missing and Go is not installed - build it: cd services; `$env:GOOS='windows'; go build -trimpath -o cmd\watcher\docscan-watcher.exe .\cmd\watcher" }
+  Push-Location "$Repo\docscan-project\services"
+  try { $env:CGO_ENABLED = "0"; & go build -trimpath "-ldflags=-s -w" -o cmd\watcher\docscan-watcher.exe .\cmd\watcher; if ($LASTEXITCODE) { throw "go build failed" } } finally { Pop-Location }
 }
 Copy-Item $goExe "$stage\watcher\"
 # updater: docscan-updater.exe (service DocScanUpdater) - built by cirun next to the watcher, or here with Go
-$updExe = "$Repo\docscan-project\watcher-go\updater\docscan-updater.exe"
+$updExe = "$Repo\docscan-project\services\cmd\updater\docscan-updater.exe"
 if (-not (Test-Path $updExe)) {
   if (-not (Get-Command go -EA SilentlyContinue)) { throw "$updExe is missing and Go is not installed" }
-  Push-Location "$Repo\docscan-project\watcher-go"
-  try { $env:CGO_ENABLED = "0"; & go build -trimpath "-ldflags=-s -w" -o updater\docscan-updater.exe .\updater; if ($LASTEXITCODE) { throw "go build (updater) failed" } } finally { Pop-Location }
+  Push-Location "$Repo\docscan-project\services"
+  try { $env:CGO_ENABLED = "0"; & go build -trimpath "-ldflags=-s -w" -o cmd\updater\docscan-updater.exe .\cmd\updater; if ($LASTEXITCODE) { throw "go build (updater) failed" } } finally { Pop-Location }
 }
 New-Item -ItemType Directory -Force "$stage\updater" | Out-Null
 Copy-Item $updExe "$stage\updater\"
 # web interface: docscan-web.exe (service DocScanWeb, https://127.0.0.1:8741/) - built by cirun next to the watcher, or here with Go
-$webExe = "$Repo\docscan-project\watcher-go\web\docscan-web.exe"
+$webExe = "$Repo\docscan-project\services\cmd\web\docscan-web.exe"
 if (-not (Test-Path $webExe)) {
   if (-not (Get-Command go -EA SilentlyContinue)) { throw "$webExe is missing and Go is not installed" }
-  Push-Location "$Repo\docscan-project\watcher-go"
-  try { $env:CGO_ENABLED = "0"; & go build -trimpath "-ldflags=-s -w" -o web\docscan-web.exe .\web; if ($LASTEXITCODE) { throw "go build (web) failed" } } finally { Pop-Location }
+  Push-Location "$Repo\docscan-project\services"
+  try { $env:CGO_ENABLED = "0"; & go build -trimpath "-ldflags=-s -w" -o cmd\web\docscan-web.exe .\cmd\web; if ($LASTEXITCODE) { throw "go build (web) failed" } } finally { Pop-Location }
 }
 New-Item -ItemType Directory -Force "$stage\web" | Out-Null
 Copy-Item $webExe "$stage\web\"

@@ -18,8 +18,7 @@ Pull requests
 
 Before you start, read:
 
-- [`docscan-project/SCAN-FLOW.en.md`](docscan-project/SCAN-FLOW.en.md) — architecture and behaviour;
-- [`docscan-project/CODE-GUIDE.md`](docscan-project/CODE-GUIDE.md) — code walkthrough and "how to add"
+- [`docscan-project/DOCSCAN.md`](docscan-project/DOCSCAN.md) (Ukrainian) — architecture, behaviour, the code walkthrough and "how to add"
   recipes (Ukrainian).
 
 Ground rules:
@@ -30,19 +29,19 @@ Ground rules:
   with a clear license, through `tools/build_vendor_rules.py` of [yara-docscan-rules](https://github.com/rifatismailov/yara-docscan-rules) (pinned commits,
   per-rule filter, every drop recorded with a reason). Do not edit the generated `general/` and
   `maldoc/` folders of that repository by hand. Critical-information rules (pass 3) are written by each
-  organisation for itself ([`docscan-project/CRITICAL-RULES.md`](docscan-project/CRITICAL-RULES.md), Ukrainian)
+  organisation for itself ([`DOCSCAN.md`, third pass](docscan-project/DOCSCAN.md#critical), Ukrainian)
   and are not part of this repository.
 - **Untrusted input.** Every parser reads attacker-controlled bytes: bounds-check every read, cap every
   loop and allocation, keep large structures off the stack (Windows main-thread stack is 1 MB).
 - **Tests.** Run the regression (`docscan-project/test-range/run_tests.ps1` on Windows,
-  `sh docscan-project/ci/build-test-unix.sh` on macOS / Linux, or the loop in `CODE-GUIDE.md` §10) and, for
+  `sh docscan-project/ci/build-test-unix.sh` on macOS / Linux, or the loop in `DOCSCAN.md`, section Code → tests and fuzzing) and, for
   parser changes, the libFuzzer targets (`docscan-project/fuzz/build.sh`). Add an inert sample to
   `docscan-project/test-range/gen_test_range.py` for a new detection and update
   `docscan-project/ci/expected-verdicts.tsv` deliberately (`check_verdicts.py --write`). The tests expect
   the rules in `docscan-project/rules/` (git-ignored): `cirun` puts a release of yara-docscan-rules there.
 - **Builds.** A new `.c` file goes into `Makefile.am` and the three `windows/vs20*/libyara/libyara.vcxproj`
   (keep their CRLF line endings).
-- **Documentation.** Update `SCAN-FLOW.md` and `SCAN-FLOW.en.md` (both languages) with the change.
+- **Documentation.** Update `docscan-project/DOCSCAN.md` with the change - one document, no copies elsewhere.
 - Never commit live samples, internal hostnames, IP addresses or credentials — the repository is public.
 
 License

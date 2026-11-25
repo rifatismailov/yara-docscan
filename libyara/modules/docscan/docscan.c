@@ -6,7 +6,7 @@ Detects the file type by magic bytes and runs the matching inspector
 
 This module is READ-ONLY. It never modifies the scanned file; remediation
 ("cure") is done by cli/yara.c (--docscan-disarm -> disarm.c) after the scan.
-See docscan-project/SCAN-FLOW.md.
+Docs: docscan-project/DOCSCAN.md#code (the module, every function), #rules (policy), #watcher (how the watcher runs it).
 */
 
 #include <stdlib.h>

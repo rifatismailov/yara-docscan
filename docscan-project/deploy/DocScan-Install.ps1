@@ -1,4 +1,5 @@
-﻿# DocScan - install or update from the GitHub release (the only script to run on a PC).
+﻿# Docs: docscan-project/DOCSCAN.md#deploy (install from the GitHub release); admin guide: deploy/README.txt
+# DocScan - install or update from the GitHub release (the only script to run on a PC).
 #
 # PowerShell AS ADMINISTRATOR:
 #   [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12   # GitHub needs TLS 1.2

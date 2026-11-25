@@ -53,9 +53,10 @@ Copy-Item $wl "$orgDir\whitelist.json"
 $signOut = & $du -SignList "$orgDir\whitelist.json" -Kind white -Key "$Work\org-lists.key" 2>&1 | % { "$_" }
 if ($LASTEXITCODE) { Fail "-SignList: $signOut" } else { "org lists: $signOut" }
 
-# a run that failed before its uninstall left the web password: start from a fresh one (a new temporary password)
-Remove-Item "$env:ProgramData\DocScan\web\auth.json", "$env:ProgramData\DocScan\web\initial-password.txt" -Force -EA SilentlyContinue
-# install: an update if DocScan is already there; watch only the test inbox. Updates: mode marker - the update
+# a clean stand: any DocScan left on it (an interrupted run, a manual install with its own updater, rules, lists) is
+# removed first - the run tests a fresh install of ITS package, nothing else
+& powershell -NoProfile -ExecutionPolicy Bypass -File "$Repo\docscan-project\ci\clean_docscan.ps1" 2>&1 | % { "  $_" }
+# install on the clean machine; watch only the test inbox. Updates: mode marker - the update
 # service runs (checked below) but does nothing without a marker; github would "update" this CI build (no vX.Y.Z)
 # to the latest release in the middle of the test
 # the update config comes as one ready updater.json (-UpdateConfig, the way an organisation sets its mirror and keys)
@@ -96,6 +97,21 @@ if ((Get-Service DocScanWatcher).Status -ne "Running") { Fail "a refused -Update
 if ((Get-Content $uc -Raw | ConvertFrom-Json).mode -ne "marker") { Fail "a refused -UpdateConfig changed updater.json" }
 $ij = "$env:ProgramData\DocScan\install.json"
 if (-not (Test-Path $ij)) { Fail "no $ij" } else { $j = Get-Content $ij -Raw | ConvertFrom-Json; "install.json: " + $j.installed + ", DetectOnly " + $j.params.DetectOnly + ", WatchPath " + ($j.params.WatchPath -join ";") }
+# audit outside the web: the installer's record (who installed, how) and the service start, in docscan-results.json
+$resf = "$env:ProgramData\DocScan\results\docscan-results.json"
+$aud = @(Get-Content $resf -Encoding UTF8 -EA SilentlyContinue | ? { $_ -match '"event":"Admin"' })
+foreach ($a in "docscan-installed|docscan-updated", "watcher-started") {
+  if (-not ($aud -match ('"action":"(' + $a + ')"'))) { Fail "no audit record $a in docscan-results.json" }
+}
+# the commands in the machine PATH: docscan-web / docscan-watcher / docscan-updater from a new console
+$mpath = @([Environment]::GetEnvironmentVariable("Path", "Machine") -split ";")
+foreach ($d in "watcher", "web", "updater") {
+  if ($mpath -notcontains "$env:ProgramW6432\DocScan\$d") { Fail "PATH: no $env:ProgramW6432\DocScan\$d" }
+}
+$env:Path = ($mpath -join ";")
+$wc = Get-Command docscan-web -EA SilentlyContinue
+if (-not $wc) { Fail "docscan-web is not found through PATH" } else { "PATH: docscan-watcher, docscan-web, docscan-updater - ok" }
+"audit: installer and service records - ok (" + (@($aud | % { ([regex]'"action":"([^"]+)"').Match($_).Groups[1].Value }) -join ", ") + ")"
 # the web interface: service DocScanWeb, a trusted certificate for 127.0.0.1 (no -SkipCertificateCheck: Windows must
 # trust it), the temporary password for Administrators only, sign-in -> forced password change, the audit record
 $wsv = Get-CimInstance Win32_Service -Filter "Name='DocScanWeb'"
@@ -232,6 +248,7 @@ if (Test-Path $log) { "--- watcher.log (tail)"; Get-Content $log -Tail 6 | % { "
 
 # remove DocScan again: the stand stays clean for the next run
 & powershell -NoProfile -ExecutionPolicy Bypass -File "$env:ProgramW6432\DocScan\uninstall.ps1" -Purge 2>&1 | % { "  $_" }
+if (@([Environment]::GetEnvironmentVariable("Path", "Machine") -split ";") -match [regex]::Escape("$env:ProgramW6432\DocScan\")) { Fail "uninstall left DocScan folders in the machine PATH" }
 if (@(Get-ChildItem Cert:\LocalMachine\Root | ? { $_.Subject -like "CN=DocScan Web 127.0.0.1*" }).Count) { Fail "uninstall left the web certificate in the trusted root store" }
 Remove-Item $Work -Recurse -Force -EA SilentlyContinue
 if ($failed) { "RESULT: FAIL"; exit 1 }

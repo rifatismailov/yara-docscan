@@ -31,6 +31,15 @@
       "problemMatcher": []
     },
     {
+      // the CI server (Proxmox / Forgejo) is off: this Mac builds and tests on the first reachable Windows candidate
+      // of config.yaml (win10-2); a test run only - no push, no release
+      "label": "DocScan CI local, no server (win10-2)",
+      "type": "shell",
+      "command": "go run -C docscan-project/ci/cirun . --local",
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true },
+      "problemMatcher": []
+    },
+    {
       "label": "DocScan CI without publishing (the server is not changed)",
       "type": "shell",
       "command": "go run -C docscan-project/ci/cirun .",

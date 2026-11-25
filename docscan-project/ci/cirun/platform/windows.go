@@ -232,7 +232,7 @@ func (w *Windows) Build(ctx context.Context) (StepResult, error) {
 		if err != nil {
 			break
 		}
-		err = w.t.Upload(ctx, b, w.repo+`\docscan-project\watcher-go\`+strings.ReplaceAll(rel, "/", `\`))
+		err = w.t.Upload(ctx, b, w.repo+`\docscan-project\services\`+strings.ReplaceAll(rel, "/", `\`))
 		sizes += fmt.Sprintf(" %s %d bytes;", rel, len(b))
 	}
 	if err != nil {
@@ -740,7 +740,7 @@ $snap = Get-Content '`+work+`\snap.json' -Raw | ConvertFrom-Json
 $res = "$env:ProgramData\DocScan\results"
 $cv = @(); if (Test-Path "$w\corpus-verdicts.tsv") { $cv = @("--corpus-verdicts", "$w\corpus-verdicts.tsv") }
 $co = @(); if ($snap.critical_on) { $co = @("--critical-on") }
-& $py docscan-project\ci\check_watcher.py --results "$res\docscan-results.json" --results-offset $snap.results --log "$res\watcher.log" --log-offset $snap.log --inbox '`+inbox+`' --src '`+work+`\src' --watcher docscan-project\watcher-go\config.go --expected docscan-project\ci\expected-verdicts.tsv @cv @co --records "$w\combat-records.json" --report "$w\combat-report.txt"
+& $py docscan-project\ci\check_watcher.py --results "$res\docscan-results.json" --results-offset $snap.results --log "$res\watcher.log" --log-offset $snap.log --inbox '`+inbox+`' --src '`+work+`\src' --watcher docscan-project\services\cmd\watcher\config.go --expected docscan-project\ci\expected-verdicts.tsv @cv @co --records "$w\combat-records.json" --report "$w\combat-report.txt"
 $rc = $LASTEXITCODE
 # the watcher log of the test (from the snapshot on)
 $in = [IO.File]::Open("$res\watcher.log", 'Open', 'Read', 'ReadWrite'); $o = [long]$snap.log; if ($o -gt $in.Length) { $o = 0 }

@@ -1,0 +1,252 @@
+package main
+
+import (
+	"archive/zip"
+	"bytes"
+	"crypto/ed25519"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"docscan/services/pkg/manifest"
+)
+
+// rulesRelease — підписаний реліз правил: пакет, маніфест, підпис, пакет для ручного встановлення.
+type rulesRelease struct {
+	pkg, data, sig, bundle []byte
+}
+
+func makeRules(t *testing.T, seed, version, extra string) *rulesRelease {
+	files := map[string][]byte{
+		"docscan-index.yar": []byte("include \"general/a.yar\"\n" + extra),
+		"VERSION.txt":       []byte("DocScan rules " + version + " (commit abc)\r\n"),
+		"general/a.yar":     []byte("rule a { condition: true }\n"),
+	}
+	r := &rulesRelease{pkg: zipOf(files)}
+	m := manifest.Manifest{Schema: manifest.Schema, Product: manifest.ProductRules, Version: version, Build: "b", Commit: "c",
+		Created: "2026-11-19T10:00:00Z", Files: map[string]string{}}
+	for n, b := range files {
+		h := sha256.Sum256(b)
+		m.Files[n] = hex.EncodeToString(h[:])
+	}
+	h := sha256.Sum256(r.pkg)
+	m.Package = manifest.File{Name: "DocScan-rules.zip", Size: int64(len(r.pkg)), SHA256: hex.EncodeToString(h[:])}
+	r.data, _ = json.MarshalIndent(m, "", "  ")
+	s, err := manifest.Sign(r.data, seed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.sig = []byte(s)
+	var b bytes.Buffer
+	w := zip.NewWriter(&b)
+	for n, c := range map[string][]byte{"rules-manifest.json": r.data, "rules-manifest.sig": r.sig, "DocScan-rules.zip": r.pkg} {
+		o, _ := w.Create(n)
+		o.Write(c)
+	}
+	w.Close()
+	r.bundle = b.Bytes()
+	return r
+}
+
+func serveRules(r *rulesRelease) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, q *http.Request) {
+		switch filepath.Base(q.URL.Path) {
+		case "rules-manifest.json":
+			w.Write(r.data)
+		case "rules-manifest.sig":
+			w.Write(r.sig)
+		case "DocScan-rules.zip":
+			w.Write(r.pkg)
+		default:
+			http.NotFound(w, q)
+		}
+	})
+}
+
+// fakeSvc: Start пише в watcher.log "start: watching", а якщо в правилах є BROKEN — рядок помилки (watcher не стартував).
+type fakeSvc struct {
+	u      *Updater
+	starts int
+}
+
+func (f *fakeSvc) Stop(string) error { return nil }
+func (f *fakeSvc) Start(string) error {
+	f.starts++
+	idx, _ := os.ReadFile(filepath.Join(f.u.rulesDir(), "docscan-index.yar"))
+	line := "2026-11-19 12:00:00 [INFO] start: watching C:\\Users\r\n"
+	if strings.Contains(string(idx), "BROKEN") {
+		line = "2026-11-19 12:00:00 [ERROR] the rules do not compile\r\n"
+	}
+	p := filepath.Join(f.u.dataDir, "results", "watcher.log")
+	os.MkdirAll(filepath.Dir(p), 0o755)
+	fh, _ := os.OpenFile(p, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	fh.WriteString(line)
+	fh.Close()
+	return nil
+}
+
+func rulesEnv(t *testing.T) (*env, string, *fakeSvc, *httptest.Server) {
+	srv := httptest.NewServer(http.NotFoundHandler())
+	t.Cleanup(srv.Close)
+	e, seed := newEnv(t, srv.URL, "v1.0.4")
+	f := &fakeSvc{u: e.u}
+	e.u.svc, e.u.poll = f, 10*time.Millisecond
+	e.u.compiler = func(dir string) error {
+		if b, _ := os.ReadFile(filepath.Join(dir, "docscan-index.yar")); strings.Contains(string(b), "NOCOMPILE") {
+			return os.ErrInvalid
+		}
+		return nil
+	}
+	e.u.cfg.Rules.GitHub.Repo = DefaultRulesRepo
+	// правила з пакета програми (до окремих правил): без VERSION.txt
+	os.MkdirAll(e.u.rulesDir(), 0o755)
+	os.WriteFile(filepath.Join(e.u.rulesDir(), "docscan-index.yar"), []byte("old"), 0o644)
+	return e, seed, f, srv
+}
+
+func TestRulesUpdateAndRollback(t *testing.T) {
+	e, seed, f, srv := rulesEnv(t)
+	srv.Config.Handler = serveRules(makeRules(t, seed, "v1.0.1", ""))
+	if o := e.u.checkRules(&Request{Component: "rules"}, false, time.Now()); o.Status != "done" {
+		t.Fatalf("check: %+v", o)
+	}
+	if e.u.installedRules() != "v1.0.1" || !exists(e.u.rulesDir()+".prev") || f.starts != 1 {
+		t.Fatalf("installed %q prev %v starts %d", e.u.installedRules(), exists(e.u.rulesDir()+".prev"), f.starts)
+	}
+	r := e.records(t)
+	if len(r) != 1 || r[0].Status != "success" || r[0].Component != "rules" || r[0].To != "v1.0.1" {
+		t.Fatalf("records: %+v", r)
+	}
+	// ті самі — нічого
+	if o := e.u.checkRules(&Request{Component: "rules"}, false, time.Now()); o.Status != "current" {
+		t.Fatalf("again: %+v", o)
+	}
+	// компілюються, але watcher з ними не стартує -> відкат на v1.0.1
+	srv.Config.Handler = serveRules(makeRules(t, seed, "v1.0.2", "BROKEN"))
+	e.u.checkRules(&Request{Component: "rules"}, false, time.Now())
+	if e.u.installedRules() != "v1.0.1" {
+		t.Fatalf("after rollback installed %q", e.u.installedRules())
+	}
+	if r = e.records(t); r[len(r)-1].Status != "rollback" {
+		t.Fatalf("records: %+v", r)
+	}
+	// не компілюються -> не ставляться взагалі (watcher не зупиняється)
+	starts := f.starts
+	srv.Config.Handler = serveRules(makeRules(t, seed, "v1.0.3", "NOCOMPILE"))
+	e.u.checkRules(&Request{Component: "rules"}, false, time.Now())
+	if e.u.installedRules() != "v1.0.1" || f.starts != starts {
+		t.Fatalf("no-compile: installed %q starts %d->%d", e.u.installedRules(), starts, f.starts)
+	}
+	if r = e.records(t); r[len(r)-1].Status != "failed" {
+		t.Fatalf("records: %+v", r)
+	}
+	// невдалі версії періодична перевірка не повторює
+	srv.Config.Handler = serveRules(makeRules(t, seed, "v1.0.2", "BROKEN"))
+	if o := e.u.checkRules(&Request{Component: "rules"}, false, time.Now()); o.Status != "current" {
+		t.Fatalf("failed version retried: %+v", o)
+	}
+}
+
+func TestInstallRulesFile(t *testing.T) {
+	e, seed, f, _ := rulesEnv(t)
+	dir := t.TempDir()
+	good := filepath.Join(dir, "DocScan-rules-bundle.zip")
+	os.WriteFile(good, makeRules(t, seed, "v1.0.5", "").bundle, 0o644)
+	msg, err := e.u.installRulesFile(good)
+	if err != nil || e.u.installedRules() != "v1.0.5" || f.starts != 0 {
+		t.Fatalf("install: %q %v installed %q starts %d", msg, err, e.u.installedRules(), f.starts)
+	}
+	// чужий ключ
+	_, other, _ := ed25519.GenerateKey(rand.Reader)
+	bad := filepath.Join(dir, "bad.zip")
+	os.WriteFile(bad, makeRules(t, base64.StdEncoding.EncodeToString(other.Seed()), "v1.0.6", "").bundle, 0o644)
+	if _, err := e.u.installRulesFile(bad); err == nil || !strings.Contains(err.Error(), "signature") {
+		t.Fatalf("foreign key: %v", err)
+	}
+	// старіші — ні
+	old := filepath.Join(dir, "old.zip")
+	os.WriteFile(old, makeRules(t, seed, "v1.0.4", "").bundle, 0o644)
+	if _, err := e.u.installRulesFile(old); err == nil {
+		t.Fatal("older rules installed")
+	}
+	// не пакет правил (просто zip)
+	plain := filepath.Join(dir, "plain.zip")
+	os.WriteFile(plain, zipOf(map[string][]byte{"x.yar": []byte("rule x { condition: true }")}), 0o644)
+	if _, err := e.u.installRulesFile(plain); err == nil {
+		t.Fatal("a plain zip accepted")
+	}
+	if e.u.installedRules() != "v1.0.5" {
+		t.Fatalf("installed changed to %q", e.u.installedRules())
+	}
+}
+
+// critical\*.yar of a rules package: compiled together by yara64 (here: the yara built in the repository root)
+func TestCompileCritical(t *testing.T) {
+	yara, _ := filepath.Abs("../../../../yara")
+	if st, err := os.Stat(yara); err != nil || !st.Mode().IsRegular() {
+		t.Skip("no ./yara in the repository root")
+	}
+	e, _ := newEnv(t, "https://unused.invalid/", "v1.0.0")
+	os.MkdirAll(filepath.Join(e.u.installDir, "bin"), 0o755)
+	if err := os.Symlink(yara, filepath.Join(e.u.installDir, "bin", "yara64.exe")); err != nil {
+		t.Skip(err)
+	}
+	os.MkdirAll(e.u.work(), 0o755)
+	dir := t.TempDir()
+	if err := e.u.compileCritical(filepath.Join(dir, "none")); err != nil {
+		t.Fatalf("no critical folder: %v", err)
+	}
+	os.WriteFile(filepath.Join(dir, "zsu.yar"), []byte(`rule a { strings: $x = "abc" condition: $x }`), 0o644)
+	os.WriteFile(filepath.Join(dir, "bank.yar"), []byte(`rule a { condition: false }`), 0o644) // same name, another file: own namespace
+	if err := e.u.compileCritical(dir); err != nil {
+		t.Fatalf("good set: %v", err)
+	}
+	os.WriteFile(filepath.Join(dir, "keys.yar"), []byte(`rule k { condition: nonsense }`), 0o644)
+	if err := e.u.compileCritical(dir); err == nil || !strings.Contains(err.Error(), "keys.yar") {
+		t.Fatalf("broken file: %v", err)
+	}
+}
+
+// the local policy of the PC goes over the package one after a rules update; one that does not compile with the new
+// rules -> the package policy stays (protection is not lost)
+func TestApplyLocalPolicy(t *testing.T) {
+	d := t.TempDir()
+	u := &Updater{dataDir: filepath.Join(d, "data"), installDir: d, log: &logger{file: filepath.Join(d, "u.log")}}
+	dir := filepath.Join(d, "staged")
+	os.MkdirAll(dir, 0o755)
+	os.WriteFile(filepath.Join(dir, policyName), []byte("package policy"), 0o644)
+	if u.applyLocalPolicy(dir) != "" {
+		t.Fatal("no local policy: nothing to do")
+	}
+	os.MkdirAll(filepath.Join(u.dataDir, "policy"), 0o755)
+	os.WriteFile(u.localPolicy(), []byte("local policy"), 0o644)
+	u.compiler = func(string) error { return nil }
+	if n := u.applyLocalPolicy(dir); n != "local policy applied" {
+		t.Fatal(n)
+	}
+	if b, _ := os.ReadFile(filepath.Join(dir, policyName)); string(b) != "local policy" {
+		t.Fatal("local policy not in place")
+	}
+	if b, _ := os.ReadFile(filepath.Join(dir, policyPackageName)); string(b) != "package policy" {
+		t.Fatal("package policy not kept")
+	}
+	os.WriteFile(filepath.Join(dir, policyName), []byte("package policy"), 0o644)
+	os.Remove(filepath.Join(dir, policyPackageName))
+	u.compiler = func(string) error { return errors.New("syntax error") }
+	if n := u.applyLocalPolicy(dir); !strings.Contains(n, "package policy is in force") {
+		t.Fatal(n)
+	}
+	if b, _ := os.ReadFile(filepath.Join(dir, policyName)); string(b) != "package policy" {
+		t.Fatal("a broken local policy must not stay")
+	}
+}

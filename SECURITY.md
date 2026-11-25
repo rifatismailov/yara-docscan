@@ -29,8 +29,19 @@ The local web interface
 -----------------------
 
 `docscan-web.exe` (service `DocScanWeb`) listens only on `127.0.0.1` over HTTPS. It checks the `Host` header
-against DNS rebinding. Sign-in is the `admin` account; the password is generated at install and must be changed at
-the first sign-in. Every form needs a CSRF token, and every action is audited to Wazuh. It never scans or deletes
+against DNS rebinding. Sign-in is the `admin` account.
+
+The temporary password works like this:
+- it is generated at install and kept only in a file readable by Administrators;
+- the installer never prints it, so installer logs do not hold it;
+- it is valid for 24 hours, then it stops working and the file is deleted;
+- it must be changed at the first sign-in.
+
+Repeated failed sign-ins lock the sign-in for a while. Every form needs a CSRF token.
+
+What is audited to Wazuh: every action, failed and locked sign-ins, password resets (also from the command line),
+install / update / removal, service stops and settings changed outside the web interface. Each record names the
+Windows account behind the action. It never scans or deletes
 anything itself: it writes settings and request files into `C:\ProgramData\DocScan`, which only SYSTEM and
 Administrators can access, and the services act on them. Anything that lets a non-administrator or another machine
 reach it, or act through it, is a vulnerability — please report it as above.

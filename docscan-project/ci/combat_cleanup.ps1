@@ -2,8 +2,7 @@
 # Removes everything the test brought to the machine: the feeder task, the test files in the inbox, the
 # unpacked malware and samples (<Work>), the backups / quarantined copies and the macro files the test
 # created (compared with <Work>\snap.json), and the lines the test added to the E5Search queue.
-# DocScan itself stays installed and running (updated to the tested build), docscan-results.json and
-# watcher.log keep their lines (a record of what happened).
+# Then DocScan itself is removed (clean_docscan.ps1): a stand never keeps DocScan between runs.
 
 param(
   [Parameter(Mandatory)][string]$Work,
@@ -38,3 +37,5 @@ if (Test-Path $snapF) {
 Get-ChildItem -LiteralPath $Inbox -Force -EA 0 | Remove-Item -Recurse -Force -EA 0
 Remove-Item $Work -Recurse -Force -EA 0
 "inbox empty: " + (-not (Get-ChildItem -LiteralPath $Inbox -Force -EA 0)) + "; work folder removed: " + (-not (Test-Path $Work))
+# DocScan itself goes too: the stand is clean for the next run
+& powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot "clean_docscan.ps1") -DataDir $DataDir 2>&1 | % { "  $_" }

@@ -26,7 +26,7 @@
 #      ossec.conf on a configuration error;
 #   7) registers the Windows service "DocScan Watcher" (DocScanWatcher): automatic start with Windows, as SYSTEM,
 #      restarted by Windows after every failure; and starts it. The service is watcher\docscan-watcher.exe (Go:
-#      parallel scans, the pool grows with the load - see watcher-go\README.md); -Workers N = a fixed number of
+#      parallel scans, the pool grows with the load - see docscan-project\DOCSCAN.md#watcher); -Workers N = a fixed number of
 #      parallel scans. -WatcherEngine ps = the old PowerShell script, run by the scheduled task "DocScan Watcher"
 #      (a script cannot be a service). A task left by an older version is removed.
 #   3b) rules: -Rules <bundle> (signed rules release of yara-docscan-rules, verified by docscan-updater.exe); without
@@ -41,7 +41,8 @@
 #      only releases signed by the DocScan CI, never an older version, and rolls back when the new one does not start.
 #   9) the web interface "DocScan Web" (DocScanWeb, web\docscan-web.exe): https://127.0.0.1:<-WebPort 8741>/, HTTPS with
 #      a certificate made here and trusted by Windows (only 127.0.0.1 / localhost, not a CA), user admin with a
-#      generated password (shown once, also in <DataDir>\web\initial-password.txt until the first sign-in). -NoWeb - none.
+#      generated temporary password in <DataDir>\web\initial-password.txt (Administrators only; NOT printed - installer
+#      output ends up in GPO / RMM logs), valid 24 h or until the first sign-in. -NoWeb - none.
 # Running it again = update (the previous rules are kept in rules.prev\). The parameters of every install are kept in
 # <DataDir>\install.json: -Reuse repeats them (the updater runs install.ps1 -Reuse -ResultFile <json>, so the PC keeps
 # its mode: -DetectOnly, -WatchPath, -Workers, ...). The installed package stays in <DataDir>\update\packages\<version>
@@ -169,6 +170,17 @@ function Remove-LegacyArBlocks([string]$c) {
 }
 function Read-Text([string]$p) { return [IO.File]::ReadAllText($p, (New-Object Text.UTF8Encoding($false))) }
 function Write-Text([string]$p, [string]$t) { [IO.File]::WriteAllText($p, $t, (New-Object Text.UTF8Encoding($false))) }
+# audit record (event "Admin", like the web's) -> docscan-results.json -> Wazuh: who installed / updated DocScan and how
+function Write-AdminRecord([string]$action, [string]$detail) {
+  $via = if ($Reuse -and [Security.Principal.WindowsIdentity]::GetCurrent().IsSystem) { "updater" } else { "installer" }
+  $rec = [ordered]@{ timestamp = (Get-Date).ToString("yyyy-MM-ddTHH:mm:ss.fffzzz"); source = "docscan"; host = $env:COMPUTERNAME; event = "Admin"
+    admin = [ordered]@{ user = "-"; action = $action; detail = $detail; via = $via; windows_user = "$env:USERDOMAIN\$env:USERNAME" } }
+  try {
+    $f = Join-Path $DataDir "results\docscan-results.json"
+    New-Item -ItemType Directory -Force (Split-Path $f) | Out-Null
+    [IO.File]::AppendAllText($f, ($rec | ConvertTo-Json -Compress -Depth 4) + "`n", (New-Object Text.UTF8Encoding($false)))
+  } catch { Write-Host "  audit record: $($_.Exception.Message)" -ForegroundColor Yellow }
+}
 
 
 # --- 0. administrator rights ---
@@ -277,7 +289,7 @@ foreach ($d in "bin", "rules", "watcher", "updater", "web") {
 }
 Copy-Item (Join-Path $Pkg "uninstall.ps1") $InstallDir -Force
 Copy-Item (Join-Path $Pkg "VERSION.txt") $InstallDir -Force -EA SilentlyContinue
-# critical-information rules: part of the rules package (rules\critical\*.yar, any number of files - CRITICAL-RULES.md);
+# critical-information rules: part of the rules package (rules\critical\*.yar, any number of files - docscan-project/DOCSCAN.md#critical);
 # the separate <InstallDir>\critical\critical-rules.yar of older versions is not used any more
 $critRules = "$InstallDir\rules\critical"
 if (Test-Path -LiteralPath "$InstallDir\critical") {
@@ -722,7 +734,23 @@ if (-not $NoWeb -and (Test-Path -LiteralPath $webExe)) {
   Get-ChildItem Cert:\LocalMachine\Root | ? { $_.Subject -like "CN=DocScan Web 127.0.0.1*" } | Remove-Item -EA SilentlyContinue
 }
 
+# --- 10. the DocScan commands in the machine PATH: docscan-web -ResetPassword, docscan-watcher -ScanPath E:\,
+# docscan-updater -Once from any new console. Only the folders with one exe each - not bin\ (vcruntime140.dll there
+# must not leak into other programs' DLL search). The folders are under Program Files: only Administrators can write.
+$pathDirs = @("watcher", "web", "updater") | % { Join-Path $InstallDir $_ } | ? { Test-Path -LiteralPath (Join-Path $_ "*.exe") }
+$mp = [Environment]::GetEnvironmentVariable("Path", "Machine")
+$parts = @($mp -split ";" | ? { $_ })
+$add = @($pathDirs | ? { $parts -notcontains $_ })
+if ($add.Count) {
+  [Environment]::SetEnvironmentVariable("Path", (($parts + $add) -join ";"), "Machine")
+  Step ("commands in PATH (new consoles): " + (($add | % { Split-Path $_ -Leaf }) -join ", "))
+}
+$env:Path = [Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [Environment]::GetEnvironmentVariable("Path", "User")
+
 Write-Result $true ""
+Write-AdminRecord $(if ($prevInstall) { "docscan-updated" } else { "docscan-installed" }) ("$verTitle" + $(if ($prevInstall) { " (was: $($prevInstall.installed))" } else { "" }) +
+  "; mode " + $(if ($DetectOnly) { "detect-only" } else { "full" }) + "; watching " + ($WatchPath -join ", ") +
+  "; updates " + $(if ($updMode) { $updMode } else { "-" }) + "; web " + $(if ($webOn) { "on" } else { "off" }) + $(if ($UpdateConfig) { "; updater.json from -UpdateConfig" } else { "" }))
 Write-Host ""
 Write-Host "DocScan installed." -ForegroundColor Green
 Write-Host "  program:    $InstallDir"
@@ -741,11 +769,13 @@ $rv = if (Test-Path "$InstallDir\rules\VERSION.txt") { [string](Get-Content "$In
 Write-Host "  rules:      $InstallDir\rules ($rv)"
 Write-Host ("  lists:      white " + $(if (Test-Path -LiteralPath $whiteFile) { $whiteFile } else { "-" }) + ", black " + $(if (Test-Path -LiteralPath $blackFile) { $blackFile } else { "-" }) + $(if ($listsUrlNow) { "; updated daily from $listsUrlNow" } else { "" }))
 Write-Host ("  updates:    " + $(if ((Test-Path -LiteralPath $updExe) -and ($updMode -ne "off" -or $listsUrlNow)) { "service $UpdSvc, mode $updMode ($updCfg); records: $DataDir\results\docscan-updates.json" } else { "off" }))
+Write-Host "  commands:   docscan-watcher, docscan-web, docscan-updater (in PATH; open a new console)"
 if ($webOn) {
   Write-Host "  web:        $webUrl  (user admin)"
   if ($webPw) {
-    Write-Host "              password: $webPw" -ForegroundColor Yellow
-    Write-Host "              temporary: change it at the first sign-in; until then it is also in $webDir\initial-password.txt (Administrators only)"
-  } else { Write-Host "              password unchanged (forgot it: '$webExe' -ResetPassword)" }
+    # the password itself is NOT printed: an installer run by GPO / RMM / Wazuh keeps its output in the logs of that tool
+    Write-Host "              temporary password: in $webDir\initial-password.txt (Administrators only), valid 24 h;" -ForegroundColor Yellow
+    Write-Host "              DocScan asks for a new one at the first sign-in and deletes the file (expired: docscan-web -ResetPassword)"
+  } else { Write-Host "              password unchanged (forgot it: docscan-web -ResetPassword, as administrator)" }
 } else { Write-Host "  web:        off$(if ($NoWeb) { ' (-NoWeb)' })" }
 Write-Host "  uninstall:  powershell -ExecutionPolicy Bypass -File '$InstallDir\uninstall.ps1'"

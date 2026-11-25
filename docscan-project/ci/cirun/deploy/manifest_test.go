@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"docscan/watcher/manifest"
+	"docscan/services/pkg/manifest"
 )
 
 // Sign: manifest.json з хешами файлів пакета, підпис перевіряється кодом updater-а; чужий ключ — відмова.
