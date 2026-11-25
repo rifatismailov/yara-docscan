@@ -83,7 +83,6 @@ func main() {
 	release := flag.Bool("release", false, "after a green, pushed run: GitHub release vX.Y.Z (package + installer scripts)")
 	bump := flag.String("bump", "patch", "release number part to increase: patch (v1.0.1), minor (v1.1.0) or major (v2.0.0)")
 	rulesVer := flag.String("rules", "latest", "rules release of github.com/rifatismailov/yara-docscan-rules to build and test with (latest | vX.Y.Z)")
-	watch := flag.Bool("watch", false, "pipeline mode forgejo: wait for the Forgejo run and print its result (default: start it and exit)")
 	releaseRun := flag.String("release-run", "", "the GitHub release of an earlier green, pushed run (a folder with its Windows package DocScan-<version>.zip): first the combat test on --machine with that package, the release only if it is green")
 	local := flag.Bool("local", false, "local mode whatever pipeline.mode says: this Mac builds and tests on the first reachable Windows candidate (e.g. win10-2 while the CI server is off); never pushes or releases")
 	machine := flag.String("machine", "vm-win10", "--release-run / --combat: the Windows machine (platforms.windows.candidates[].name) for the combat test")
@@ -225,7 +224,7 @@ func main() {
 		say("--combat: the combat test runs only in the local mode - this run goes from this Mac to the Windows machine of platforms.windows, not through Forgejo")
 	}
 	if cfg.Pipeline.Mode == "forgejo" && !*combat {
-		os.Exit(runForgejo(ctx, cfg, sec, o, src, sha, branch, *release, *bump, *fuzz, *watch, started))
+		os.Exit(runForgejo(ctx, cfg, sec, o, src, sha, branch, *release, *bump, *fuzz, started))
 	}
 	say("build %s (%s) on: %s   fuzzing %ds", sha[:8], branch, strings.Join(o.Plan(), ", "), *fuzz)
 	green := o.Build(ctx, src)

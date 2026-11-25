@@ -6,9 +6,8 @@ package main
 //	2. macOS tar.gz -> сховок Forgejo (docscan-builds/<коміт>) — для релізу;
 //	3. git push коміту в Forgejo (гілка прогону; токен — через змінні середовища git);
 //	4. запуск workflow pipeline.yml (sha, release, bump, версія тестових файлів, результат macOS, фазинг);
-//	5. без --watch — кінець: далі Forgejo працює сам (результат — у прогоні й статусах коміту);
-//	   з --watch — стеження: зміни стану завдань і статуси коміту cirun/<стенд> одразу в термінал; у кінці — зведення
-//	   [CI/CD] ... / [RESULT] ... / [GIT] ... і код виходу (0 — зелено й запушено, 1 — ні).
+//	5. кінець: далі Forgejo працює сам — стенди, звіт, push на GitHub і реліз (якщо зелено); результат — у прогоні
+//	   і в статусах коміту (cirun/<стенд>, cirun/result, cirun/publish).
 
 import (
 	"context"
@@ -28,7 +27,7 @@ import (
 )
 
 func runForgejo(ctx context.Context, cfg *config.Config, sec *config.Resolver, o *orchestrator.Orchestrator,
-	src platform.Source, sha, branch string, release bool, bump string, fuzz int, watch bool, started time.Time) int {
+	src platform.Source, sha, branch string, release bool, bump string, fuzz int, started time.Time) int {
 	finish := func(ok bool, text string) int {
 		abs, _ := filepath.Abs(o.RunDir)
 		say("\nRESULT: %s   (%d min)   artifacts: %s   %s", map[bool]string{true: "SUCCESS", false: "FAILURE"}[ok],
@@ -86,103 +85,10 @@ func runForgejo(ctx context.Context, cfg *config.Config, sec *config.Resolver, o
 		return finish(false, "start the Forgejo workflow: "+err.Error())
 	}
 	say("[CI/CD] Forgejo run: %s   jobs: %s", fj.RunURL(run), strings.Join(run.Jobs, ", "))
-	if !watch {
-		// далі Forgejo працює сам: стенди, звіт, push на GitHub і реліз (якщо зелено); результат — у прогоні
-		// і в статусах коміту (cirun/<стенд>, cirun/result, cirun/publish); стежити: cirun --watch
-		say("[CI/CD] the stands, the report and the GitHub push / release go on in Forgejo without this Mac")
-		abs, _ := filepath.Abs(o.RunDir)
-		say("\nRESULT: STARTED   (%d min)   macOS OK, Forgejo run: %s   artifacts: %s", int(time.Since(started).Minutes()), fj.RunURL(run), abs)
-		return 0
-	}
-
-	// 5. стеження
-	lastJob := map[string]string{}
-	lastSt := map[string]string{}
-	status := ""
-	for status == "" {
-		select {
-		case <-ctx.Done():
-			return finish(false, "interrupted (the Forgejo run goes on: "+fj.RunURL(run)+")")
-		case <-time.After(15 * time.Second):
-		}
-		st, jobs, err := fj.RunState(ctx, run.ID)
-		if err != nil {
-			say("    (Forgejo: %v)", err)
-			continue
-		}
-		for _, j := range jobs {
-			if lastJob[j.Name] != j.Status {
-				lastJob[j.Name] = j.Status
-				say("    job %-8s %-10s %s", j.Name, j.Status, time.Since(started).Round(time.Second))
-			}
-		}
-		if cs, err := fj.Statuses(ctx, sha); err == nil {
-			for _, c := range cs {
-				if strings.HasPrefix(c.Context, "cirun/") && lastSt[c.Context] != c.Description {
-					lastSt[c.Context] = c.Description
-					say("%s", statusLine(c))
-				}
-			}
-		}
-		switch st {
-		case "success", "failure", "cancelled", "skipped":
-			status = st
-		}
-	}
-
-	// зведення
-	cs, _ := fj.Statuses(ctx, sha)
-	say("\n%s", strings.Repeat("-", 80))
-	say("[CI/CD] macOS (local)                    -> OK       (%s)", macDetail)
-	var result, pub *forgejo.CommitStatus
-	for i := range cs {
-		c := &cs[i]
-		switch c.Context {
-		case "cirun/result":
-			result = c
-		case "cirun/publish":
-			pub = c
-		default:
-			if strings.HasPrefix(c.Context, "cirun/") {
-				say("%s", statusLine(*c))
-			}
-		}
-	}
-	say("%s", strings.Repeat("-", 80))
-	if result != nil {
-		_, st, detail := splitStatus(result.Description)
-		say("[RESULT] %s (%s)", detail, st)
-	}
-	ok := status == "success"
-	tail := "run " + status + ": " + fj.RunURL(run)
-	if pub != nil {
-		_, st, detail := splitStatus(pub.Description)
-		say("[GIT]    %s: %s", st, detail)
-		if st == "OK" {
-			tail = "PUSHED  " + strings.ToUpper(strings.ReplaceAll(detail, "pushed ", ""))
-		}
-	} else {
-		say("[GIT]    not pushed to GitHub")
-	}
-	return finish(ok, tail)
-}
-
-// statusLine — статус стенда у форматі [CI/CD] <назва> (<ім'я>) -> STATUS (деталі).
-func statusLine(c forgejo.CommitStatus) string {
-	title, st, detail := splitStatus(c.Description)
-	name := strings.TrimPrefix(c.Context, "cirun/")
-	if name == "result" || name == "publish" {
-		return fmt.Sprintf("[%s] %s: %s", strings.ToUpper(name), st, detail)
-	}
-	return fmt.Sprintf("[CI/CD] %-34s -> %-8s (%s)", title+" ("+name+")", st, detail)
-}
-
-func splitStatus(d string) (title, state, detail string) {
-	p := strings.SplitN(d, "|", 3)
-	for len(p) < 3 {
-		p = append(p, "")
-	}
-	return p[0], p[1], p[2]
+	say("[CI/CD] the stands, the report and the GitHub push / release go on in Forgejo without this Mac")
+	abs, _ := filepath.Abs(o.RunDir)
+	say("\nRESULT: STARTED   (%d min)   macOS OK, Forgejo run: %s   artifacts: %s", int(time.Since(started).Minutes()), fj.RunURL(run), abs)
+	return 0
 }
 
 // uploadMacAsset кладе ci-out/<прогін>/macos/yara-darwin-arm64.tar.gz у сховок (docscan-builds/<коміт>).

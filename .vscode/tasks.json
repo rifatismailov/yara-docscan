@@ -2,7 +2,7 @@
   // DocScan: Cmd+Shift+B = "DocScan CI": commit, build + tests, push to GitHub if green - NO release.
   // ▷ (Code Runner, .vscode/settings.json) = the same + GitHub release vX.Y.Z.
   // Both end after the Mac check and the start of the Forgejo run: the stands, the report, the push and the release
-  // go on in Forgejo by themselves. "... wait for Forgejo" (--watch) follows the run here until its result.
+  // go on in Forgejo by themselves (the result is in the Forgejo run).
   // Terminal > Run Task... also has the local-only build/test.
   "version": "2.0.0",
   "tasks": [
@@ -57,13 +57,6 @@
       "label": "DocScan CI + GitHub release, minor (v1.0.x -> v1.1.0)",
       "type": "shell",
       "command": "go run -C docscan-project/ci/cirun . --release --bump minor",
-      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true },
-      "problemMatcher": []
-    },
-    {
-      "label": "DocScan CI + GitHub release, wait for Forgejo (--watch)",
-      "type": "shell",
-      "command": "go run -C docscan-project/ci/cirun . --release --watch",
       "presentation": { "reveal": "always", "panel": "dedicated", "clear": true },
       "problemMatcher": []
     },

@@ -747,7 +747,8 @@ if (-not $NoWeb -and (Test-Path -LiteralPath $webExe)) {
 # --- 10. the DocScan commands in the machine PATH: docscan-web -ResetPassword, docscan-watcher -ScanPath E:\,
 # docscan-updater -Once from any new console. Only the folders with one exe each - not bin\ (vcruntime140.dll there
 # must not leak into other programs' DLL search). The folders are under Program Files: only Administrators can write.
-$pathDirs = @("watcher", "web", "updater") | % { Join-Path $InstallDir $_ } | ? { Test-Path -LiteralPath (Join-Path $_ "*.exe") }
+# (-Path, not -LiteralPath: "*.exe" is a wildcard here)
+$pathDirs = @("watcher", "web", "updater") | % { Join-Path $InstallDir $_ } | ? { Test-Path -Path (Join-Path $_ "*.exe") }
 $mp = [Environment]::GetEnvironmentVariable("Path", "Machine")
 $parts = @($mp -split ";" | ? { $_ })
 $add = @($pathDirs | ? { $parts -notcontains $_ })

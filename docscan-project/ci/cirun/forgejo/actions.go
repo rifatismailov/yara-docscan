@@ -10,8 +10,8 @@ import (
 	"docscan/cirun/config"
 )
 
-// Конвеєр Forgejo Actions: ▷ на Маку запускає workflow і стежить за ним, завдання workflow ставлять статуси
-// коміту з результатом кожного стенда (cirun/<стенд>), а ▷ їх читає.
+// Конвеєр Forgejo Actions: ▷ на Маку запускає workflow і завершується; завдання workflow ставлять статуси коміту
+// з результатом кожного стенда (cirun/<стенд>) — їх видно у Forgejo.
 
 // NewClient — клієнт без config.Forgejo (у завданнях workflow): адреса, репозиторій, токен.
 func NewClient(baseURL, repo, token string) *Client {
@@ -48,60 +48,6 @@ func (c *Client) RunURL(r *Run) string {
 	return fmt.Sprintf("%s/%s/actions/runs/%d", strings.TrimRight(c.cfg.URL, "/"), c.cfg.Repo, n)
 }
 
-// Job — завдання прогону.
-type Job struct {
-	Name   string `json:"name"`
-	Status string `json:"status"` // waiting | running | success | failure | cancelled | skipped | blocked
-}
-
-// RunState — стан прогону і його завдань.
-func (c *Client) RunState(ctx context.Context, id int64) (status string, jobs []Job, err error) {
-	data, err := c.api(ctx, "GET", fmt.Sprintf("/actions/runs/%d", id), nil)
-	if err != nil {
-		return "", nil, err
-	}
-	var r struct {
-		Status string `json:"status"`
-	}
-	json.Unmarshal(data, &r)
-	if data, err = c.api(ctx, "GET", fmt.Sprintf("/actions/runs/%d/jobs", id), nil); err == nil {
-		jobs = listOf[Job](data, "jobs")
-	}
-	return r.Status, jobs, nil
-}
-
-// CommitStatus — статус коміту (context — cirun/<стенд>).
-type CommitStatus struct {
-	ID          int64  `json:"id"`
-	Context     string `json:"context"`
-	State       string `json:"status"`
-	Description string `json:"description"`
-}
-
-// Statuses — останній статус кожного context коміту sha.
-func (c *Client) Statuses(ctx context.Context, sha string) ([]CommitStatus, error) {
-	data, err := c.api(ctx, "GET", "/commits/"+sha+"/statuses?limit=50", nil)
-	if err != nil {
-		return nil, err
-	}
-	// найновіший статус кожного context — за id (статуси однієї секунди API віддає в довільному порядку)
-	latest := map[string]CommitStatus{}
-	var order []string
-	for _, s := range listOf[CommitStatus](data, "statuses") {
-		if cur, ok := latest[s.Context]; !ok {
-			order = append(order, s.Context)
-			latest[s.Context] = s
-		} else if s.ID > cur.ID {
-			latest[s.Context] = s
-		}
-	}
-	out := make([]CommitStatus, 0, len(order))
-	for _, c := range order {
-		out = append(out, latest[c])
-	}
-	return out, nil
-}
-
 // SetStatus ставить статус коміту: state pending | success | failure | warning | error.
 func (c *Client) SetStatus(ctx context.Context, sha, context_, state, desc, target string) error {
 	if len(desc) > 140 {
@@ -110,18 +56,6 @@ func (c *Client) SetStatus(ctx context.Context, sha, context_, state, desc, targ
 	_, err := c.api(ctx, "POST", "/statuses/"+sha, map[string]string{"state": state, "context": context_,
 		"description": desc, "target_url": target})
 	return err
-}
-
-// listOf розбирає відповідь, яка буває або списком [...], або об'єктом {"<key>": [...]}.
-func listOf[T any](data []byte, key string) []T {
-	var l []T
-	if json.Unmarshal(data, &l) == nil {
-		return l
-	}
-	var w map[string]json.RawMessage
-	json.Unmarshal(data, &w)
-	json.Unmarshal(w[key], &l)
-	return l
 }
 
 func config_(baseURL, repo string) config.Forgejo { return config.Forgejo{URL: baseURL, Repo: repo} }

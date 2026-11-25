@@ -33,7 +33,6 @@ git push на GitHub (push.remote) — ЗАВЖДИ, від Forgejo не зал�
 ```
 ▷ (Мак)  коміт + перевірка безпеки → macOS: збірка й тести локально → macOS tar.gz у сховок → push у Forgejo
          → запуск .forgejo/workflows/pipeline.yml → кінець (RESULT: STARTED); далі Forgejo працює сам
-         (--watch: ▷ чекає й друкує стан завдань і статус кожного стенда до кінця прогону)
 Forgejo  prepare: вимкнена ВМ стенда (vm:) → start через API Proxmox (токен лише VM.PowerMgmt + VM.Audit), чекати
          WinRM / SSH; srv2019 (sessions:) — менше count RDP-сесій <prefix>01.. → відкрити їх зі стенда from (rds_connect.ps1
          завданням планувальника в інтерактивній сесії; на стенді from — автовхід); ВМ після прогону не вимикаються
@@ -58,7 +57,6 @@ Forgejo  prepare: вимкнена ВМ стенда (vm:) → start через 
   Cmd+Shift+B = без релізу: етапи 1–2 (~45 хв), push на GitHub після зеленого прогону. Обидва
   завершуються одразу після запуску прогону в Forgejo: стежити не треба, результат — у прогоні Forgejo і в
   статусах коміту (`cirun/<стенд>`, `cirun/result`, `cirun/publish`); реліз з'являється на GitHub сам.
-  Задача «… wait for Forgejo (--watch)» — по-старому, з очікуванням і зведенням у терміналі.
 - Раннер `lan` — у контейнері поруч з Forgejo; усі завдання прогону ділять теку `~/ci-art/<прогін>` на ньому,
   тож пакет win11 доходить до інших стендів без сторонніх сховищ.
 - Адреси й облікові дані стендів — у секретах Forgejo: `CIRUN_CONFIG` (конфіг стендів з `env:`-посиланнями),
@@ -113,7 +111,6 @@ go run -C docscan-project/ci/cirun . --no-push           # не пушити к�
 go run -C docscan-project/ci/cirun . --local             # сервер CI вимкнений: Мак сам збирає і тестує на першій доступній Windows-ВМ (win10-2); без push і релізу
 go run -C docscan-project/ci/cirun . --push-only         # лише git push HEAD на GitHub (після зеленого прогону)
 go run -C docscan-project/ci/cirun . --rules v1.2.3      # з цим релізом правил (за замовчуванням latest)
-go run -C docscan-project/ci/cirun . --watch             # режим forgejo: чекати кінця прогону Forgejo і друкувати стан
 go run -C docscan-project/ci/cirun . -h                  # усі прапорці
 ```
 
@@ -408,7 +405,7 @@ sudo apt install -y build-essential autoconf automake libtool pkg-config flex bi
 `.vscode/tasks.json` уже в репозиторії:
 - **▷** (Code Runner, `.vscode/settings.json`) → `cirun --release`: прогін і після зеленого — push і реліз vX.Y.Z;
 - **Cmd+Shift+B** → «DocScan CI»: той самий прогін без релізу (push на GitHub після зеленого — так само);
-- *Terminal → Run Task…* → «DocScan CI + GitHub release …» (`--release`, `--bump minor`, `--watch`),
+- *Terminal → Run Task…* → «DocScan CI + GitHub release …» (`--release`, `--bump minor`),
   «DocScan CI (no fuzzing)», «DocScan local: build + tests on this Mac (no push)», «Rules: check …», «Rules: release …».
 
 Адресу Forgejo і токени `cirun` бере з `config.yaml` (розділи `forgejo`, `pipeline`, посилання на KeePassXC).
@@ -422,8 +419,8 @@ sudo apt install -y build-essential autoconf automake libtool pkg-config flex bi
    Винятки — `skipChecks` у `gitops/git.go` (згенеровані vendor-правила; самі правила тепер у окремому репозиторії,
    а `docscan-project/rules/` — у `.gitignore`).
 3. Далі в терміналі: машина кожної платформи, кожен крок з результатом і відсотком; режим `local` — після
-   зеленого push на GitHub; режим `forgejo` — після зеленого macOS запуск прогону Forgejo і кінець (з `--watch` —
-   очікування його результату).
+   зеленого push на GitHub; режим `forgejo` — після зеленого macOS запуск прогону Forgejo і кінець (результат —
+   у прогоні Forgejo).
 4. Наприкінці — `RESULT: SUCCESS/FAILURE`, підсумок по системах і артефакти в `ci-out/run-<час>/`
    (`windows/DocScan-<дата>-<коміт>.zip` — готовий пакет; `macos/yara-darwin-arm64.tar.gz`; логи кроків).
 5. Прогін Forgejo (режим `forgejo`) — Forgejo → репозиторій → **Дії** → прогін; статуси коміту `cirun/<стенд>`,
