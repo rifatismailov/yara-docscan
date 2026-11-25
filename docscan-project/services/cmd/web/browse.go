@@ -1,11 +1,10 @@
 package main
 
-// Опис: docscan-project/DOCSCAN.md#web — провідник для вибору тек.
-
 // Провідник для скану (/scan/browse?p=<тека>): адмін не мусить знати шлях напам'ять — диски, далі теки й файли;
 // позначив потрібне галочками, вибрав дію — запит на скан шляху (scan.go scanStart, kind=path, поля pick).
 // Лише перегляд імен: файли не відкриваються і не читаються. Цілий системний диск вибрати не можна (лише
 // «Скан документів»); теки програм (drives.Protected) позначені — скан там лише повідомляє.
+// Опис: docscan-project/DOCSCAN.md#web.
 
 import (
 	"os"
@@ -57,9 +56,6 @@ func (s *server) browse(q *req) {
 		return
 	}
 	p = filepath.Clean(p)
-	if len(p) == 2 && p[1] == ':' { // Clean("C:\") лишає "C:\", але про всяк випадок
-		p += `\`
-	}
 	d.Path, d.Protected = p, drives.Protected(p)
 	d.CanPick = !isSystemRoot(p)
 	if parent := filepath.Dir(p); parent != p {

@@ -4,41 +4,36 @@
 <body class="ops">
 <aside class="side">
   <a class="brand" href="/"><span class="hex">⬡</span> DOCSCAN<b>//WEB</b></a>
-  <div class="ver">{{.Host}} · 127.0.0.1</div>
+  <div class="ver">{{.Host}}</div>
   {{if not .MustChange}}
   <nav class="menu">
-    <div class="grp">monitor</div>
+    <div class="grp">огляд</div>
     <a href="/" {{if eq .Path "/"}}class="on"{{end}}>▣ Стан</a>
     <a href="/detections" {{if or (eq .Path "/detections") (eq .Path "/record")}}class="on"{{end}}>⚠ Виявлення</a>
-    <a href="/macros" {{if or (eq .Path "/macros") (eq .Path "/macro")}}class="on"{{end}}>{ } Макроси</a>
+    <a href="/macros" {{if hasPrefix .Path "/macro"}}class="on"{{end}}>{ } Макроси</a>
     <a href="/logs" {{if eq .Path "/logs"}}class="on"{{end}}>☰ Журнали</a>
-    <div class="grp">control</div>
+    <div class="grp">керування</div>
     <a href="/scan" {{if hasPrefix .Path "/scan"}}class="on"{{end}}>◎ Сканування</a>
-    <a href="/mode" {{if eq .Path "/mode"}}class="on"{{end}}>⚙ Режим і чорний список</a>
-    <a href="/exceptions" {{if hasPrefix .Path "/exceptions"}}class="on"{{end}}>✚ Виключення</a>
+    <a href="/mode" {{if eq .Path "/mode"}}class="on"{{end}}>⚙ Режим</a>
+    <a href="/exceptions" {{if hasPrefix .Path "/exceptions"}}class="on"{{end}}>✚ Дозволені й заблоковані</a>
     <a href="/quarantine" {{if hasPrefix .Path "/quarantine"}}class="on"{{end}}>☣ Карантин</a>
-    <a href="/updates" {{if eq .Path "/updates"}}class="on"{{end}}>⟳ Оновлення</a>
-    <div class="grp">account</div>
-    <a href="/password" {{if eq .Path "/password"}}class="on"{{end}}>⚿ Пароль</a>
+    <a href="/updates" {{if hasPrefix .Path "/updates"}}class="on"{{end}}>⟳ Оновлення</a>
   </nav>
   {{end}}
   <div class="me">
-    <span class="who"><span class="av">a</span><span>admin<small>local</small></span></span>
-    <form method="post" action="/logout"><input type="hidden" name="csrf" value="{{.CSRF}}"><button class="small" title="Вийти">⏻</button></form>
+    <a class="who" href="/password" title="Змінити пароль"><span class="av">A</span><span>admin<small>змінити пароль</small></span></a>
+    <form method="post" action="/logout">{{template "csrf" .}}<button class="small" title="Вийти">⏻</button></form>
   </div>
 </aside>
 <div class="shell">
-<header class="top">
-  <div class="crumb">DOCSCAN / <span class="ws">{{.Host}}</span> / <b>{{.Title}}</b></div>
-  <div class="pills"><span class="clock">{{ts .Now}}</span></div>
-</header>
+<header class="top"><div>{{.Host}} / <b>{{.Title}}</b></div><span class="clock">{{ts .Now}}</span></header>
 <main>
 {{if .Flash}}<p class="flash">{{.Flash}}</p>{{end}}
 {{if .Error}}<p class="error">{{.Error}}</p>{{end}}
 {{end}}
 
 {{define "foot"}}</main>
-<footer><span>DOCSCAN</span><span>веб-інтерфейс цього ПК</span><span>кожна дія — запис у Wazuh</span></footer>
+<footer><span>DocScan</span><span>веб-інтерфейс цього ПК</span><span>кожна дія — запис у Wazuh</span></footer>
 </div>
 </body></html>{{end}}
 

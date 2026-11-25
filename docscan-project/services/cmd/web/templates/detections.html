@@ -28,10 +28,10 @@
 {{range .TopRules}}<a class="tag" href="/detections?rule={{q .K}}&verdict=all">{{.K}} <i>{{.N}}</i></a> {{end}}</p>{{end}}
 <table>
 {{if .Admin}}<tr><th>час</th><th>хто</th><th>дія</th><th>подробиці</th></tr>
-{{range .Recs}}<tr><td class="nowrap">{{ts .Time}}</td><td>{{.AdminUser}}</td><td>{{.AdminAction}}</td><td class="hint">{{.Summary}}</td></tr>{{end}}
+{{range .Recs}}<tr><td class="when">{{ts .Time}}</td><td>{{.AdminUser}}</td><td>{{.AdminAction}}</td><td class="hint">{{.Summary}}</td></tr>{{end}}
 {{else}}<tr><th>час</th><th>рівень</th><th>файл</th><th>що знайдено</th><th>дія</th></tr>
 {{range .Recs}}<tr>
-<td class="nowrap"><a href="/record?f={{.File}}&o={{.Off}}">{{ts .Time}}</a></td>
+<td class="when"><a href="/record?f={{.File}}&o={{.Off}}">{{ts .Time}}</a></td>
 <td><span class="v v-{{.Verdict}}">{{.Verdict}}</span></td>
 <td class="path"><a href="/record?f={{.File}}&o={{.Off}}">{{.Path}}</a>{{if .List}}<br><span class="hint">список: {{.List}}{{if .ListComment}} — {{.ListComment}}{{end}}</span>{{end}}</td>
 <td>{{range .Rules}}<a class="tag" href="/detections?rule={{q .}}&verdict=all">{{.}}</a> {{end}}{{if and (not .Rules) .Summary}}<span class="hint">{{short .Summary 160}}</span>{{end}}</td>
@@ -57,8 +57,8 @@
 {{if .Rules}}<tr><th>правила / знахідки</th><td>{{range .Rules}}<a class="tag" href="/detections?rule={{q .}}&verdict=all">{{.}}</a> {{end}}</td></tr>{{end}}
 <tr><th>дія</th><td>{{if .Disarm}}{{.Disarm}}{{else}}—{{end}}</td></tr>
 {{if and .Path (ne .Event "Admin")}}<tr><th></th><td>
-{{if eq .Disarm "quarantined"}}<a class="pill amber" href="/exceptions?f={{.File}}&o={{.Off}}">✚ Додати у виключення і повернути файл</a>
-{{else if eq .Verdict "HIGH" "MEDIUM" "LOW"}}<a class="pill" href="/exceptions?f={{.File}}&o={{.Off}}">✚ Додати у виключення</a>{{end}}
+{{if eq .Disarm "quarantined"}}<a class="button small amber" href="/exceptions?f={{.File}}&o={{.Off}}">✚ Дозволити і повернути файл</a>
+{{else if eq .Verdict "HIGH" "MEDIUM" "LOW"}}<a class="button small" href="/exceptions?f={{.File}}&o={{.Off}}">✚ Дозволити</a>{{end}}
 </td></tr>{{end}}
 {{if .Summary}}<tr><th>опис</th><td>{{.Summary}}</td></tr>{{end}}
 </table>
@@ -71,7 +71,7 @@
 {{if .Evidence}}<h3>Докази</h3><table class="kv">{{range .Evidence}}<tr><th>{{.Label}}</th><td class="path"><code>{{.Value}}</code></td></tr>{{end}}</table>{{end}}
 {{if .Rules}}<h3>Правила YARA</h3><table><tr><th>правило</th><th>де спрацювало</th><th>опис</th></tr>
 {{range .Rules}}<tr><td><a class="tag" href="/detections?rule={{q .Rule}}&verdict=all">{{.Rule}}</a></td><td>{{.Where}}</td><td class="hint">{{.Desc}}</td></tr>{{end}}</table>{{end}}
-{{if .MacroSHA}}<p><a class="pill amber" href="/macro?sha={{.MacroSHA}}">{ } Код макросів документа ({{mb .MacroSize}})</a></p>{{end}}
+{{if .MacroSHA}}<p><a class="button small amber" href="/macro?sha={{.MacroSHA}}">{ } Код макросів документа ({{mb .MacroSize}})</a></p>{{end}}
 {{if .Critical}}<p class="warn">Критична інформація: документ поставлено в чергу (правила: {{.Critical}}).</p>{{end}}
 {{end}}
 <h2>Запис повністю (як у Wazuh)</h2>

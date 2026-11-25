@@ -34,13 +34,13 @@ func TestQuarantinePage(t *testing.T) {
 	put("old.lnk.0.docscan-bak", "", "", []byte("no record"))
 
 	page := do("GET", "/quarantine", nil).Body.String()
-	for _, s := range []string{"tool.exe", "report.docm", "old.lnk", "запис виявлення не знайдено", "замінити знешкоджену копію"} {
+	for _, s := range []string{"tool.exe", "report.docm", "old.lnk", "запису виявлення вже немає", "замінити знешкоджену копію"} {
 		if !strings.Contains(page, s) {
 			t.Fatalf("quarantine page: no %q", s)
 		}
 	}
 	// a path instead of a name is refused
-	if w := do("POST", "/quarantine/delete", url.Values{"name": {`..\auth.json`}, "confirm": {"on"}}); !strings.Contains(w.Header().Get("Location"), url.QueryEscape("bad quarantine file name")) {
+	if w := do("POST", "/quarantine/delete", url.Values{"name": {`..\auth.json`}, "confirm": {"on"}}); !strings.Contains(w.Header().Get("Location"), url.QueryEscape("неправильне ім'я файлу карантину")) {
 		t.Fatalf("path traversal: %s", w.Header().Get("Location"))
 	}
 	// restore a removed file

@@ -1,15 +1,16 @@
 package main
 
-// Опис: docscan-project/DOCSCAN.md#web. «Карантин» — файли <DataDir>\quarantine\<ім'я>.<N>.docscan-bak. Їх кладе watcher (чорний
-// список, -QuarantineGeneral) або модуль docscan (LNK, небезпечні PDF / старі документи — файл прибрано; документ,
+// Сторінка «Карантин» — файли <DataDir>\quarantine\<ім'я>.<N>.docscan-bak. Їх кладе watcher (заблоковані,
+// -QuarantineGeneral) або модуль docscan (LNK, небезпечні PDF / старі документи — файл прибрано; документ,
 // що лікується, — тут оригінал до знешкодження). Звідки і чому — із запису виявлення з тим самим sha256 (запис
 // рахує sha256 файлу ДО знешкодження = sha256 копії).
 //
-// Повернути: спершу виключення (локальний білий список: шлях + sha256 — інакше watcher одразу забере файл знову),
-// потім файл на місце. Знешкоджений документ замінюється оригіналом лише за явним підтвердженням. Видалити — копія
-// зникає назавжди. Усе — записи аудиту для Wazuh.
+// Повернути: спершу запис у дозволені цього ПК (шлях + sha256 — інакше watcher одразу забере файл знову), потім файл
+// на місце. Знешкоджений документ замінюється оригіналом лише за явним підтвердженням. Видалити — копія зникає
+// назавжди. Усе — записи аудиту для Wazuh. Опис: docscan-project/DOCSCAN.md#web.
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -107,8 +108,6 @@ func (s *server) qItems() ([]qItem, error) {
 	return out, nil
 }
 
-func baseOf(p string) string { return p[strings.LastIndexAny(p, `\/`)+1:] }
-
 type qData struct {
 	Items []qItem
 	Bytes int64
@@ -131,11 +130,11 @@ func (s *server) quarantinePage(q *req) {
 // qFile — файл карантину за ім'ям (лише ім'я в теці карантину, без шляхів).
 func (s *server) qFile(name string) (string, error) {
 	if name == "" || name != filepath.Base(name) || strings.ContainsAny(name, `\/`) || !strings.HasSuffix(name, ".docscan-bak") {
-		return "", fmt.Errorf("bad quarantine file name")
+		return "", errors.New("неправильне ім'я файлу карантину")
 	}
 	p := filepath.Join(s.p.quarantine(), name)
 	if !fileExists(p) {
-		return "", fmt.Errorf("%s is no longer in the quarantine", name)
+		return "", fmt.Errorf("%s уже немає в карантині", name)
 	}
 	return p, nil
 }
@@ -204,47 +203,20 @@ func (s *server) quarantineRestore(q *req) {
 		}
 		replace = true
 	}
-	// 1) виключення: шлях + sha256 (або лише шлях)
+	// 1) запис у дозволені: шлях + sha256 (або лише шлях), 2) файл на місце
 	e := orglists.Entry{Path: dst, SHA256: it.SHA, Comment: "restored from the quarantine: " + it.Orig, Added: time.Now().Format("2006-01-02"), By: AdminUser}
 	if q.r.FormValue("mode") == "path" {
 		e.SHA256 = ""
 	}
-	l, err := readList(s.p.listFile("white", true), "white")
-	if err != nil {
-		s.back(q, "/quarantine", "не повернуто: локальний білий список зламаний: "+err.Error())
-		return
-	}
-	l.Entries = append(l.Entries, e)
-	if err := writeLocalList(s.p, "white", l); err != nil {
+	if err := s.addLocal(q, "white", e); err != nil {
 		s.back(q, "/quarantine", "не повернуто: "+err.Error())
 		return
 	}
-	s.audit(q.r, AdminUser, "local-white-added", fmt.Sprintf("path=%q sha256=%q comment=%q", e.Path, e.SHA256, e.Comment))
-	time.Sleep(3 * time.Second) // watcher перечитує списки не частіше разу на 2 с
-	// 2) файл на місце
-	if replace {
-		tmp := dst + ".docscan-restore"
-		os.Remove(tmp)
-		if err := copyFile(p, tmp); err != nil {
-			s.back(q, "/quarantine", "не повернуто: "+err.Error())
-			return
-		}
-		if err := os.Rename(tmp, dst); err != nil { // Windows: замінює (MoveFileEx REPLACE_EXISTING)
-			os.Remove(tmp)
-			s.back(q, "/quarantine", "не повернуто (файл відкритий?): "+err.Error())
-			return
-		}
-	} else {
-		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-			s.back(q, "/quarantine", "не повернуто: "+err.Error())
-			return
-		}
-		if err := copyFile(p, dst); err != nil {
-			s.back(q, "/quarantine", "не повернуто: "+err.Error())
-			return
-		}
+	time.Sleep(listsReload)
+	if err := putBack(p, dst, replace); err != nil {
+		s.back(q, "/quarantine", "не повернуто: "+err.Error())
+		return
 	}
-	os.Remove(p)
 	s.audit(q.r, AdminUser, "restored", fmt.Sprintf("%s -> %s%s", it.Name, dst, map[bool]string{true: " (replaced the disarmed copy)", false: ""}[replace]))
-	s.back(q, "/quarantine", "повернуто: "+dst+" (і додано у виключення)")
+	s.back(q, "/quarantine", "повернуто: "+dst+" (і додано в дозволені)")
 }

@@ -1,0 +1,41 @@
+{{define "updates"}}{{template "head" .}}
+{{$p := .}}{{with .Data}}
+<h1>Оновлення</h1>
+<p class="hint">C:\ProgramData\DocScan\update\updater.json. Перед записом конфіг перевіряє сама служба оновлень (docscan-updater -CheckConfig);
+попередній файл лишається як updater.json.bak. Служба застосовує новий конфіг сама, протягом пів хвилини.</p>
+<form method="post" action="/updates/check" class="row">{{template "csrf" $p}}<button>⟳ Перевірити зараз</button></form>
+
+<form method="post" action="/updates">{{template "csrf" $p}}
+<div class="grid">
+<section class="card"><h2>Програма</h2><div class="stack">
+  <label class="lbl">звідки <select name="mode">
+    <option value="github" {{if eq .C.Mode "github"}}selected{{end}}>github — останній реліз на GitHub</option>
+    <option value="mirror" {{if eq .C.Mode "mirror"}}selected{{end}}>mirror — дзеркало організації</option>
+    <option value="marker" {{if eq .C.Mode "marker"}}selected{{end}}>marker — за маркером агента</option>
+    <option value="off" {{if eq .C.Mode "off"}}selected{{end}}>off — не оновлювати</option>
+  </select></label>
+  <label class="lbl">дзеркало (mirror: https://… або \\сервер\шара) <input name="mirror" value="{{.C.Mirror.URL}}"></label>
+  <label class="lbl">репозиторій GitHub (github) <input name="repo" value="{{.C.GitHub.Repo}}" placeholder="rifatismailov/yara-docscan"></label>
+  <label class="lbl">перевіряти кожні, год <input name="every" value="{{.C.CheckEveryHours}}" size="5"></label>
+  <label class="lbl">ставити лише в цей час (напр. 22:00-06:00; порожньо — будь-коли) <input name="window" value="{{.C.Window}}" size="12"></label>
+</div></section>
+
+<section class="card"><h2>Правила</h2><div class="stack">
+  <label><input type="checkbox" name="rules_off" {{if .C.Rules.Off}}checked{{end}}> не оновлювати правила</label>
+  <label class="lbl">дзеркало правил (порожньо — те саме, що програми) <input name="rules_mirror" value="{{.C.Rules.Mirror.URL}}"></label>
+  <label class="lbl">репозиторій релізів правил (github) <input name="rules_repo" value="{{.C.Rules.GitHub.Repo}}" placeholder="rifatismailov/yara-docscan-rules"></label>
+  <label class="lbl">ключі організації (ed25519:…, по одному в рядку) <textarea name="extra_keys" rows="2">{{.Extra}}</textarea></label>
+</div></section>
+</div>
+
+<section class="card"><h2>Списки організації</h2><div class="stack">
+  <label class="lbl">дзеркало списків (порожньо — лише вручну) <input name="lists_url" value="{{.C.Lists.URL}}"></label>
+  <label class="lbl">ключі списків (ed25519:…, по одному в рядку) <textarea name="lists_keys" rows="2">{{.ListKeys}}</textarea></label>
+  <label class="lbl">перевіряти кожні, год <input name="lists_every" value="{{.C.Lists.CheckEveryHours}}" size="5"></label>
+  <label class="lbl">токен закритого дзеркала (лише читання){{if .HasToken}} — задано; порожнє поле — лишити як є{{end}} <input type="password" name="lists_token" autocomplete="off"></label>
+  {{if .HasToken}}<label><input type="checkbox" name="lists_token_clear"> прибрати токен</label>{{end}}
+</div></section>
+<button class="primary">Перевірити і зберегти</button>
+</form>
+{{end}}
+{{template "foot" .}}{{end}}

@@ -29,22 +29,8 @@ import (
 // ServiceName — служба Windows веб-інтерфейсу.
 const ServiceName = "DocScanWeb"
 
-// DefaultListen — адреса за замовчуванням (8740 — у Anthophila_Hive).
+// DefaultListen — адреса за замовчуванням.
 const DefaultListen = "127.0.0.1:8741"
-
-type paths struct {
-	data, install string
-}
-
-func (p paths) web() string        { return filepath.Join(p.data, "web") }
-func (p paths) results() string    { return filepath.Join(p.data, "results") }
-func (p paths) certPEM() string    { return filepath.Join(p.web(), "cert.pem") }
-func (p paths) certDER() string    { return filepath.Join(p.web(), "cert.cer") }
-func (p paths) keyPEM() string     { return filepath.Join(p.web(), "key.pem") }
-func (p paths) authFile() string   { return filepath.Join(p.web(), "auth.json") }
-func (p paths) initialPw() string  { return filepath.Join(p.web(), "initial-password.txt") }
-func (p paths) resultsLog() string { return filepath.Join(p.results(), "docscan-results.json") }
-func (p paths) webLog() string     { return filepath.Join(p.results(), "web.log") }
 
 func main() {
 	exe, _ := os.Executable()

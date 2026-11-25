@@ -1,37 +1,35 @@
 {{define "scan"}}{{template "head" .}}
 {{$p := .}}{{with .Data}}
 <h1>Сканування</h1>
-<p class="hint">Перевірка файлів, що вже лежать на диску (watcher бачить лише нові й змінені). Сканує служба DocScanWatcher: файли скану
-йдуть після живих файлів користувачів, тож робота на ПК не гальмує. Файли, вже перевірені цими правилами, вдруге не скануються.
-У Wazuh ідуть лише загрози (HIGH / MEDIUM), чисті файли тільки рахуються.</p>
+<p class="hint">Перевірка файлів, що вже лежать на диску (нові й змінені watcher бачить сам). Скан іде після живих файлів
+користувачів, тож робота на ПК не гальмує; файли, вже перевірені цими правилами, вдруге не скануються. У Wazuh — лише загрози.</p>
+{{if .Stale}}<p class="warn">Служба DocScanWatcher не оновлювала стан з {{ts .Updated}} — перевірте, чи вона працює (сторінка «Стан»).</p>{{end}}
 
-{{if .Stale}}<p class="warn">Служба DocScanWatcher не оновлювала стан з {{ts .Updated}} — перевірте, чи вона працює (Стан).</p>{{end}}
-
-<h2>Зараз</h2>
-{{if gt .NotTaken 15}}<p class="error">Служба DocScanWatcher не бере запити вже {{.NotTaken}} с — вона не запущена або зависла (сторінка «Стан»;
-Get-Service DocScanWatcher). Скан почнеться, щойно служба запрацює, або приберіть запит.</p>{{end}}
+<section class="card"><h2>Зараз</h2>
+{{if gt .NotTaken 15}}<p class="error">Служба DocScanWatcher не бере запити вже {{.NotTaken}} с — вона не запущена або зависла (сторінка «Стан»).
+Скан почнеться, щойно служба запрацює, або приберіть запит.</p>{{end}}
 {{if .Pending}}<table><tr><th>у черзі</th><th>дія</th><th>чекає</th><th></th></tr>
-{{range .Pending}}<tr><td><b>{{.KindName}}</b> <span class="path">{{join .Paths ", "}}</span></td><td>{{.Action}}</td>
+{{range .Pending}}<tr><td class="scanwhat"><b>{{.KindName}}</b> <span class="path">{{join .Paths ", "}}</span></td><td>{{.Action}}</td>
 <td class="nowrap">{{.Age}} с{{if le .Age 15}} <span class="hint">служба бере за кілька секунд</span>{{end}}</td>
-<td><form method="post" action="/scan/stop">{{template "csrf" $p}}<input type="hidden" name="id" value="{{.ID}}"><button class="small">✕ Прибрати</button></form></td></tr>{{end}}
+<td class="act"><form method="post" action="/scan/stop">{{template "csrf" $p}}<input type="hidden" name="id" value="{{.ID}}"><button class="small">✕ Прибрати</button></form></td></tr>{{end}}
 </table>{{end}}
 {{if .Active}}
-<form method="post" action="/scan/stop" class="row">{{template "csrf" $p}}<input type="hidden" name="id" value="all"><button class="small danger">■ Зупинити всі</button></form>
 <table><tr><th>скан</th><th>хід</th><th>результат</th><th></th></tr>
 {{range .Active}}<tr>
-<td class="nowrap"><b>{{.KindName}}</b>{{if .Detect}} · <span class="tag">detect-only</span>{{end}}{{if .Delete}} · <span class="tag">видалення</span>{{end}}<br><span class="path">{{join .Paths ", "}}</span><br><span class="hint">{{.By}} · {{ts .StartedAt}}</span></td>
+<td class="scanwhat"><b>{{.KindName}}</b>{{if .Detect}} · <span class="tag">detect-only</span>{{end}}{{if .Delete}} · <span class="tag">видалення</span>{{end}}<br><span class="path">{{join .Paths ", "}}</span><br><span class="hint">{{.By}} · {{ts .StartedAt}}</span></td>
 <td><progress max="100" value="{{.Pct}}"></progress> {{.Done}} з {{.Found}}{{if .Walking}}+ <span class="hint">(ще шукаю файли)</span>{{end}} · {{.Took}}
 {{if .Current}}<br><span class="hint path">{{short .Current 110}}</span>{{end}}</td>
-<td class="nowrap">загроз: {{if .Hits}}<b class="v v-HIGH">{{.Hits}}</b>{{else}}0{{end}}<br>проскановано {{.Scanned}}, вже перевірені {{.Cached}}<br>помилок {{.Errors}}, пропущено {{.Skipped}}{{if .Deleted}}<br>видалено: <b>{{.Deleted}}</b>{{end}}
+<td class="nowrap">загроз: {{if .Hits}}<b class="v v-HIGH">{{.Hits}}</b>{{else}}0{{end}}<br><span class="hint">проскановано {{.Scanned}}, вже перевірені {{.Cached}}<br>помилок {{.Errors}}, пропущено {{.Skipped}}</span>{{if .Deleted}}<br>видалено: <b>{{.Deleted}}</b>{{end}}
 {{if .Note}}<br><span class="warn">{{.Note}}</span>{{end}}</td>
-<td><form method="post" action="/scan/stop">{{template "csrf" $p}}<input type="hidden" name="id" value="{{.ID}}"><button class="small">■ Зупинити</button></form>
+<td class="act"><form method="post" action="/scan/stop">{{template "csrf" $p}}<input type="hidden" name="id" value="{{.ID}}"><button class="small">■ Зупинити</button></form>
 {{if .Hits}}<a href="/detections?q={{q .ID}}">знахідки →</a>{{end}}</td>
 </tr>{{end}}
 </table>
+<form method="post" action="/scan/stop" class="row">{{template "csrf" $p}}<input type="hidden" name="id" value="all"><button class="small danger">■ Зупинити всі</button></form>
 {{else if not .Pending}}<p class="hint">Зараз нічого не сканується.</p>{{end}}
+</section>
 
-<h2>Запустити</h2>
-<div class="card"><h2>Диски</h2>
+<section class="card"><h2>Диски</h2>
 <table class="drives"><tr><th>диск</th><th>тип</th><th>розмір</th><th></th></tr>
 {{range .Drives}}<tr>
 <td class="path"><a href="/scan/browse?p={{.Root}}"><b>{{.Root}}</b></a> {{.Label}}</td>
@@ -40,39 +38,39 @@ Get-Service DocScanWatcher). Скан почнеться, щойно служб�
 <td class="act">{{if or .Removable (and (eq .Kind "fixed") (not .System))}}<form method="post" action="/scan/start" class="row nowrap">{{template "csrf" $p}}<input type="hidden" name="kind" value="drive"><input type="hidden" name="root" value="{{.Root}}">
 {{if .Removable}}{{template "scanAction" "cure"}}{{else}}{{template "scanAction" "detect"}}{{end}} <button class="small">◎ Сканувати весь</button>
 <a href="/scan/browse?p={{.Root}}">теки →</a></form>
-{{else if .System}}<span class="hint">цілим — лише документи (нижче);</span> <a href="/scan/browse?p={{.Root}}">теки →</a>{{end}}</td>
+{{else if .System}}<span class="hint">цілим — лише документи (нижче) ·</span> <a href="/scan/browse?p={{.Root}}">теки →</a>{{end}}</td>
 </tr>{{end}}
 </table>
-<form method="post" action="/scan/start" class="stack">{{template "csrf" $p}}<input type="hidden" name="kind" value="docs">
-<p><b>Скан документів</b> — усі документи (Word, Excel, PowerPoint, PDF, RTF...) на вибраних локальних дисках, без USB.
-Системні й програмні теки (Windows, Program Files, ProgramData\Microsoft) не скануються — там документи належать програмам.
-Перший раз — довго (залежить від кількості документів), наступні — швидше: незмінені файли беруться з кешу.</p>
+<p class="hint">Знімний носій і несистемний диск (D:\, E:\) — «Сканувати весь»: усі файли, шукає й шкідливі програми (для локального диска
+за замовчуванням — лише повідомити). Системний диск цілим не сканується: карантин файлів встановлених програм ламає ці програми —
+його теки вибирайте за посиланням «теки →». У теках програм (Program Files тощо) будь-який скан лише повідомляє.</p>
+
+<h3>Скан документів</h3>
+<form method="post" action="/scan/start">{{template "csrf" $p}}<input type="hidden" name="kind" value="docs">
+<p class="hint">Усі документи (Word, Excel, PowerPoint, PDF, RTF…) на вибраних локальних дисках, без системних і програмних тек.
+Перший раз — довго, наступні — швидше: незмінені файли беруться з кешу.</p>
 <div class="drive-pick">{{range .Drives}}{{if eq .Kind "fixed"}}<label><input type="checkbox" name="docs_root" value="{{.Root}}" checked> <b>{{.Root}}</b> {{.Label}}</label>{{end}}{{end}}</div>
 <div class="row nowrap">{{template "scanAction" "cure"}} <button class="primary">◎ Скан документів</button></div></form>
-<p class="hint">Знімний носій і не системний диск (D:\, E:\) — кнопка «Сканувати весь»: усі файли, шукає й шкідливі програми
-(для локального диска за замовчуванням — лише повідомити; лікувати чи видаляти — на розсуд адміна). Системний диск цілим не
-сканується: знешкодження чи карантин файлів встановлених програм ламає ці програми — його теки вибирайте за посиланням «теки →».
-У теках програм (Program Files тощо) будь-який скан лише повідомляє.</p>
-</div>
+</section>
 
-<div class="card"><h2>Знімні носії</h2>
-<p>Щойно вставили флешку, USB-диск чи SD-картку — DocScan сам перевіряє весь носій (нові й змінені файли).
-Зараз: <b>{{if .USBNow}}{{if eq .USBNow "off"}}не сканувати{{else if eq .USBNow "detect"}}лише повідомлення{{else}}повний{{end}}{{else}}—{{end}}</b>.</p>
+<section class="card"><h2>Знімні носії</h2>
+<p>Щойно вставили флешку, USB-диск чи SD-картку — DocScan сам перевіряє весь носій. Зараз:
+<b>{{if .USBNow}}{{if eq .USBNow "off"}}не сканувати{{else if eq .USBNow "detect"}}лише повідомлення{{else}}повний{{end}}{{else}}—{{end}}</b>.</p>
 <form method="post" action="/scan/usb" class="stack">{{template "csrf" $p}}
-<label><input type="radio" name="usb" value="" {{if eq .USBSet ""}}checked{{end}}> як режим DocScan (повний або detect only — сторінка «Режим»)</label>
+<label><input type="radio" name="usb" value="" {{if eq .USBSet ""}}checked{{end}}> як режим DocScan (сторінка «Режим»)</label>
 <label><input type="radio" name="usb" value="full" {{if eq .USBSet "full"}}checked{{end}}> повний — небезпечні документи знешкоджуються, заборонене — у карантин</label>
 <label><input type="radio" name="usb" value="detect" {{if eq .USBSet "detect"}}checked{{end}}> лише повідомлення — на носії нічого не змінюється</label>
 <label><input type="radio" name="usb" value="off" {{if eq .USBSet "off"}}checked{{end}}> не сканувати самостійно (лише вручну тут)</label>
 <p class="hint">Носій, захищений від запису, — завжди лише повідомлення. Вилучили носій — його скан зупиняється.</p>
-<button>Зберегти</button></form>
-</div>
+<div><button>Зберегти</button></div></form>
+</section>
 
-<h2>Останні скани</h2>
+<section class="card"><h2>Останні скани</h2>
 {{if .History}}
 <table><tr><th>коли</th><th>скан</th><th>стан</th><th>результат</th></tr>
 {{range .History}}<tr>
-<td class="nowrap">{{ts .StartedAt}}<br><span class="hint">{{.Took}}</span></td>
-<td><b>{{.KindName}}</b>{{if .Detect}} · <span class="tag">detect-only</span>{{end}}{{if .Delete}} · <span class="tag">видалення</span>{{end}} · {{.By}}<br><span class="path">{{join .Paths ", "}}</span></td>
+<td class="when">{{ts .StartedAt}}<br><span class="hint">{{.Took}}</span></td>
+<td class="scanwhat"><b>{{.KindName}}</b>{{if .Detect}} · <span class="tag">detect-only</span>{{end}}{{if .Delete}} · <span class="tag">видалення</span>{{end}} · {{.By}}<br><span class="path">{{join .Paths ", "}}</span></td>
 <td>{{if eq .State "done"}}<b class="ok">готово</b>{{else if eq .State "cancelled"}}зупинено{{else}}<span class="error">не вийшло</span>{{end}}
 {{if .Note}}<br><span class="hint">{{.Note}}</span>{{end}}</td>
 <td>знайдено {{.Found}}: проскановано {{.Scanned}}, вже перевірені {{.Cached}}, помилок {{.Errors}}, пропущено {{.Skipped}}{{if .Deleted}}, <b>видалено {{.Deleted}}</b>{{end}}<br>
@@ -80,9 +78,10 @@ Get-Service DocScanWatcher). Скан почнеться, щойно служб�
 </tr>{{end}}
 </table>
 {{else}}<p class="hint">Сканів ще не було.</p>{{end}}
+</section>
 
-<p class="hint">Те саме з PowerShell (від імені адміністратора): <code>docscan-watcher.exe -ScanPath E:\ -Wait</code>, <code>-ScanDocs</code>,
-<code>-ScanDetect</code> (лише повідомити), <code>-ScanDelete</code> (видалити загрози), <code>-ScanStatus</code>, <code>-ScanCancel all</code> (C:\Program Files\DocScan\watcher\).</p>
+<p class="hint">Те саме з PowerShell (від адміністратора): <code>docscan-watcher -ScanPath E:\ -Wait</code>, <code>-ScanDocs</code>,
+<code>-ScanDetect</code> (лише повідомити), <code>-ScanDelete</code> (видалити загрози), <code>-ScanStatus</code>, <code>-ScanCancel all</code>.</p>
 {{end}}
 {{template "foot" .}}{{end}}
 
@@ -94,11 +93,13 @@ Get-Service DocScanWatcher). Скан почнеться, щойно служб�
 {{define "scan_confirm"}}{{template "head" .}}
 {{$p := .}}{{with .Data}}
 <h1>Видалити загрози?</h1>
+<section class="card alert"><h2>Підтвердження</h2>
 <p>Скан: <b class="path">{{.What}}</b></p>
 <p class="warn">Файли з вердиктом HIGH буде <b>видалено назавжди, без копії в карантині</b> — повернути їх не можна.
 MEDIUM — лише повідомлення. У системних і програмних теках і на носіях лише для читання — теж лише повідомлення.
 Якщо сумніваєтесь — «лікувати / карантин»: файл зникає з місця, але його можна повернути (сторінка «Карантин»).</p>
 <form method="post" action="/scan/start" class="row">{{template "csrf" $p}}{{range .Fields}}<input type="hidden" name="{{index . 0}}" value="{{index . 1}}">{{end}}<input type="hidden" name="confirm" value="on">
 <button class="danger">✕ Так, сканувати і видаляти</button> <a href="/scan">скасувати</a></form>
+</section>
 {{end}}
 {{template "foot" .}}{{end}}

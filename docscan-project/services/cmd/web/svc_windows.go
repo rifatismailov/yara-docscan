@@ -3,9 +3,6 @@
 package main
 
 import (
-	"fmt"
-	"time"
-
 	"golang.org/x/sys/windows/svc"
 	"golang.org/x/sys/windows/svc/mgr"
 )
@@ -35,32 +32,6 @@ func services() []svcState {
 		out = append(out, st)
 	}
 	return out
-}
-
-// restartService — зупинити (до 30 с) і запустити службу.
-func restartService(name string) error {
-	m, err := mgr.Connect()
-	if err != nil {
-		return err
-	}
-	defer m.Disconnect()
-	s, err := m.OpenService(name)
-	if err != nil {
-		return err
-	}
-	defer s.Close()
-	if q, err := s.Query(); err == nil && q.State != svc.Stopped {
-		if _, err := s.Control(svc.Stop); err != nil {
-			return fmt.Errorf("stop: %w", err)
-		}
-		for i := 0; i < 60; i++ {
-			time.Sleep(500 * time.Millisecond)
-			if q, err := s.Query(); err == nil && q.State == svc.Stopped {
-				break
-			}
-		}
-	}
-	return s.Start()
 }
 
 func serviceCommand(name string) string {

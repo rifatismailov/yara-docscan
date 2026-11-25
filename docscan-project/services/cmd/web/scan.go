@@ -1,15 +1,16 @@
 package main
 
-// Опис: docscan-project/DOCSCAN.md#web — сторінка «Сканування».
-
-// Сторінка «Сканування»: скан документів на локальних дисках, скан теки / файлу / знімного диска, авто-скан
-// знімних носіїв. Повного скану всіх файлів немає навмисно (scanjob.go: він ламав би встановлені програми).
-// Сам скан робить служба DocScanWatcher (services/cmd/watcher/scanjob.go): веб лише кладе запит <DataDir>\scan\request-<id>.json
-// або cancel-<id>, а показує scan\status.json (що йде зараз) і scan\history.json (останні 50). Режим для нових
-// флешок — settings.json usb_scan (watcher застосовує за 5 с). Кожна дія — у аудит.
+// Сторінка «Сканування»: скан документів на локальних дисках, скан тек / файлів (провідник — browse.go) або цілого
+// знімного / не системного диска, авто-скан знімних носіїв. Повного скану всіх файлів немає навмисно (він ламав би
+// встановлені програми). Сам скан робить служба DocScanWatcher (services/cmd/watcher/scanjob.go): веб лише кладе
+// запит <DataDir>\scan\request-<id>.json або cancel-<id>, а показує scan\status.json (що йде зараз) і
+// scan\history.json (останні 50). Режим для нових флешок — settings.json usb_scan. Кожна дія — у аудит.
+// Дія скану: detect (лише повідомити) | cure (знешкодити документ, інше — у карантин) | delete (HIGH-файли видалити
+// без копії — лише після сторінки підтвердження). Опис: docscan-project/DOCSCAN.md#web.
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -19,11 +20,6 @@ import (
 
 	"docscan/services/pkg/drives"
 )
-
-// Дія скану: action = detect (лише повідомити) | cure (лікувати: знешкодити документ, інше — у карантин) |
-// delete (HIGH-файли видалити без копії — лише після сторінки підтвердження). Провідник — browse.go.
-
-func (p paths) scanDir() string { return filepath.Join(p.data, "scan") }
 
 // той самий формат, що services/cmd/watcher/scanjob.go
 type wScanReq struct {
@@ -144,14 +140,6 @@ func (s *server) pending() []pendingReq {
 	return out
 }
 
-func readJSON(f string, v any) bool {
-	b, err := os.ReadFile(f)
-	if err != nil {
-		return false
-	}
-	return json.Unmarshal(b, v) == nil
-}
-
 func (s *server) scanData() scanData {
 	d := scanData{Drives: drives.List()}
 	var st wScanStatus
@@ -213,9 +201,6 @@ func (s *server) scanStart(q *req) {
 		sq.Detect = true
 	case "delete":
 		sq.Delete = true
-	case "cure":
-	default:
-		sq.Detect = q.r.FormValue("detect") == "on"
 	}
 	switch kind {
 	case "docs": // документи на вибраних локальних дисках
@@ -230,7 +215,7 @@ func (s *server) scanStart(q *req) {
 			}
 		}
 		if len(sq.Paths) == 0 {
-			fail(fmt.Errorf("choose at least one local disk"))
+			fail(errors.New("виберіть хоча б один локальний диск"))
 			return
 		}
 	case "drive": // знімний — увесь носій; не системний локальний (D:\) — усі файли; системний — ні
@@ -247,42 +232,37 @@ func (s *server) scanStart(q *req) {
 			}
 		}
 		if sq.Kind == "" {
-			fail(fmt.Errorf("drive %q: not a connected removable or non-system disk (the system disk - «Скан документів» or folders in the browser)", root))
+			fail(fmt.Errorf("диск %s: не підключений знімний і не локальний несистемний (системний — «Скан документів» або теки)", root))
 			return
 		}
 		sq.Paths = []string{root}
-	case "path":
+	case "path": // провідник: позначені теки / файли; нічого не позначено — уся відкрита тека (cur)
 		sq.Kind = "path"
-		lines := strings.Split(q.r.FormValue("paths"), "\n")
-		lines = append(lines, q.r.Form["pick"]...)
-		// провідник: нічого не позначено галочкою — уся відкрита тека (поле cur; для кореня системного диска його немає)
-		if strings.TrimSpace(strings.Join(lines, "")) == "" && strings.TrimSpace(q.r.FormValue("cur")) != "" {
-			lines = []string{q.r.FormValue("cur")}
+		picks := q.r.Form["pick"]
+		if len(picks) == 0 && q.r.FormValue("cur") != "" {
+			picks = []string{q.r.FormValue("cur")}
 		}
-		for _, l := range lines {
-			l = strings.Trim(strings.TrimSpace(l), `"`)
-			if l == "" {
-				continue
-			}
+		for _, l := range picks {
+			l = strings.TrimSpace(l)
 			if len(l) == 2 && l[1] == ':' {
 				l += `\`
 			}
 			if !absPath.MatchString(l) && !filepath.IsAbs(l) {
-				fail(fmt.Errorf("path %q: a full path like E:\\ or C:\\Users\\anna\\Downloads", l))
+				fail(fmt.Errorf("%s: потрібен повний шлях", l))
 				return
 			}
 			if _, err := os.Stat(l); err != nil {
-				fail(fmt.Errorf("path %q: %v", l, err))
+				fail(fmt.Errorf("%s: не знайдено", l))
 				return
 			}
 			if isSystemRoot(l) {
-				fail(fmt.Errorf("path %q: the whole system disk is not scanned - use «Скан документів» or choose folders", l))
+				fail(fmt.Errorf("%s: цілий системний диск не сканується — «Скан документів» або окремі теки", l))
 				return
 			}
 			sq.Paths = append(sq.Paths, l)
 		}
 		if len(sq.Paths) == 0 {
-			fail(fmt.Errorf("нічого не вибрано: позначте галочками теки або файли"))
+			fail(errors.New("нічого не вибрано: позначте галочками теки або файли"))
 			return
 		}
 	default:

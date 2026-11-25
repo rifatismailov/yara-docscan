@@ -1,25 +1,24 @@
 {{define "quarantine"}}{{template "head" .}}
 {{$p := .}}{{with .Data}}
 <h1>Карантин</h1>
-<p class="hint">{{.Dir}} · {{len .Items}} файл(ів), {{mb .Bytes}}. Тут — файли, які DocScan прибрав (чорний список, LNK, небезпечні
-документи), і оригінали документів до знешкодження. Звідки і чому — із запису виявлення з тим самим sha256.
-Повернути = спершу виключення (шлях + sha256), потім файл на місце. Видалити — назавжди.</p>
+<p class="hint">{{.Dir}} · {{len .Items}} файл(ів), {{mb .Bytes}}. Файли, які DocScan прибрав (заблоковані, LNK, небезпечні документи), і
+оригінали документів до знешкодження. «Повернути» спершу додає файл у дозволені (шлях + sha256), потім кладе на місце; «Видалити» — назавжди.</p>
 {{if .Items}}
-<table><tr><th>коли</th><th>файл</th><th>звідки і чому</th><th>розмір</th><th></th></tr>
+<table><tr><th>коли</th><th>файл і звідки</th><th>чому</th><th>розмір</th><th></th></tr>
 {{range .Items}}<tr>
-<td class="nowrap">{{ts .Time}}</td>
-<td><b>{{.Orig}}</b><br><span class="hint">{{.Name}}</span><br><code>{{short .SHA 16}}</code>{{if .Err}}<br><span class="error">{{.Err}}</span>{{end}}</td>
-<td class="path">{{with .Rec}}<a href="/record?f={{.File}}&o={{.Off}}">{{.Path}}</a><br>
-<span class="v v-{{.Verdict}}">{{.Verdict}}</span> {{.Disarm}}{{if .List}} · список: {{.List}}{{if .ListComment}} — {{.ListComment}}{{end}}{{end}}
-{{range .Rules}} <span class="tag">{{.}}</span>{{end}}{{else}}<span class="hint">запис виявлення не знайдено (старий або ротований журнал) — повернути не можна, лише видалити</span>{{end}}</td>
+<td class="when">{{ts .Time}}</td>
+<td class="path"><b>{{.Orig}}</b><br>{{with .Rec}}<a href="/record?f={{.File}}&o={{.Off}}">{{.Path}}</a>{{else}}<span class="hint">звідки — невідомо (запису виявлення вже немає): повернути не можна, лише видалити</span>{{end}}
+<br><span class="hint">{{.Name}} · {{short .SHA 16}}</span>{{if .Err}}<br><span class="error">{{.Err}}</span>{{end}}</td>
+<td>{{with .Rec}}<span class="v v-{{.Verdict}}">{{.Verdict}}</span> <span class="hint">{{.Disarm}}</span>{{if .List}}<br><span class="hint">список: {{.List}}{{if .ListComment}} — {{.ListComment}}{{end}}</span>{{end}}
+<br>{{range .Rules}}<span class="tag">{{.}}</span>{{end}}{{end}}</td>
 <td class="nowrap">{{mb .Size}}</td>
-<td>
+<td class="qact">
 {{if .Rec}}<form method="post" action="/quarantine/restore" class="stack">{{template "csrf" $p}}<input type="hidden" name="name" value="{{.Name}}">
-  <select name="mode"><option value="exact">виключення: лише цей файл</option><option value="path">виключення: будь-яка версія за шляхом</option></select>
-  {{if ne .Rec.Disarm "quarantined"}}<label><input type="checkbox" name="replace"> замінити знешкоджену копію оригіналом</label>{{end}}
-  <button class="small">↩ Повернути</button></form>{{end}}
+  <select name="mode" title="що додати в дозволені"><option value="exact">лише цей файл</option><option value="path">будь-яка версія</option></select>
+  {{if ne .Rec.Disarm "quarantined"}}<label><input type="checkbox" name="replace"> замінити знешкоджену копію</label>{{end}}
+  <div><button class="small">↩ Повернути</button></div></form>{{end}}
 <form method="post" action="/quarantine/delete" class="row">{{template "csrf" $p}}<input type="hidden" name="name" value="{{.Name}}">
-  <label><input type="checkbox" name="confirm"> так, видалити назавжди</label> <button class="small danger">✕ Видалити</button></form>
+  <label><input type="checkbox" name="confirm"> назавжди</label> <button class="small danger">✕ Видалити</button></form>
 </td></tr>{{end}}
 </table>
 {{else}}<p class="hint">Карантин порожній.</p>{{end}}

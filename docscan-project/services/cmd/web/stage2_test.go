@@ -63,21 +63,23 @@ func TestModeAndPause(t *testing.T) {
 	if w := do("GET", "/mode", nil); w.Code != 200 || !strings.Contains(w.Body.String(), `value="detect"`) {
 		t.Fatalf("mode page %d", w.Code)
 	}
-	// detect-only; a relative folder is refused
-	if w := do("POST", "/mode", url.Values{"mode": {"detect"}, "watch": {"Users"}, "workers": {"0"}}); !strings.Contains(w.Body.String(), "full path") {
-		t.Fatal("relative folder accepted")
+	// the mode page has no folders / parallel scans any more (the installer sets them) and the pause buttons
+	if w := do("GET", "/mode", nil).Body.String(); strings.Contains(w, `name="watch"`) || strings.Contains(w, `name="workers"`) || !strings.Contains(w, `value="1h"`) {
+		t.Fatal("mode page: folders / workers shown or the pause buttons missing")
 	}
-	if w := do("POST", "/mode", url.Values{"mode": {"detect"}, "watch": {"C:\\Users\r\nD:\\Share"}, "workers": {"4"}}); w.Code != http.StatusSeeOther {
+	// detect-only: only the mode changes; folders and parallel scans set by the installer stay
+	os.WriteFile(p.settingsFile(), []byte(`{"watch_path":["C:\\Users","D:\\Share"],"workers":4}`), 0o644)
+	if w := do("POST", "/mode", url.Values{"mode": {"detect"}, "watch": {"Users"}, "workers": {"9"}}); w.Code != http.StatusSeeOther {
 		t.Fatalf("save mode: %d %s", w.Code, w.Body.String())
 	}
 	set, err := readSettings(p)
-	if err != nil || set.DetectOnly == nil || !*set.DetectOnly || len(set.WatchPath) != 2 || *set.Workers != 4 {
+	if err != nil || set.DetectOnly == nil || !*set.DetectOnly || len(set.WatchPath) != 2 || set.Workers == nil || *set.Workers != 4 {
 		t.Fatalf("settings.json: %+v %v", set, err)
 	}
 	var ij map[string]map[string]any
 	b, _ := os.ReadFile(filepath.Join(p.data, "install.json"))
 	json.Unmarshal(b, &ij)
-	if ij["params"]["DetectOnly"] != true || ij["params"]["OssecDir"] != "x" {
+	if ij["params"]["DetectOnly"] != true || ij["params"]["OssecDir"] != "x" || ij["params"]["Workers"] != float64(0) {
 		t.Fatalf("install.json not synced (or other params lost): %v", ij["params"])
 	}
 	auditHas(t, p, "watcher-settings")
@@ -92,7 +94,7 @@ func TestModeAndPause(t *testing.T) {
 	if !*set.DetectOnly || len(set.WatchPath) != 2 {
 		t.Fatal("the pause must keep the other settings")
 	}
-	if w := do("GET", "/", nil); !strings.Contains(w.Body.String(), "ПАУЗІ") {
+	if w := do("GET", "/", nil); !strings.Contains(w.Body.String(), "на паузі") {
 		t.Fatal("status page: no pause banner")
 	}
 	auditHas(t, p, "blacklist-paused")
@@ -147,7 +149,7 @@ func TestUpdates(t *testing.T) {
 	// refused by the updater -> nothing written, the form keeps what was typed
 	form.Set("mode", "sometimes")
 	w := do("POST", "/updates", form)
-	if !strings.Contains(w.Body.String(), "refuses") || !strings.Contains(w.Body.String(), "https://example.org/rules") {
+	if !strings.Contains(w.Body.String(), "відхиляє") || !strings.Contains(w.Body.String(), "https://example.org/rules") {
 		t.Fatalf("refused config: %s", w.Body.String())
 	}
 	b2, _ := os.ReadFile(p.updaterJSON())

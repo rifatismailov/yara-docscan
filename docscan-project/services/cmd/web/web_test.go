@@ -140,7 +140,7 @@ func TestSignInFlow(t *testing.T) {
 	if w := do("POST", "/password", url.Values{"csrf": {"bad"}, "old": {pw}, "new": {nw}, "new2": {nw}}, sc); w.Code != http.StatusForbidden {
 		t.Fatalf("bad CSRF: %d", w.Code)
 	}
-	if w := do("POST", "/password", url.Values{"csrf": {m[1]}, "old": {pw}, "new": {"short"}, "new2": {"short"}}, sc); !strings.Contains(w.Body.String(), "at least") {
+	if w := do("POST", "/password", url.Values{"csrf": {m[1]}, "old": {pw}, "new": {"short"}, "new2": {"short"}}, sc); !strings.Contains(w.Body.String(), "не менше") {
 		t.Fatal("short password accepted")
 	}
 	if w := do("POST", "/password", url.Values{"csrf": {m[1]}, "old": {pw}, "new": {nw}, "new2": {nw}}, sc); w.Code != http.StatusSeeOther {
@@ -189,25 +189,25 @@ func TestLimiter(t *testing.T) {
 	l := &limiter{}
 	now := time.Now()
 	for i := 0; i < 3; i++ {
-		if l.check(now) != nil {
+		if l.wait(now) > 0 {
 			t.Fatal("blocked too early")
 		}
 		l.fail(now)
 	}
-	if l.check(now) == nil {
+	if l.wait(now) == 0 {
 		t.Fatal("not blocked after 3 failures")
 	}
-	if l.check(now.Add(2*time.Second)) != nil {
+	if l.wait(now.Add(2*time.Second)) > 0 {
 		t.Fatal("still blocked after the wait")
 	}
 	for i := 0; i < 30; i++ {
 		l.fail(now)
 	}
-	if l.check(now.Add(15*time.Minute+time.Second)) != nil {
+	if l.wait(now.Add(15*time.Minute+time.Second)) > 0 {
 		t.Fatal("the wait must not exceed 15 min")
 	}
 	l.ok()
-	if l.check(now) != nil {
+	if l.wait(now) > 0 {
 		t.Fatal("success must reset")
 	}
 }

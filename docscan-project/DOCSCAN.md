@@ -131,7 +131,6 @@ DocScan на ПК — це **три служби Windows** і **одна тек�
 |---|---|
 | updater | оновлення правил: зупинити watcher, замінити `rules\`, запустити, дочекатися `start: watching`, інакше відкат |
 | updater через `install.ps1 -Reuse` | оновлення програми: інсталятор зупиняє й запускає всі три служби |
-| веб | зміна тек чи кількості сканувань |
 
 **Спільний код Go:**
 - `orglists` — формат і перевірка списків (усі три);
@@ -139,7 +138,7 @@ DocScan на ПК — це **три служби Windows** і **одна тек�
 - `drives` — диски, USB, теки програм (watcher і веб);
 - `manifest` — підпис релізів (updater і cirun).
 
-Формат `settings.json` описаний двічі: у watcher (`settings.go`) і у вебі (`web/settings.go`). Це місце, де вони можуть
+Формат `settings.json` описаний двічі: у watcher (`cmd/watcher/settings.go`) і у вебі (`cmd/web/mode.go`). Це місце, де вони можуть
 розійтися.
 
 **Профілі встановлення** (зараз через параметри інсталятора):
@@ -358,7 +357,7 @@ yara64.exe -w --docscan-json
 | `rules\critical\*.yar` | правила третього проходу |
 
 Правила читаються лише на старті. Нові правила діють після перезапуску служби: його роблять DocScanUpdater (оновлення
-правил) і веб (зміна тек чи кількості сканувань). Політика `docscan-policy.yar` приходить лише з пакетом правил
+правил) та інсталятор; веб службу не перезапускає. Політика `docscan-policy.yar` приходить лише з пакетом правил
 (дзеркало організації); локальної правки політики на ПК немає (вкладку «Політика» прибрано 2026-11-25).
 
 #### Дані — `C:\ProgramData\DocScan`
@@ -1300,15 +1299,34 @@ docscan-web.exe -DataDir C:\ProgramData\DocScan -InstallDir "C:\Program Files\Do
 | **Стан** `/` | версії (`VERSION.txt`, `rules\VERSION.txt`), стан служб (диспетчер служб Windows), режим, останні записи й оновлення | — |
 | **Виявлення** `/detections`, `/record` | `results\docscan-results.json` і ротовані копії `.1`…`.5` | — (з запису: «додати у виключення і повернути файл») |
 | **Журнали** `/logs` | хвости `watcher.log`, `updater.log`, `web.log` | — |
-| **Режим і чорний список** `/mode`, `/pause` | `settings.json`, `install.json` | `settings.json` (режим, пауза, теки, кількість сканувань) + синхронізує `install.json`; при зміні тек чи кількості — **перезапускає DocScanWatcher** |
+| **Режим** `/mode`, `/pause` | `settings.json`, `install.json` | `settings.json`: режим (+ синхронізує `install.json`) і пауза блокування (`blacklist_paused_until`); теки й кількість сканувань у вебі не змінюються (інсталятор: `-WatchPath`, `-Workers`) |
 | **Оновлення** `/updates` | `update\updater.json`, `results\docscan-updates.json` | `updater.json` (спершу перевіряє `docscan-updater -CheckConfig`; попередній → `updater.json.bak`); «Перевірити зараз» → файл `update\check-now` |
-| **Виключення** `/exceptions` | `lists\*.json` | `lists\whitelist.local.json`, `blacklist.local.json` |
+| **Дозволені й заблоковані** `/exceptions` | `lists\*.json`, `settings.json` (показ паузи) | розділи «Дозволені» (білий список) і «Заблоковані» (чорний): записи ПК → `lists\whitelist.local.json`, `blacklist.local.json`; записи організації — лише перегляд |
 | **Карантин** `/quarantine` | `quarantine\*.docscan-bak`, записи | повернути файл на місце (з виключенням `whitelist.local.json`) або видалити назавжди |
 | **Макроси** `/macros`, `/macro` | `macros\` (код VBA) | — |
 | **Сканування** `/scan`, `/scan/browse` | `scan\status.json`, `history.json`, диски, імена файлів у провіднику «теки →» (вміст не відкриває; нічого не позначено — уся відкрита тека; ручного вводу шляху немає) | `scan\request-<id>.json`, `cancel-<id>`, `settings.json` (режим флешок) |
 | **Пароль**, вхід, вихід | `web\auth.json` | `web\auth.json`; видаляє `initial-password.txt` після першої зміни пароля |
 
 ---
+
+### Код (`services/cmd/web/`)
+
+Один файл — одна сторінка або одна роль:
+
+| Файл | Що в ньому |
+|---|---|
+| `main.go` | запуск, служба Windows, команди `-InitTLS` / `-InitAuth` / `-ResetPassword` |
+| `server.go` | маршрути, заголовки безпеки, перевірка Host, CSRF, вивід сторінок |
+| `auth.go` | пароль (PBKDF2), тимчасовий пароль, сесії, обмеження спроб; сторінки входу, виходу, пароля |
+| `audit.go` | запис кожної дії: `web.log` і `event: "Admin"` у `docscan-results.json` |
+| `paths.go` | усі файли й теки, з якими працює веб |
+| `files.go` | читання / атомарний запис / копія / sha256 / `.websha`, журнал `web.log` |
+| `records.go` | записи `docscan-results.json`: читання з кінця, фільтр, запис за посиланням |
+| `status.go`, `detections.go`, `document.go` | «Стан»; «Виявлення», «Запис», «Журнали»; що знайдено в документі, «Макроси» |
+| `scan.go`, `browse.go` | «Сканування»; провідник «теки →» |
+| `mode.go`, `lists.go`, `quarantine.go`, `updates.go` | «Режим» і пауза; «Дозволені й заблоковані»; «Карантин»; «Оновлення» |
+| `cert.go`, `svc_*.go`, `winuser_*.go` | сертифікат HTTPS; стан служб; хто з користувачів Windows відкрив веб |
+| `templates/*.html`, `static/style.css` | сторінки (по файлу на сторінку) і стиль; вшиті в exe, без JavaScript |
 
 ### Файли
 
@@ -1327,7 +1345,7 @@ docscan-web.exe -DataDir C:\ProgramData\DocScan -InstallDir "C:\Program Files\Do
 | `web\auth.json` | пише і читає | — | хеш пароля admin (PBKDF2-SHA256), строк тимчасового пароля |
 | `web\initial-password.txt` | пише (`-InitAuth`), **видаляє** після першого входу або через 24 год | читає адмін | тимчасовий пароль |
 | `web\cert.pem`, `key.pem`, `cert.cer` | пише (`-InitTLS`), читає | `install.ps1` додає `cert.cer` у довірені | HTTPS |
-| `settings.json` (+`.websha`) | **пише**, читає | читає watcher, пише `install.ps1` | режим, пауза чорного списку, теки, кількість сканувань, режим флешок |
+| `settings.json` (+`.websha`) | **пише**, читає | читає watcher, пише `install.ps1` | режим, пауза чорного списку, режим флешок (теки й кількість сканувань пише лише `install.ps1`) |
 | `install.json` | читає, оновлює параметри режиму | пише `install.ps1`, читає updater | параметри ПК для наступних оновлень |
 | `lists\whitelist.local.json`, `blacklist.local.json` (+`.websha`) | **пише** | читає watcher | локальні виключення ПК |
 | `lists\whitelist.json`, `blacklist.json` | читає | пише updater | списки організації (лише показ) |
@@ -1344,8 +1362,7 @@ docscan-web.exe -DataDir C:\ProgramData\DocScan -InstallDir "C:\Program Files\Do
 
 #### Служби Windows
 - Читає стан **DocScanWatcher**, **DocScanUpdater**, **DocScanWeb** і **WazuhSvc**.
-- **Перезапускає DocScanWatcher** у трьох випадках: застосування політики, повернення пакетної, зміна тек чи кількості
-  сканувань.
+- **DocScanWatcher не перезапускає** (режим і пауза діють без перезапуску; теки й кількість сканувань — лише інсталятор).
 
 ---
 

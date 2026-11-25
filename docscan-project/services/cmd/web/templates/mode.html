@@ -1,0 +1,35 @@
+{{define "mode"}}{{template "head" .}}
+{{$p := .}}{{with .Data}}
+<h1>Режим</h1>
+<p class="hint">Що DocScan робить із загрозами на цьому ПК. Застосовується за кілька секунд, без перезапуску служби.</p>
+
+<section class="card"><h2>Режим роботи</h2>
+<form method="post" action="/mode" class="stack">{{template "csrf" $p}}
+  <label><input type="radio" name="mode" value="full" {{if not .DetectOnly}}checked{{end}}> <span><b>Повний</b> — небезпечні документи знешкоджуються, заблоковані й заборонені файли — у карантин</span></label>
+  <label><input type="radio" name="mode" value="detect" {{if .DetectOnly}}checked{{end}}> <span><b>Detect only</b> — лише повідомлення, файли не змінюються</span></label>
+  <p class="hint">зараз: {{if .DetectOnly}}detect only{{else}}повний{{end}} (джерело: {{.Source}})</p>
+  <div><button class="primary">Зберегти</button></div>
+</form>
+</section>
+
+<section class="card{{if .Pause.On}} alert{{end}}"><h2>Блокування заблокованих файлів</h2>
+{{if .Pause.On}}
+<p class="warn">На паузі {{if .Pause.Manual}}до ручного ввімкнення{{else}}до {{ts .Pause.Until}}{{end}} ({{.Pause.By}}): збіги із заблокованими лише
+повідомляються, файли не забираються в карантин.</p>
+<form method="post" action="/pause" class="row">{{template "csrf" $p}}<input type="hidden" name="for" value="off">
+<button class="primary">▶ Увімкнути блокування зараз</button></form>
+<p class="hint">Після ввімкнення файли, що вже лежать під масками заблокованих, перевіряються ще раз.</p>
+{{else}}
+<p>Діє: збіг із <a href="/exceptions#blocked">заблокованими</a> — HIGH і карантин{{if .DetectOnly}} (зараз режим detect only — лише повідомлення){{end}}.</p>
+<form method="post" action="/pause" class="row">{{template "csrf" $p}}
+  <span class="lbl">тимчасово вимкнути:</span>
+  <button name="for" value="1h">на 1 год</button>
+  <button name="for" value="4h">на 4 год</button>
+  <button name="for" value="today">до кінця дня ({{.Today}})</button>
+  <button name="for" value="manual" class="danger">до ручного ввімкнення</button>
+</form>
+<p class="hint">Пауза — запис у Wazuh (хто, до коли). Відомі шкідливі файли за sha256 теж лише повідомлятимуться — паузу тримайте короткою.</p>
+{{end}}
+</section>
+{{end}}
+{{template "foot" .}}{{end}}

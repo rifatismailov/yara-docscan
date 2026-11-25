@@ -37,7 +37,7 @@ func TestExceptionAndRestore(t *testing.T) {
 		t.Fatal("the list source is not shown")
 	}
 	page := do("GET", "/record?f="+m[1]+"&o="+m[2], nil).Body.String()
-	if !strings.Contains(page, "Додати у виключення і повернути файл") {
+	if !strings.Contains(page, "Дозволити і повернути файл") {
 		t.Fatal("record page: no exception button")
 	}
 	form := do("GET", "/exceptions?f="+m[1]+"&o="+m[2], nil).Body.String()
@@ -45,7 +45,7 @@ func TestExceptionAndRestore(t *testing.T) {
 		t.Fatal("exception form not prefilled from the record")
 	}
 	// a relative path is refused by the same check as the watcher's: nothing written
-	if w := do("POST", "/exceptions/add", url.Values{"kind": {"white"}, "path": {`Desktop\OurApp.exe`}, "comment": {"x"}}); !strings.Contains(w.Body.String(), "not saved") {
+	if w := do("POST", "/exceptions/add", url.Values{"kind": {"white"}, "path": {`Desktop\OurApp.exe`}, "comment": {"x"}}); !strings.Contains(w.Body.String(), "не збережено") {
 		t.Fatalf("bad entry: %s", w.Body.String())
 	}
 	if fileExists(p.listFile("white", true)) {

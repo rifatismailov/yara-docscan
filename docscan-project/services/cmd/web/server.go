@@ -1,21 +1,18 @@
 package main
 
-// Опис: docscan-project/DOCSCAN.md#web — маршрути, вхід, аудит.
-
-// HTTP: заголовки безпеки, перевірка Host (лише 127.0.0.1:<порт> / localhost:<порт> — від DNS rebinding), вхід,
-// сесія (cookie Secure; HttpOnly; SameSite=Strict), CSRF-токен у кожній формі POST, дії по одній (м'ютекс).
+// HTTP: заголовки безпеки, перевірка Host (лише 127.0.0.1:<порт> / localhost:<порт> — від DNS rebinding), сесія
+// (cookie Secure; HttpOnly; SameSite=Strict), CSRF-токен у кожній формі POST, дії по одній (м'ютекс), маршрути і
+// вивід сторінок. Опис: docscan-project/DOCSCAN.md#web.
 
 import (
 	"crypto/subtle"
 	"embed"
-	"encoding/json"
 	"fmt"
 	"html/template"
 	"net"
 	"net/http"
 	"net/url"
 	"os"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -23,11 +20,6 @@ import (
 
 //go:embed templates/*.html static/*
 var assets embed.FS
-
-const (
-	sessionCookie = "docscan_session"
-	preCookie     = "docscan_login"
-)
 
 type server struct {
 	p      paths
@@ -61,9 +53,8 @@ func newServer(p paths, listen string, lg *logger) (*server, error) {
 }
 
 var funcs = template.FuncMap{
-	"lower": strings.ToLower,
-	"q":     url.QueryEscape,
-	"join":  strings.Join,
+	"q":    url.QueryEscape,
+	"join": strings.Join,
 	"short": func(s string, n int) string {
 		if r := []rune(s); len(r) > n {
 			return string(r[:n]) + "…"
@@ -84,7 +75,34 @@ var funcs = template.FuncMap{
 		}
 		return fmt.Sprintf("%.1f МБ", float64(b)/(1<<20))
 	},
-	"list2": func(a, b listView) []listView { return []listView{a, b} },
+	"pair": func(a, b any) []any { return []any{a, b} }, // два аргументи у вкладений шаблон (сторінка + дані)
+}
+
+// routes — сторінки й дії після входу.
+var routes = map[string]func(*server, *req){
+	"/":                   (*server).status,
+	"/detections":         (*server).detections,
+	"/record":             (*server).record,
+	"/logs":               (*server).logs,
+	"/macros":             (*server).macros,
+	"/macro":              (*server).macro,
+	"/scan":               (*server).scanPage,
+	"/scan/start":         (*server).scanStart,
+	"/scan/stop":          (*server).scanStop,
+	"/scan/usb":           (*server).scanUSB,
+	"/scan/browse":        (*server).browse,
+	"/mode":               (*server).mode,
+	"/pause":              (*server).pause,
+	"/exceptions":         (*server).exceptions,
+	"/exceptions/add":     (*server).exceptionAdd,
+	"/exceptions/remove":  (*server).exceptionRemove,
+	"/quarantine":         (*server).quarantinePage,
+	"/quarantine/restore": (*server).quarantineRestore,
+	"/quarantine/delete":  (*server).quarantineDelete,
+	"/updates":            (*server).updates,
+	"/updates/check":      (*server).updatesCheck,
+	"/password":           (*server).password,
+	"/logout":             (*server).logout,
 }
 
 // hostOK — Host запиту: лише наша адреса (сторінка з іншого «домену», що вказує на 127.0.0.1, не пройде).
@@ -124,7 +142,7 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if ss == nil {
 		if r.Method == http.MethodPost {
-			http.Error(w, "the session has ended - sign in again", http.StatusUnauthorized)
+			http.Error(w, "сесію завершено — увійдіть знову", http.StatusUnauthorized)
 			return
 		}
 		http.Redirect(w, r, "/login?next="+url.QueryEscape(r.URL.RequestURI()), http.StatusSeeOther)
@@ -137,7 +155,7 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if subtle.ConstantTimeCompare([]byte(r.FormValue("csrf")), []byte(ss.csrf)) != 1 {
-			http.Error(w, "bad form token (reload the page)", http.StatusForbidden)
+			http.Error(w, "форма застаріла — оновіть сторінку", http.StatusForbidden)
 			return
 		}
 		s.mu.Lock()
@@ -148,57 +166,12 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/password", http.StatusSeeOther)
 		return
 	}
-	rq := &req{w: w, r: r, tok: tok, ss: ss}
-	switch r.URL.Path {
-	case "/":
-		s.status(rq)
-	case "/detections":
-		s.detections(rq)
-	case "/record":
-		s.record(rq)
-	case "/logs":
-		s.logs(rq)
-	case "/mode":
-		s.mode(rq)
-	case "/pause":
-		s.pause(rq)
-	case "/updates":
-		s.updates(rq)
-	case "/updates/check":
-		s.updatesCheck(rq)
-	case "/exceptions":
-		s.exceptions(rq)
-	case "/exceptions/add":
-		s.exceptionAdd(rq)
-	case "/exceptions/remove":
-		s.exceptionRemove(rq)
-	case "/macro":
-		s.macro(rq)
-	case "/macros":
-		s.macros(rq)
-	case "/quarantine":
-		s.quarantinePage(rq)
-	case "/quarantine/restore":
-		s.quarantineRestore(rq)
-	case "/quarantine/delete":
-		s.quarantineDelete(rq)
-	case "/scan":
-		s.scanPage(rq)
-	case "/scan/start":
-		s.scanStart(rq)
-	case "/scan/stop":
-		s.scanStop(rq)
-	case "/scan/usb":
-		s.scanUSB(rq)
-	case "/scan/browse":
-		s.browse(rq)
-	case "/password":
-		s.password(rq)
-	case "/logout":
-		s.logout(rq)
-	default:
+	h := routes[r.URL.Path]
+	if h == nil {
 		http.NotFound(w, r)
+		return
 	}
+	h(s, &req{w: w, r: r, tok: tok, ss: ss})
 }
 
 type req struct {
@@ -217,13 +190,23 @@ type page struct {
 	Data                                  any
 }
 
+// render — сторінка; data, що є помилкою, — сторінка з повідомленням про помилку.
 func (s *server) render(q *req, name, title string, data any) {
+	if e, ok := data.(error); ok {
+		s.renderErr(q, name, title, nil, e)
+		return
+	}
+	s.renderErr(q, name, title, data, nil)
+}
+
+// renderErr — сторінка з даними і помилкою (дані форми не губляться).
+func (s *server) renderErr(q *req, name, title string, data any, e error) {
 	p := page{Title: title, Path: q.r.URL.Path, Flash: q.r.FormValue("flash"), Host: s.host, Now: time.Now(), Data: data}
+	if e != nil {
+		p.Error = e.Error()
+	}
 	if q.ss != nil {
 		p.CSRF, p.MustChange = q.ss.csrf, q.ss.mustChange
-	}
-	if e, ok := data.(error); ok {
-		p.Error, p.Data = e.Error(), nil
 	}
 	if rf, ok := data.(interface{ refresh() int }); ok {
 		p.Refresh = rf.refresh()
@@ -234,177 +217,14 @@ func (s *server) render(q *req, name, title string, data any) {
 	}
 }
 
-// renderErr — сторінка з даними форми і помилкою (введене не губиться).
-func (s *server) renderErr(q *req, name, title string, data any, e error) {
-	p := page{Title: title, Path: q.r.URL.Path, Host: s.host, Now: time.Now(), Data: data, Error: e.Error()}
-	if q.ss != nil {
-		p.CSRF, p.MustChange = q.ss.csrf, q.ss.mustChange
-	}
-	q.w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := s.tpl.ExecuteTemplate(q.w, name, p); err != nil {
-		s.log.Log("ERROR", "template %s: %v", name, err)
-	}
-}
-
+// back — після дії: назад на сторінку з повідомленням (redirect, щоб оновлення сторінки не повторило дію).
 func (s *server) back(q *req, to, flash string) {
-	u := to
 	if flash != "" {
 		sep := "?"
 		if strings.Contains(to, "?") {
 			sep = "&"
 		}
-		u += sep + "flash=" + url.QueryEscape(flash)
+		to += sep + "flash=" + url.QueryEscape(flash)
 	}
-	http.Redirect(q.w, q.r, u, http.StatusSeeOther)
-}
-
-// ---------------------------------------------------------------- вхід / вихід / пароль
-
-type loginData struct {
-	Next, Pre, Err string
-	FirstRun       bool
-}
-
-func (s *server) login(w http.ResponseWriter, r *http.Request) {
-	next := r.FormValue("next")
-	if !strings.HasPrefix(next, "/") || strings.HasPrefix(next, "//") {
-		next = "/"
-	}
-	q := &req{w: w, r: r}
-	show := func(d loginData, code int) {
-		if c, err := r.Cookie(preCookie); d.Pre == "" && err == nil && len(c.Value) >= 32 {
-			d.Pre = c.Value
-		}
-		if d.Pre == "" { // токен форми до входу — у cookie (подвійна відправка)
-			d.Pre = randomToken()
-			http.SetCookie(w, &http.Cookie{Name: preCookie, Value: d.Pre, Path: "/login", HttpOnly: true, Secure: true, SameSite: http.SameSiteStrictMode, MaxAge: 900})
-		}
-		d.FirstRun = fileExists(s.p.initialPw())
-		if code != 0 {
-			w.WriteHeader(code)
-		}
-		s.render(q, "login", "Вхід", d)
-	}
-	if r.Method != http.MethodPost {
-		show(loginData{Next: next}, 0)
-		return
-	}
-	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
-	r.ParseForm()
-	c, err := r.Cookie(preCookie)
-	if err != nil || c.Value == "" || subtle.ConstantTimeCompare([]byte(c.Value), []byte(r.FormValue("pre"))) != 1 {
-		show(loginData{Next: next, Err: "the form expired - try again"}, http.StatusUnauthorized)
-		return
-	}
-	now := time.Now()
-	if err := s.lim.check(now); err != nil {
-		show(loginData{Next: next, Err: err.Error()}, http.StatusTooManyRequests)
-		return
-	}
-	a, err := readAuth(s.p)
-	user := strings.TrimSpace(r.FormValue("name"))
-	if err != nil || !strings.EqualFold(user, a.User) || !verifyPassword(r.FormValue("password"), a.Hash) {
-		locked := s.lim.fail(now)
-		s.audit(r, user, "login-failed", "")
-		if locked > 0 {
-			s.audit(r, user, "login-locked", fmt.Sprintf("%d failed sign-ins in a row - sign-in locked for %s", s.lim.failures(), locked))
-		}
-		show(loginData{Next: next, Err: "wrong user or password"}, http.StatusUnauthorized)
-		return
-	}
-	if a.tempExpired(now) { // тимчасовий пароль прострочено: не діє, файл з ним — геть
-		os.Remove(s.p.initialPw())
-		s.audit(r, a.User, "login-refused", "the temporary password expired "+a.Expires)
-		show(loginData{Next: next, Err: "the temporary password expired - make a new one: docscan-web.exe -ResetPassword (PowerShell as administrator)"}, http.StatusUnauthorized)
-		return
-	}
-	s.lim.ok()
-	tok := s.ss.add(a.MustChange, now)
-	http.SetCookie(w, &http.Cookie{Name: preCookie, Value: "", Path: "/login", MaxAge: -1})
-	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: tok, Path: "/", HttpOnly: true, Secure: true, SameSite: http.SameSiteStrictMode})
-	s.audit(r, a.User, "login", "")
-	if a.MustChange {
-		next = "/password"
-	}
-	http.Redirect(w, r, next, http.StatusSeeOther)
-}
-
-func (s *server) logout(q *req) {
-	if q.r.Method == http.MethodPost {
-		s.ss.end(q.tok)
-		s.audit(q.r, AdminUser, "logout", "")
-	}
-	http.SetCookie(q.w, &http.Cookie{Name: sessionCookie, Value: "", Path: "/", MaxAge: -1})
-	http.Redirect(q.w, q.r, "/login", http.StatusSeeOther)
-}
-
-func (s *server) password(q *req) {
-	if q.r.Method != http.MethodPost {
-		s.render(q, "password", "Пароль", nil)
-		return
-	}
-	a, err := readAuth(s.p)
-	if err != nil {
-		s.render(q, "password", "Пароль", err)
-		return
-	}
-	if !verifyPassword(q.r.FormValue("old"), a.Hash) {
-		s.render(q, "password", "Пароль", fmt.Errorf("the current password is wrong"))
-		return
-	}
-	nw := q.r.FormValue("new")
-	if err := checkNewPassword(nw); err != nil {
-		s.render(q, "password", "Пароль", err)
-		return
-	}
-	if nw != q.r.FormValue("new2") {
-		s.render(q, "password", "Пароль", fmt.Errorf("the new passwords differ"))
-		return
-	}
-	if nw == q.r.FormValue("old") {
-		s.render(q, "password", "Пароль", fmt.Errorf("the new password is the same as the current one"))
-		return
-	}
-	h, err := hashPassword(nw)
-	if err != nil {
-		s.render(q, "password", "Пароль", err)
-		return
-	}
-	if err := writeAuth(s.p, &authFile{User: a.User, Hash: h, Changed: time.Now().Format(time.RFC3339)}); err != nil {
-		s.render(q, "password", "Пароль", err)
-		return
-	}
-	os.Remove(s.p.initialPw())
-	q.ss.mustChange = false
-	s.ss.endAll(q.tok)
-	s.audit(q.r, a.User, "password-changed", "")
-	s.back(q, "/", "пароль змінено")
-}
-
-// ---------------------------------------------------------------- аудит
-
-// audit — дія у веб: рядок у web.log і запис event "Admin" у docscan-results.json (його читає агент Wazuh).
-func (s *server) audit(r *http.Request, user, action, detail string) {
-	wu := ""
-	if r != nil {
-		port, _ := strconv.Atoi(s.port)
-		wu = winUser(r.RemoteAddr, port) // хто з користувачів Windows (термінальний сервер: веб бачать усі)
-	}
-	s.log.Log("AUDIT", "%s%s %s %s", user, map[bool]string{true: " (" + wu + ")", false: ""}[wu != ""], action, detail)
-	if err := writeAdminRecord(s.p, s.host, user, action, detail, "web", wu); err != nil {
-		s.log.Log("ERROR", "audit record: %v", err)
-	}
-}
-
-// writeAdminRecord — запис аудиту (event "Admin") у docscan-results.json -> Wazuh. via: web | cli;
-// windows_user — обліковий запис Windows, що зробив дію (браузер / командний рядок), якщо відомий.
-func writeAdminRecord(p paths, host, user, action, detail, via, wu string) error {
-	a := map[string]string{"user": user, "action": action, "detail": detail, "via": via}
-	if wu != "" {
-		a["windows_user"] = wu
-	}
-	rec := map[string]any{"timestamp": time.Now().Format("2006-01-02T15:04:05.000-07:00"), "source": "docscan", "host": host,
-		"event": "Admin", "admin": a}
-	b, _ := json.Marshal(rec)
-	return appendLine(p.resultsLog(), append(b, '\n'))
+	http.Redirect(q.w, q.r, to, http.StatusSeeOther)
 }

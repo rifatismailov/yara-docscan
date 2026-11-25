@@ -1,13 +1,14 @@
 package main
 
-// Що DocScan знайшов у документі: блок docscan запису виявлення (знахідки з поясненнями, докази — віддалений шаблон,
+// Що DocScan знайшов у документі (сторінка «Запис»): блок docscan запису виявлення (знахідки з поясненнями, докази — віддалений шаблон,
 // DDE, підозрілі місця VBA, ціль ярлика, документи в архіві; правила YARA з описами і місцем спрацювання), код
 // макросів зі сховища watcher-а (<DataDir>\macros\<sha256 документа>.vba.txt) з підсвіченими підозрілими рядками.
-// Лише читання.
+// Сторінки «Макроси» і «Код макросів». Лише читання. Опис: docscan-project/DOCSCAN.md#web.
 
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -15,8 +16,6 @@ import (
 	"strings"
 	"time"
 )
-
-func (p paths) macroDir() string { return filepath.Join(p.data, "macros") }
 
 var shaRe = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
@@ -211,13 +210,13 @@ type macroData struct {
 func (s *server) macro(q *req) {
 	sha := strings.ToLower(strings.TrimSpace(q.r.FormValue("sha")))
 	if !shaRe.MatchString(sha) {
-		s.render(q, "macro", "Макроси", errText("give the sha256 of the document"))
+		s.render(q, "macro", "Макроси", errors.New("потрібен sha256 документа"))
 		return
 	}
 	f := filepath.Join(s.p.macroDir(), sha+".vba.txt")
 	st, err := os.Stat(f)
 	if err != nil {
-		s.render(q, "macro", "Макроси", errText("no macro code of this document in "+s.p.macroDir()+" (kept 90 days / 500 MB)"))
+		s.render(q, "macro", "Макроси", errors.New("коду макросів цього документа немає в "+s.p.macroDir()+" (зберігається 90 днів / до 500 МБ)"))
 		return
 	}
 	b, err := os.ReadFile(f)
@@ -289,7 +288,3 @@ func (s *server) macros(q *req) {
 		Dir   string
 	}{items, s.p.macroDir()})
 }
-
-type errText string
-
-func (e errText) Error() string { return string(e) }

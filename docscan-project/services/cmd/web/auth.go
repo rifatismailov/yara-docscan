@@ -1,12 +1,11 @@
 package main
 
-// Опис: docscan-project/DOCSCAN.md#web — пароль, тимчасовий пароль, сесії, обмеження спроб.
-
 // Вхід: один обліковий запис admin. Пароль генерує install.ps1 (docscan-web.exe -InitAuth): у web\auth.json лише
 // хеш (PBKDF2-SHA256), сам пароль — у web\initial-password.txt (ACL: SYSTEM, Адміністратори) до першого входу,
 // після якого DocScan вимагає змінити пароль і видаляє файл. Тимчасовий пароль діє tempPasswordTTL (24 год): потім
 // він не приймається, а файл видаляється (служба перевіряє раз на годину) — пароль, який ніхто не забрав, не лежить
 // на ПК роками; новий — docscan-web.exe -ResetPassword. Сесії — у пам'яті служби (перезапуск = вийти).
+// Опис: docscan-project/DOCSCAN.md#web.
 
 import (
 	"crypto/pbkdf2"
@@ -17,6 +16,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"strconv"
 	"strings"
@@ -26,6 +26,11 @@ import (
 
 // AdminUser — ім'я облікового запису.
 const AdminUser = "admin"
+
+const (
+	sessionCookie = "docscan_session"
+	preCookie     = "docscan_login" // токен форми входу (подвійна відправка: cookie + поле форми)
+)
 
 const (
 	pbkdfIter   = 600_000
@@ -104,7 +109,7 @@ func randomToken() string {
 
 func checkNewPassword(pw string) error {
 	if len([]rune(pw)) < minPassword {
-		return fmt.Errorf("the password needs at least %d characters", minPassword)
+		return fmt.Errorf("пароль — не менше %d символів", minPassword)
 	}
 	return nil
 }
@@ -116,7 +121,7 @@ func readAuth(p paths) (*authFile, error) {
 	}
 	var a authFile
 	if err := json.Unmarshal(b, &a); err != nil || a.Hash == "" {
-		return nil, fmt.Errorf("%s is broken (docscan-web.exe -ResetPassword makes a new password)", p.authFile())
+		return nil, fmt.Errorf("%s зламаний (новий пароль: docscan-web -ResetPassword)", p.authFile())
 	}
 	return &a, nil
 }
@@ -223,15 +228,14 @@ type limiter struct {
 	until time.Time
 }
 
-var errWait = errors.New("too many failed sign-ins")
-
-func (l *limiter) check(now time.Time) error {
+// wait — скільки ще чекати до наступної спроби (0 — можна).
+func (l *limiter) wait(now time.Time) time.Duration {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if now.Before(l.until) {
-		return fmt.Errorf("%w - wait %s", errWait, l.until.Sub(now).Round(time.Second))
+		return l.until.Sub(now)
 	}
-	return nil
+	return 0
 }
 
 // fail — невдала спроба; повертає, на скільки вхід тепер заблоковано (0 — ще ні).
@@ -270,5 +274,121 @@ func (s *server) purgeTempPassword(now time.Time) {
 	}
 	if err := os.Remove(s.p.initialPw()); err == nil {
 		s.audit(nil, AdminUser, "temp-password-expired", "nobody signed in with the temporary password until "+a.Expires+" - "+s.p.initialPw()+" deleted")
+	}
+}
+
+// ---------------------------------------------------------------- сторінки: вхід, вихід, пароль
+
+type loginData struct {
+	Next, Pre, Err string
+	FirstRun       bool
+}
+
+func (s *server) login(w http.ResponseWriter, r *http.Request) {
+	next := r.FormValue("next")
+	if !strings.HasPrefix(next, "/") || strings.HasPrefix(next, "//") {
+		next = "/"
+	}
+	q := &req{w: w, r: r}
+	show := func(d loginData, code int) {
+		if c, err := r.Cookie(preCookie); d.Pre == "" && err == nil && len(c.Value) >= 32 {
+			d.Pre = c.Value
+		}
+		if d.Pre == "" {
+			d.Pre = randomToken()
+			http.SetCookie(w, &http.Cookie{Name: preCookie, Value: d.Pre, Path: "/login", HttpOnly: true, Secure: true, SameSite: http.SameSiteStrictMode, MaxAge: 900})
+		}
+		d.FirstRun = fileExists(s.p.initialPw())
+		if code != 0 {
+			w.WriteHeader(code)
+		}
+		s.render(q, "login", "Вхід", d)
+	}
+	if r.Method != http.MethodPost {
+		show(loginData{Next: next}, 0)
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
+	r.ParseForm()
+	c, err := r.Cookie(preCookie)
+	if err != nil || c.Value == "" || subtle.ConstantTimeCompare([]byte(c.Value), []byte(r.FormValue("pre"))) != 1 {
+		show(loginData{Next: next, Err: "форма застаріла — спробуйте ще раз"}, http.StatusUnauthorized)
+		return
+	}
+	now := time.Now()
+	if wait := s.lim.wait(now); wait > 0 {
+		show(loginData{Next: next, Err: fmt.Sprintf("забагато невдалих спроб — зачекайте %s", wait.Round(time.Second))}, http.StatusTooManyRequests)
+		return
+	}
+	a, err := readAuth(s.p)
+	user := strings.TrimSpace(r.FormValue("name"))
+	if err != nil || !strings.EqualFold(user, a.User) || !verifyPassword(r.FormValue("password"), a.Hash) {
+		locked := s.lim.fail(now)
+		s.audit(r, user, "login-failed", "")
+		if locked > 0 {
+			s.audit(r, user, "login-locked", fmt.Sprintf("%d failed sign-ins in a row - sign-in locked for %s", s.lim.failures(), locked))
+		}
+		show(loginData{Next: next, Err: "неправильний користувач або пароль"}, http.StatusUnauthorized)
+		return
+	}
+	if a.tempExpired(now) { // тимчасовий пароль прострочено: не діє, файл з ним — геть
+		os.Remove(s.p.initialPw())
+		s.audit(r, a.User, "login-refused", "the temporary password expired "+a.Expires)
+		show(loginData{Next: next, Err: "строк тимчасового пароля минув — новий: docscan-web -ResetPassword (PowerShell від адміністратора)"}, http.StatusUnauthorized)
+		return
+	}
+	s.lim.ok()
+	tok := s.ss.add(a.MustChange, now)
+	http.SetCookie(w, &http.Cookie{Name: preCookie, Value: "", Path: "/login", MaxAge: -1})
+	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: tok, Path: "/", HttpOnly: true, Secure: true, SameSite: http.SameSiteStrictMode})
+	s.audit(r, a.User, "login", "")
+	if a.MustChange {
+		next = "/password"
+	}
+	http.Redirect(w, r, next, http.StatusSeeOther)
+}
+
+func (s *server) logout(q *req) {
+	if q.r.Method == http.MethodPost {
+		s.ss.end(q.tok)
+		s.audit(q.r, AdminUser, "logout", "")
+	}
+	http.SetCookie(q.w, &http.Cookie{Name: sessionCookie, Value: "", Path: "/", MaxAge: -1})
+	http.Redirect(q.w, q.r, "/login", http.StatusSeeOther)
+}
+
+func (s *server) password(q *req) {
+	if q.r.Method != http.MethodPost {
+		s.render(q, "password", "Пароль", nil)
+		return
+	}
+	f := q.r.FormValue
+	fail := func(e error) { s.render(q, "password", "Пароль", e) }
+	a, err := readAuth(s.p)
+	switch nw := f("new"); {
+	case err != nil:
+		fail(err)
+	case !verifyPassword(f("old"), a.Hash):
+		fail(errors.New("поточний пароль неправильний"))
+	case checkNewPassword(nw) != nil:
+		fail(checkNewPassword(nw))
+	case nw != f("new2"):
+		fail(errors.New("нові паролі не збігаються"))
+	case nw == f("old"):
+		fail(errors.New("новий пароль такий самий, як поточний"))
+	default:
+		h, err := hashPassword(nw)
+		if err == nil {
+			err = writeAuth(s.p, &authFile{User: a.User, Hash: h, Changed: time.Now().Format(time.RFC3339)})
+		}
+		if err != nil {
+			fail(err)
+			return
+		}
+		os.Remove(s.p.initialPw())
+		q.ss.mustChange = false
+		s.ss.endAll(q.tok)
+		s.audit(q.r, a.User, "password-changed", "")
+		s.back(q, "/", "пароль змінено")
 	}
 }

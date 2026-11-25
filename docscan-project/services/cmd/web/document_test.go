@@ -46,7 +46,7 @@ func TestDocumentView(t *testing.T) {
 	if !strings.Contains(code, "report.docm") {
 		t.Fatal("macro page: no link to the document record")
 	}
-	if w := do("GET", "/macro?sha=../../web/auth", nil); !strings.Contains(w.Body.String(), "give the sha256") {
+	if w := do("GET", "/macro?sha=../../web/auth", nil); !strings.Contains(w.Body.String(), "потрібен sha256") {
 		t.Fatal("bad sha accepted")
 	}
 	if l := do("GET", "/macros", nil).Body.String(); !strings.Contains(l, "report.docm") || !strings.Contains(l, "v-HIGH") {

@@ -29,7 +29,7 @@ func TestScanPage(t *testing.T) {
 
 	// start: a path -> request file for the watcher + audit
 	dir := t.TempDir()
-	w = do("POST", "/scan/start", url.Values{"kind": {"path"}, "paths": {dir + "\n"}, "detect": {"on"}})
+	w = do("POST", "/scan/start", url.Values{"kind": {"path"}, "pick": {dir}, "action": {"detect"}})
 	if w.Code != 303 {
 		t.Fatalf("start: %d %s", w.Code, w.Body.String())
 	}
@@ -45,14 +45,14 @@ func TestScanPage(t *testing.T) {
 	}
 	auditHas(t, p, "scan-start")
 	// relative / missing path refused
-	if w := do("POST", "/scan/start", url.Values{"kind": {"path"}, "paths": {"relative\\x"}}); !strings.Contains(w.Body.String(), "a full path") {
+	if w := do("POST", "/scan/start", url.Values{"kind": {"path"}, "pick": {"relative\\x"}}); !strings.Contains(w.Body.String(), "повний шлях") {
 		t.Fatal("relative path accepted")
 	}
-	if w := do("POST", "/scan/start", url.Values{"kind": {"path"}, "paths": {filepath.Join(dir, "nope")}}); w.Code == 303 {
+	if w := do("POST", "/scan/start", url.Values{"kind": {"path"}, "pick": {filepath.Join(dir, "nope")}}); w.Code == 303 {
 		t.Fatal("missing path accepted")
 	}
 	// documents on the local disks
-	if w := do("POST", "/scan/start", url.Values{"kind": {"docs"}}); !strings.Contains(w.Body.String(), "at least one local disk") {
+	if w := do("POST", "/scan/start", url.Values{"kind": {"docs"}}); !strings.Contains(w.Body.String(), "хоча б один локальний диск") {
 		t.Fatal("docs scan without a disk accepted")
 	}
 	do("POST", "/scan/start", url.Values{"kind": {"docs"}, "docs_root": {"/", "/not-a-disk"}})
@@ -69,10 +69,10 @@ func TestScanPage(t *testing.T) {
 	// no full scan of everything: the old kind, a whole local disk (path or drive button) are refused
 	before, _ := filepath.Glob(filepath.Join(sd, "request-*.json"))
 	do("POST", "/scan/start", url.Values{"kind": {"full"}})
-	if w := do("POST", "/scan/start", url.Values{"kind": {"path"}, "paths": {"/"}}); !strings.Contains(w.Body.String(), "whole system disk") {
+	if w := do("POST", "/scan/start", url.Values{"kind": {"path"}, "pick": {"/"}}); !strings.Contains(w.Body.String(), "цілий системний диск") {
 		t.Fatal("whole local disk accepted as a path")
 	}
-	if w := do("POST", "/scan/start", url.Values{"kind": {"drive"}, "root": {"/"}}); !strings.Contains(w.Body.String(), "removable") {
+	if w := do("POST", "/scan/start", url.Values{"kind": {"drive"}, "root": {"/"}}); !strings.Contains(w.Body.String(), "знімний") {
 		t.Fatal("local disk accepted by the drive button")
 	}
 	if after, _ := filepath.Glob(filepath.Join(sd, "request-*.json")); len(after) != len(before) {
@@ -166,8 +166,8 @@ func TestScanPage(t *testing.T) {
 	// "Прибрати" removes a request from the queue
 	os.RemoveAll(sd)
 	os.MkdirAll(sd, 0o755)
-	do("POST", "/scan/start", url.Values{"kind": {"path"}, "paths": {dir}, "action": {"detect"}})
-	do("POST", "/scan/start", url.Values{"kind": {"path"}, "paths": {dir}, "action": {"cure"}})
+	do("POST", "/scan/start", url.Values{"kind": {"path"}, "pick": {dir}, "action": {"detect"}})
+	do("POST", "/scan/start", url.Values{"kind": {"path"}, "pick": {dir}, "action": {"cure"}})
 	pq, _ := filepath.Glob(filepath.Join(sd, "request-*.json"))
 	if len(pq) != 1 {
 		t.Fatalf("duplicate request written: %v", pq)

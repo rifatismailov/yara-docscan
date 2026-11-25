@@ -9,12 +9,10 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/sha1"
-	"crypto/sha256"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/hex"
 	"encoding/pem"
-	"fmt"
 	"math/big"
 	"net"
 	"os"
@@ -33,13 +31,11 @@ const (
 // ensureCert — сертифікат є і дійсний ще certRenew — лишити; інакше новий. Повертає SHA-1 відбиток (як у Windows).
 func ensureCert(p paths, now time.Time) (thumb string, made bool, err error) {
 	if b, err := os.ReadFile(p.certPEM()); err == nil {
-		if blk, _ := pem.Decode(b); blk != nil {
-			if c, err := x509.ParseCertificate(blk.Bytes); err == nil && c.NotAfter.Sub(now) > certRenew && fileExists(p.keyPEM()) {
-				if !fileExists(p.certDER()) {
-					os.WriteFile(p.certDER(), c.Raw, 0o644)
-				}
-				return thumbprint(c.Raw), false, nil
+		if c := parseCert(b); c != nil && c.NotAfter.Sub(now) > certRenew && fileExists(p.keyPEM()) {
+			if !fileExists(p.certDER()) {
+				os.WriteFile(p.certDER(), c.Raw, 0o644)
 			}
+			return thumbprint(c.Raw), false, nil
 		}
 	}
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -68,24 +64,35 @@ func ensureCert(p paths, now time.Time) (thumb string, made bool, err error) {
 	if err != nil {
 		return "", false, err
 	}
-	if err := writeFileAtomic(p.keyPEM(), pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: kb}), 0o600); err != nil {
-		return "", false, err
-	}
-	if err := writeFileAtomic(p.certPEM(), pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o644); err != nil {
-		return "", false, err
-	}
-	if err := writeFileAtomic(p.certDER(), der, 0o644); err != nil {
-		return "", false, err
+	for _, f := range []struct {
+		path string
+		b    []byte
+		mode os.FileMode
+	}{
+		{p.keyPEM(), pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: kb}), 0o600},
+		{p.certPEM(), pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o644},
+		{p.certDER(), der, 0o644},
+	} {
+		if err := writeFileAtomic(f.path, f.b, f.mode); err != nil {
+			return "", false, err
+		}
 	}
 	return thumbprint(der), true, nil
 }
 
+func parseCert(pemBytes []byte) *x509.Certificate {
+	if blk, _ := pem.Decode(pemBytes); blk != nil {
+		if c, err := x509.ParseCertificate(blk.Bytes); err == nil {
+			return c
+		}
+	}
+	return nil
+}
+
 // certNotAfter — до коли дійсний сертифікат (PEM).
 func certNotAfter(b []byte) time.Time {
-	if blk, _ := pem.Decode(b); blk != nil {
-		if c, err := x509.ParseCertificate(blk.Bytes); err == nil {
-			return c.NotAfter
-		}
+	if c := parseCert(b); c != nil {
+		return c.NotAfter
 	}
 	return time.Time{}
 }
@@ -93,34 +100,4 @@ func certNotAfter(b []byte) time.Time {
 func thumbprint(der []byte) string {
 	h := sha1.Sum(der) // відбиток сертифіката у Windows — SHA-1 (лише ідентифікатор, не перевірка)
 	return strings.ToUpper(hex.EncodeToString(h[:]))
-}
-
-func fileExists(p string) bool {
-	st, err := os.Stat(p)
-	return err == nil && st.Mode().IsRegular()
-}
-
-// writeFileAtomic — тимчасовий файл поруч, потім rename (без напівзаписаних файлів).
-func writeFileAtomic(path string, b []byte, mode os.FileMode) error {
-	tmp := fmt.Sprintf("%s.tmp%d", path, os.Getpid())
-	if err := os.WriteFile(tmp, b, mode); err != nil {
-		return err
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		os.Remove(tmp)
-		return err
-	}
-	return nil
-}
-
-// markWeb — поруч із файлом налаштувань, який щойно записав (або видалив) веб, — <файл>.websha: sha256 вмісту
-// ("-" — видалено вебом). Watcher (audit.go) так відрізняє зміну через веб (вона вже має запис аудиту) від зміни
-// в обхід вебу (руками, скриптом) — на таку він пише запис "config-changed-outside-web".
-func markWeb(path string) {
-	sum := "-"
-	if b, err := os.ReadFile(path); err == nil {
-		h := sha256.Sum256(b)
-		sum = hex.EncodeToString(h[:])
-	}
-	os.WriteFile(path+".websha", []byte(sum+"\n"), 0o644)
 }
