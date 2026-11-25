@@ -137,13 +137,30 @@ func TestScanPage(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "report.docm"), []byte("x"), 0o644)
 	os.MkdirAll(filepath.Join(dir, "sub"), 0o755)
 	bp := do("GET", "/scan/browse?p="+url.QueryEscape(dir), nil).Body.String()
-	for _, s := range []string{"report.docm", "sub", "уся ця тека", "Сканувати вибране", `value="` + filepath.Join(dir, "sub") + `"`} {
+	for _, s := range []string{"report.docm", "sub", "уся ця тека", "уся відкрита тека", `name="cur" value="` + dir + `"`, `value="` + filepath.Join(dir, "sub") + `"`} {
 		if !strings.Contains(bp, s) {
 			t.Fatalf("browser page: no %q", s)
 		}
 	}
 	if b := do("GET", "/scan/browse?p=%2F", nil).Body.String(); strings.Contains(b, "уся ця тека") || !strings.Contains(b, "системний диск не вибирається") {
 		t.Fatal("system disk root pickable")
+	}
+	// browser: nothing ticked -> the opened folder (cur); nothing at all -> a clear error, no request
+	os.RemoveAll(sd)
+	os.MkdirAll(sd, 0o755)
+	do("POST", "/scan/start", url.Values{"kind": {"path"}, "cur": {dir}, "action": {"detect"}})
+	cq, _ := filepath.Glob(filepath.Join(sd, "request-*.json"))
+	if len(cq) != 1 {
+		t.Fatalf("opened folder: requests %v", cq)
+	}
+	var cr wScanReq
+	b3, _ := os.ReadFile(cq[0])
+	json.Unmarshal(b3, &cr)
+	if len(cr.Paths) != 1 || cr.Paths[0] != dir {
+		t.Fatalf("opened folder: %+v", cr)
+	}
+	if b := do("POST", "/scan/start", url.Values{"kind": {"path"}, "action": {"detect"}}).Body.String(); !strings.Contains(b, "нічого не вибрано") {
+		t.Fatalf("nothing picked: no error\n%s", b)
 	}
 	// queue: a second identical request refused; an old request -> "the service does not take requests";
 	// "Прибрати" removes a request from the queue

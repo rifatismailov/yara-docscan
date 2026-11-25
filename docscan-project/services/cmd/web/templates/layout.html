@@ -17,7 +17,6 @@
     <a href="/mode" {{if eq .Path "/mode"}}class="on"{{end}}>⚙ Режим і чорний список</a>
     <a href="/exceptions" {{if hasPrefix .Path "/exceptions"}}class="on"{{end}}>✚ Виключення</a>
     <a href="/quarantine" {{if hasPrefix .Path "/quarantine"}}class="on"{{end}}>☣ Карантин</a>
-    <a href="/policy" {{if eq .Path "/policy"}}class="on"{{end}}>§ Політика</a>
     <a href="/updates" {{if eq .Path "/updates"}}class="on"{{end}}>⟳ Оновлення</a>
     <div class="grp">account</div>
     <a href="/password" {{if eq .Path "/password"}}class="on"{{end}}>⚿ Пароль</a>

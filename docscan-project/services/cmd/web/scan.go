@@ -255,6 +255,10 @@ func (s *server) scanStart(q *req) {
 		sq.Kind = "path"
 		lines := strings.Split(q.r.FormValue("paths"), "\n")
 		lines = append(lines, q.r.Form["pick"]...)
+		// провідник: нічого не позначено галочкою — уся відкрита тека (поле cur; для кореня системного диска його немає)
+		if strings.TrimSpace(strings.Join(lines, "")) == "" && strings.TrimSpace(q.r.FormValue("cur")) != "" {
+			lines = []string{q.r.FormValue("cur")}
+		}
 		for _, l := range lines {
 			l = strings.Trim(strings.TrimSpace(l), `"`)
 			if l == "" {
@@ -278,7 +282,7 @@ func (s *server) scanStart(q *req) {
 			sq.Paths = append(sq.Paths, l)
 		}
 		if len(sq.Paths) == 0 {
-			fail(fmt.Errorf("give or choose a folder, a file or a drive"))
+			fail(fmt.Errorf("нічого не вибрано: позначте галочками теки або файли"))
 			return
 		}
 	default:

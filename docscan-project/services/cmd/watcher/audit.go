@@ -7,7 +7,7 @@ package main
 //
 //   - служба watcher-а стартувала / зупинилась і чому (команда служби — services.msc, sc stop, Stop-Service;
 //     вимкнення Windows; Ctrl+C у консолі);
-//   - файл налаштувань змінили В ОБХІД вебу: settings.json, локальні білий / чорний списки, локальна політика,
+//   - файл налаштувань змінили В ОБХІД вебу: settings.json, локальні білий / чорний списки,
 //     updater.json. Веб, записавши такий файл, кладе поруч <файл>.websha (sha256 вмісту) — його зміна вже має
 //     запис аудиту вебу. Зміна, якої немає в .websha (руками, скриптом, чужою програмою), — запис
 //     "config-changed-outside-web" зі старим і новим sha256; видалення — "config-deleted-outside-web".
@@ -57,7 +57,7 @@ var confCheckEvery = 30 * time.Second // тести — коротше
 
 // configFiles — файли, які змінює веб (і більше ніхто з DocScan); шляхи від <DataDir>.
 var configFiles = []string{"settings.json", "lists/whitelist.local.json", "lists/blacklist.local.json",
-	"policy/docscan-policy.yar", "update/updater.json"}
+	"update/updater.json"}
 
 type confWatch struct {
 	dir  string

@@ -460,6 +460,16 @@ if ($Rules) {
   Write-Host ("==> rules: kept " + [string](Get-Content "$InstallDir\rules\VERSION.txt" -TotalCount 1) + " (updated separately)") -ForegroundColor Cyan
 }
 
+# --- 4e. no local policy any more (the web Policy tab is gone, 2026-11-25): the policy comes only with the rules
+# package. A PC where the web had applied a local one gets the package policy back (kept as docscan-policy.package.yar).
+$pkgPolicy = "$InstallDir\rules\docscan-policy.package.yar"
+if (Test-Path -LiteralPath $pkgPolicy) {
+  Copy-Item -LiteralPath $pkgPolicy "$InstallDir\rules\docscan-policy.yar" -Force
+  Remove-Item -LiteralPath $pkgPolicy -Force
+  Write-Host "==> policy: the local policy of this PC removed - the package policy is in force again" -ForegroundColor Cyan
+}
+Remove-Item -LiteralPath "$DataDir\policy" -Recurse -Force -EA SilentlyContinue
+
 # --- 5. self-test ---
 Step "self-test"
 $yara  = "$InstallDir\bin\yara64.exe"

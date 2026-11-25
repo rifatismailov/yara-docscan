@@ -38,8 +38,9 @@ Get-Service DocScanWatcher). Скан почнеться, щойно служб�
 <td>{{if .Removable}}<span class="pill amber">{{if eq .Kind "usb"}}USB{{else}}знімний{{end}}</span>{{else}}{{.Kind}}{{end}}{{if .System}} <span class="tag">системний</span>{{end}}{{if .ReadOnly}} <span class="tag">лише читання</span>{{end}}</td>
 <td class="nowrap">{{if .SizeGB}}{{printf "%.0f" .SizeGB}} ГБ, вільно {{printf "%.0f" .FreeGB}}{{end}}</td>
 <td class="act">{{if or .Removable (and (eq .Kind "fixed") (not .System))}}<form method="post" action="/scan/start" class="row nowrap">{{template "csrf" $p}}<input type="hidden" name="kind" value="drive"><input type="hidden" name="root" value="{{.Root}}">
-{{if .Removable}}{{template "scanAction" "cure"}}{{else}}{{template "scanAction" "detect"}}{{end}} <button class="small">◎ Сканувати весь</button></form>
-{{else if .System}}<span class="hint">цілим — лише документи (нижче); теки — <a href="/scan/browse?p={{.Root}}">вибрати →</a></span>{{end}}</td>
+{{if .Removable}}{{template "scanAction" "cure"}}{{else}}{{template "scanAction" "detect"}}{{end}} <button class="small">◎ Сканувати весь</button>
+<a href="/scan/browse?p={{.Root}}">теки →</a></form>
+{{else if .System}}<span class="hint">цілим — лише документи (нижче);</span> <a href="/scan/browse?p={{.Root}}">теки →</a>{{end}}</td>
 </tr>{{end}}
 </table>
 <form method="post" action="/scan/start" class="stack">{{template "csrf" $p}}<input type="hidden" name="kind" value="docs">
@@ -50,21 +51,8 @@ Get-Service DocScanWatcher). Скан почнеться, щойно служб�
 <div class="row nowrap">{{template "scanAction" "cure"}} <button class="primary">◎ Скан документів</button></div></form>
 <p class="hint">Знімний носій і не системний диск (D:\, E:\) — кнопка «Сканувати весь»: усі файли, шукає й шкідливі програми
 (для локального диска за замовчуванням — лише повідомити; лікувати чи видаляти — на розсуд адміна). Системний диск цілим не
-сканується: знешкодження чи карантин файлів встановлених програм ламає ці програми — його теки вибирайте у провіднику.
+сканується: знешкодження чи карантин файлів встановлених програм ламає ці програми — його теки вибирайте за посиланням «теки →».
 У теках програм (Program Files тощо) будь-який скан лише повідомляє.</p>
-</div>
-
-<div class="grid">
-<div class="card"><h2>Тека або файл</h2>
-<p><a class="button primary" href="/scan/browse">📁 Вибрати у провіднику</a></p>
-<p class="hint">або вписати шлях вручну:</p>
-<form method="post" action="/scan/start" class="stack">{{template "csrf" $p}}<input type="hidden" name="kind" value="path">
-<label class="lbl">тека, файл або диск — по одному в рядку <textarea name="paths" rows="4" placeholder="E:\
-C:\Users\anna\Downloads
-D:\share\report.docm"></textarea></label>
-<p class="hint">Тека — усі документи і програми в ній, з підтеками; один файл — будь-якого типу. Цілий системний диск (C:\) — ні,
-для нього «Скан документів». У системних і програмних теках — лише повідомлення, без знешкодження.</p>
-<div class="row nowrap">{{template "scanAction" "cure"}} <button class="primary">◎ Сканувати</button></div></form>
 </div>
 
 <div class="card"><h2>Знімні носії</h2>
@@ -77,7 +65,6 @@ D:\share\report.docm"></textarea></label>
 <label><input type="radio" name="usb" value="off" {{if eq .USBSet "off"}}checked{{end}}> не сканувати самостійно (лише вручну тут)</label>
 <p class="hint">Носій, захищений від запису, — завжди лише повідомлення. Вилучили носій — його скан зупиняється.</p>
 <button>Зберегти</button></form>
-</div>
 </div>
 
 <h2>Останні скани</h2>

@@ -117,7 +117,6 @@ DocScan на ПК — це **три служби Windows** і **одна тек�
 | `settings.json` | веб, `install.ps1` | watcher |
 | `lists\*.local.json` | веб | watcher |
 | `lists\whitelist.json`, `blacklist.json` | updater, `install.ps1` | watcher, веб |
-| `policy\docscan-policy.yar` | веб | updater (ставить поверх нових правил) |
 | `update\updater.json`, `update\check-now` | веб, `install.ps1` | updater |
 | `scan\request-*.json`, `cancel-*` | веб, `docscan-watcher -ScanPath` | watcher |
 | `scan\status.json`, `history.json` | watcher | веб |
@@ -132,7 +131,7 @@ DocScan на ПК — це **три служби Windows** і **одна тек�
 |---|---|
 | updater | оновлення правил: зупинити watcher, замінити `rules\`, запустити, дочекатися `start: watching`, інакше відкат |
 | updater через `install.ps1 -Reuse` | оновлення програми: інсталятор зупиняє й запускає всі три служби |
-| веб | застосування локальної політики, повернення пакетної, зміна тек чи кількості сканувань |
+| веб | зміна тек чи кількості сканувань |
 
 **Спільний код Go:**
 - `orglists` — формат і перевірка списків (усі три);
@@ -359,7 +358,8 @@ yara64.exe -w --docscan-json
 | `rules\critical\*.yar` | правила третього проходу |
 
 Правила читаються лише на старті. Нові правила діють після перезапуску служби: його роблять DocScanUpdater (оновлення
-правил) і веб (локальна політика).
+правил) і веб (зміна тек чи кількості сканувань). Політика `docscan-policy.yar` приходить лише з пакетом правил
+(дзеркало організації); локальної правки політики на ПК немає (вкладку «Політика» прибрано 2026-11-25).
 
 #### Дані — `C:\ProgramData\DocScan`
 
@@ -379,7 +379,7 @@ yara64.exe -w --docscan-json
 | `scan\request-*.json`, `cancel-*` | **читає і видаляє** раз на 2 с | пишуть веб і `docscan-watcher -ScanPath` |
 | `scan\status.json`, `history.json` | **пише** хід сканів і останні 50 | читає веб |
 | `scan\cache.json` | пише і читає: sha256 файлів, що були чистими з цими правилами | — |
-| `settings.json`, `lists\*.local.json`, `policy\docscan-policy.yar`, `update\updater.json` | раз на 30 с рахує sha256: зміна не через веб (без збігу з `<файл>.websha`) → аудит `config-changed-outside-web` | — |
+| `settings.json`, `lists\*.local.json`, `update\updater.json` | раз на 30 с рахує sha256: зміна не через веб (без збігу з `<файл>.websha`) → аудит `config-changed-outside-web` | — |
 
 #### Аудит у `docscan-results.json` (`event: "Admin"`, `via: service` / `file`)
 
@@ -1172,10 +1172,7 @@ docscan-updater.exe -DataDir C:\ProgramData\DocScan -InstallDir "C:\Program File
 #### Оновлення правил
 1. Маніфест правил і підпис → пакет `DocScan-rules.zip` → sha256 кожного файлу.
 2. Пробна компіляція `yarac64` з новими правилами, а з критичними — ще й пробний запуск `yara64`.
-3. Повернути **локальну політику ПК** (`policy\docscan-policy.yar`) поверх пакетної. Пакетна лишається поруч як
-   `docscan-policy.package.yar`. Якщо локальна не компілюється з новими правилами, діє пакетна, а в записі є
-   пояснення.
-4. **Зупинити DocScanWatcher**, `rules\` → `rules.prev\`, нові правила на місце, запустити watcher і чекати рядка
+3. **Зупинити DocScanWatcher**, `rules\` → `rules.prev\`, нові правила на місце, запустити watcher і чекати рядка
    `start: watching` у `watcher.log` (до 3 хв). Не дочекався — повернути `rules.prev` і запустити знову (відкат).
 
 #### Оновлення списків організації
@@ -1199,7 +1196,6 @@ docscan-updater.exe -DataDir C:\ProgramData\DocScan -InstallDir "C:\Program File
 | `bin\yarac64.exe`, `bin\yara64.exe` | **запускає** | пробна компіляція нових правил і пробний запуск критичних |
 | `rules\` | **замінює** (з паузою watcher) | правила; `rules\VERSION.txt` — встановлена версія правил |
 | `rules.prev\` | **пише** | попередні правила для відкату |
-| `rules\docscan-policy.package.yar` | пише | пакетна політика поруч із локальною |
 | усе інше в теці програми | міняє лише через `install.ps1` нового пакета | — |
 
 #### Дані — `C:\ProgramData\DocScan`
@@ -1213,7 +1209,6 @@ docscan-updater.exe -DataDir C:\ProgramData\DocScan -InstallDir "C:\Program File
 | `update\install-result.json` | читає | пише `install.ps1 -ResultFile` | чим закінчилось встановлення нового пакета |
 | `update\packages\<версія>\` | **пише** | — | розпакований пакет: поточний і попередній, для відкату |
 | `lists\whitelist.json`, `blacklist.json` (+`.prev`) | **пише** | читає watcher, показує веб | списки організації з її дзеркала |
-| `policy\docscan-policy.yar` | **читає** | пише веб | локальна політика: після кожного оновлення правил ставиться знову |
 | `install.json` | читає (через `install.ps1 -Reuse`) | пише `install.ps1` | параметри цього ПК |
 | `results\watcher.log` | **читає** | пише watcher | чекає рядок `start: watching` після нових правил |
 | `results\docscan-updates.json` | **пише** (дописує рядки) | читає агент Wazuh, показує веб | запис на кожну подію оновлення: `event: "Update"`, компонент, `success` / `rollback` / `error` |
@@ -1308,10 +1303,9 @@ docscan-web.exe -DataDir C:\ProgramData\DocScan -InstallDir "C:\Program Files\Do
 | **Режим і чорний список** `/mode`, `/pause` | `settings.json`, `install.json` | `settings.json` (режим, пауза, теки, кількість сканувань) + синхронізує `install.json`; при зміні тек чи кількості — **перезапускає DocScanWatcher** |
 | **Оновлення** `/updates` | `update\updater.json`, `results\docscan-updates.json` | `updater.json` (спершу перевіряє `docscan-updater -CheckConfig`; попередній → `updater.json.bak`); «Перевірити зараз» → файл `update\check-now` |
 | **Виключення** `/exceptions` | `lists\*.json` | `lists\whitelist.local.json`, `blacklist.local.json` |
-| **Політика** `/policy` | `rules\docscan-policy.yar`, `docscan-policy.package.yar`, `policy\docscan-policy.yar` | перевіряє компіляцію з усіма правилами (`yara64`) → `policy\docscan-policy.yar` + `rules\docscan-policy.yar` → **перезапускає DocScanWatcher**; «повернути пакетну» — так само |
 | **Карантин** `/quarantine` | `quarantine\*.docscan-bak`, записи | повернути файл на місце (з виключенням `whitelist.local.json`) або видалити назавжди |
 | **Макроси** `/macros`, `/macro` | `macros\` (код VBA) | — |
-| **Сканування** `/scan`, `/scan/browse` | `scan\status.json`, `history.json`, диски, імена файлів у провіднику (вміст не відкриває) | `scan\request-<id>.json`, `cancel-<id>`, `settings.json` (режим флешок) |
+| **Сканування** `/scan`, `/scan/browse` | `scan\status.json`, `history.json`, диски, імена файлів у провіднику «теки →» (вміст не відкриває; нічого не позначено — уся відкрита тека; ручного вводу шляху немає) | `scan\request-<id>.json`, `cancel-<id>`, `settings.json` (режим флешок) |
 | **Пароль**, вхід, вихід | `web\auth.json` | `web\auth.json`; видаляє `initial-password.txt` після першої зміни пароля |
 
 ---
@@ -1324,9 +1318,6 @@ docscan-web.exe -DataDir C:\ProgramData\DocScan -InstallDir "C:\Program Files\Do
 |---|---|---|
 | `web\docscan-web.exe` | сам веб | шаблони сторінок і стилі вшиті в exe |
 | `VERSION.txt`, `rules\VERSION.txt` | читає | версії на сторінці «Стан» |
-| `rules\docscan-policy.yar` | **пише** (застосування політики) | діюча політика |
-| `rules\docscan-policy.package.yar`, `rules\file-index.yar` | читає / пише | пакетна політика; правила для пробної компіляції |
-| `bin\yara64.exe` | **запускає** | перевірка, що нова політика компілюється з усіма правилами ПК |
 | `updater\docscan-updater.exe` | **запускає** | `-CheckConfig` перед збереженням налаштувань оновлень |
 
 #### Дані — `C:\ProgramData\DocScan`
@@ -1340,7 +1331,6 @@ docscan-web.exe -DataDir C:\ProgramData\DocScan -InstallDir "C:\Program Files\Do
 | `install.json` | читає, оновлює параметри режиму | пише `install.ps1`, читає updater | параметри ПК для наступних оновлень |
 | `lists\whitelist.local.json`, `blacklist.local.json` (+`.websha`) | **пише** | читає watcher | локальні виключення ПК |
 | `lists\whitelist.json`, `blacklist.json` | читає | пише updater | списки організації (лише показ) |
-| `policy\docscan-policy.yar` (+`.websha`) | **пише**, видаляє | читає updater | локальна політика ПК |
 | `update\updater.json` (+`.bak`, `.websha`) | **пише** | читає updater | налаштування оновлень |
 | `update\check-now` | **пише** | читає і видаляє updater | «перевірити зараз» |
 | `scan\request-*.json`, `cancel-*` | **пише**, прибирає свої з черги | читає і видаляє watcher | запити на скан |
@@ -1413,9 +1403,9 @@ docscan-web.exe -DataDir C:\ProgramData\DocScan -InstallDir "C:\Program Files\Do
   файлах (sweep.go). Пауза й кінець паузи — записи у Wazuh.
 - **Локальні списки** — `lists\whitelist.local.json` / `blacklist.local.json`: watcher застосовує їх **разом** зі
   списками з дзеркала (у записі для Wazuh — `list.source: local | mirror`); дзеркало їх не перезаписує.
-- **Локальна політика** — `C:\ProgramData\DocScan\policy\docscan-policy.yar`: веб перевіряє компіляцію (копія правил
-  з новою політикою, yara64), ставить її поверх `rules\docscan-policy.yar`, перезапускає watcher. Updater після
-  кожного оновлення правил знову ставить локальну політику (якщо компілюється; інакше — пакетна + `error` у Wazuh).
+- **Політика** — у вебі її немає: `docscan-policy.yar` створюється централізовано і приходить з пакетом правил через
+  дзеркало організації. Стара локальна політика ПК (`policy\docscan-policy.yar`, до 2026-11-25) більше ніде не
+  застосовується: з наступним оновленням правил діє політика з пакета.
 - **Карантин** — біля кожного файлу `*.docscan-bak` watcher пише `*.docscan-bak.json`: звідки, sha256, час, причина
   (правило / запис списку), вид (`quarantined` — файл прибрано; `backup` — оригінал до знешкодження документа).
   **Відновити** — файл повертається на місце, а в локальний білий список додається запис `path` + `sha256` (інакше

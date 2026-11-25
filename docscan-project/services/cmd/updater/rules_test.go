@@ -9,7 +9,6 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -214,39 +213,5 @@ func TestCompileCritical(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "keys.yar"), []byte(`rule k { condition: nonsense }`), 0o644)
 	if err := e.u.compileCritical(dir); err == nil || !strings.Contains(err.Error(), "keys.yar") {
 		t.Fatalf("broken file: %v", err)
-	}
-}
-
-// the local policy of the PC goes over the package one after a rules update; one that does not compile with the new
-// rules -> the package policy stays (protection is not lost)
-func TestApplyLocalPolicy(t *testing.T) {
-	d := t.TempDir()
-	u := &Updater{dataDir: filepath.Join(d, "data"), installDir: d, log: &logger{file: filepath.Join(d, "u.log")}}
-	dir := filepath.Join(d, "staged")
-	os.MkdirAll(dir, 0o755)
-	os.WriteFile(filepath.Join(dir, policyName), []byte("package policy"), 0o644)
-	if u.applyLocalPolicy(dir) != "" {
-		t.Fatal("no local policy: nothing to do")
-	}
-	os.MkdirAll(filepath.Join(u.dataDir, "policy"), 0o755)
-	os.WriteFile(u.localPolicy(), []byte("local policy"), 0o644)
-	u.compiler = func(string) error { return nil }
-	if n := u.applyLocalPolicy(dir); n != "local policy applied" {
-		t.Fatal(n)
-	}
-	if b, _ := os.ReadFile(filepath.Join(dir, policyName)); string(b) != "local policy" {
-		t.Fatal("local policy not in place")
-	}
-	if b, _ := os.ReadFile(filepath.Join(dir, policyPackageName)); string(b) != "package policy" {
-		t.Fatal("package policy not kept")
-	}
-	os.WriteFile(filepath.Join(dir, policyName), []byte("package policy"), 0o644)
-	os.Remove(filepath.Join(dir, policyPackageName))
-	u.compiler = func(string) error { return errors.New("syntax error") }
-	if n := u.applyLocalPolicy(dir); !strings.Contains(n, "package policy is in force") {
-		t.Fatal(n)
-	}
-	if b, _ := os.ReadFile(filepath.Join(dir, policyName)); string(b) != "package policy" {
-		t.Fatal("a broken local policy must not stay")
 	}
 }

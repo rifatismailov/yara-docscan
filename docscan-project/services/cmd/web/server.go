@@ -41,8 +41,6 @@ type server struct {
 	mu     sync.Mutex // дії (POST) по одній
 	// checkCfg — перевірка updater.json (за замовчуванням docscan-updater -CheckConfig; тести підміняють)
 	checkCfg func(file string) error
-	// checkPolicy — компіляція політики (за замовчуванням yara64 з усіма правилами ПК; тести підміняють)
-	checkPolicy func(text string) error
 }
 
 func newServer(p paths, listen string, lg *logger) (*server, error) {
@@ -174,8 +172,6 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.exceptionAdd(rq)
 	case "/exceptions/remove":
 		s.exceptionRemove(rq)
-	case "/policy":
-		s.policy(rq)
 	case "/macro":
 		s.macro(rq)
 	case "/macros":

@@ -285,10 +285,6 @@ pre.json, pre.log { background: var(--panel); border: 1px solid var(--line); pad
 table.kv th { text-align: left; white-space: nowrap; color: var(--muted); font-weight: normal; width: 1%; padding-right: 18px; }
 .right { float: right; }
 textarea.code { width: 100%; font: 12px/1.45 var(--mono); background: var(--panel); color: var(--fg); border: 1px solid var(--line2); padding: 10px; }
-pre.diff { background: var(--panel); border: 1px solid var(--line); padding: 12px; overflow-x: auto; font-size: 12px; }
-pre.diff .da { color: var(--ok); }
-pre.diff .dr { color: var(--bad); }
-pre.diff .dg { color: var(--muted); }
 pre.code { background: var(--panel); border: 1px solid var(--line); padding: 10px 0; overflow-x: auto; font-size: 12px; line-height: 1.45; }
 pre.code .ln { display: block; padding: 0 12px; white-space: pre; }
 pre.code .ln i { display: inline-block; width: 4.5em; color: var(--muted); font-style: normal; user-select: none; }

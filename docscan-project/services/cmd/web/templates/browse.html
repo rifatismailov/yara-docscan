@@ -16,9 +16,9 @@
 {{else}}
 {{if .Protected}}<p class="warn">Тека програм або системна: скан тут лише повідомляє, нічого не знешкоджує і не видаляє.</p>{{end}}
 {{if .Err}}<p class="error">{{.Err}}</p>{{end}}
-<form method="post" action="/scan/start">{{template "csrf" $p}}<input type="hidden" name="kind" value="path">
-<div class="row nowrap pickbar">{{template "scanAction" "cure"}} <button class="primary">◎ Сканувати вибране</button>
-<span class="hint">тека — з усіма підтеками; файл — будь-якого типу</span></div>
+<form method="post" action="/scan/start">{{template "csrf" $p}}<input type="hidden" name="kind" value="path">{{if .CanPick}}<input type="hidden" name="cur" value="{{.Path}}">{{end}}
+<div class="row nowrap pickbar">{{template "scanAction" "cure"}} <button class="primary">◎ Сканувати</button>
+<span class="hint">{{if .CanPick}}позначене галочками; нічого не позначено — уся відкрита тека{{else}}позначте теки або файли галочками{{end}} (теки — з усіма підтеками)</span></div>
 <table class="browse"><tr><th></th><th>ім'я</th><th>розмір</th><th>змінено</th></tr>
 {{if .CanPick}}<tr class="self"><td><input type="checkbox" name="pick" value="{{.Path}}"></td><td><b>уся ця тека</b> <span class="path hint">{{.Path}}</span></td><td></td><td></td></tr>
 {{else}}<tr class="self"><td></td><td class="hint">цілий системний диск не вибирається — позначте потрібні теки (або «Скан документів» на сторінці «Сканування»)</td><td></td><td></td></tr>{{end}}
@@ -30,8 +30,8 @@
 <td class="nowrap hint">{{ts .Mod}}</td>
 </tr>{{end}}
 </table>
-{{if .More}}<p class="hint">Ще {{.More}} елементів не показано — відкрийте підтеку або впишіть шлях на сторінці «Сканування».</p>{{end}}
-{{if gt (len .Items) 15}}<div class="row nowrap pickbar">{{template "scanAction" "cure"}} <button class="primary">◎ Сканувати вибране</button></div>{{end}}
+{{if .More}}<p class="hint">Ще {{.More}} елементів не показано — відкрийте підтеку.</p>{{end}}
+{{if gt (len .Items) 15}}<div class="row nowrap pickbar"><button class="primary">◎ Сканувати</button> <span class="hint">дія — у списку вгорі</span></div>{{end}}
 </form>
 {{end}}
 {{end}}
